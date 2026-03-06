@@ -107,8 +107,10 @@ export async function GET(request: Request) {
 
     // ── AGGREGATE ────────────────────────────────────────────────────────────
     const byList: Record<string, {
-      tPhones: Set<string>;   // unique transferred phones (for cross-ref)
-      phoneToAgent: Map<string, string>; // phone → agent name
+      // Per-day unique phones → sum across days = transfer count (matches manual)
+      phonesByDay: Map<string, Set<string>>;
+      tPhones: Set<string>;            // all-time unique phones (for cross-ref)
+      phoneToAgent: Map<string, string>;
       min: number;
       cost: number;
       listCost: number;
@@ -118,11 +120,12 @@ export async function GET(request: Request) {
 
     const ensure = (li: string) => {
       if (!byList[li]) byList[li] = {
-        tPhones:     new Set(),
+        phonesByDay:  new Map(),
+        tPhones:      new Set(),
         phoneToAgent: new Map(),
-        min:      0,
-        cost:     0,
-        listCost: KNOWN_LISTS[li] ?? 0,
+        min:          0,
+        cost:         0,
+        listCost:     KNOWN_LISTS[li] ?? 0,
       };
     };
 
@@ -133,9 +136,10 @@ export async function GET(request: Request) {
       const list = detectListKey(campaignName);
       if (!list || !KNOWN_LISTS.hasOwnProperty(list)) continue;
 
-      const phone      = (call.to ?? "").replace(/\D/g, "").slice(-10);
-      const agent      = shortAgent(call.agent?.name ?? "Unknown");
-      const isTransfer = call.outcomes?.some((o: { label: string }) => o.label === "transferred");
+      const phone       = (call.to ?? "").replace(/\D/g, "").slice(-10);
+      const agent       = shortAgent(call.agent?.name ?? "Unknown");
+      const isTransfer  = call.outcomes?.some((o: { label: string }) => o.label === "transferred");
+      const callDate    = call.startedAt ? call.startedAt.slice(0, 10) : "unknown";
       const durationMin = call.endedAt && call.startedAt
         ? (new Date(call.endedAt).getTime() - new Date(call.startedAt).getTime()) / 60000
         : 0;
@@ -146,6 +150,13 @@ export async function GET(request: Request) {
       byList[list].cost += cost;
 
       if (isTransfer && phone.length === 10) {
+        // Track per-day unique phones for accurate transfer counting
+        if (!byList[list].phonesByDay.has(callDate)) {
+          byList[list].phonesByDay.set(callDate, new Set());
+        }
+        byList[list].phonesByDay.get(callDate)!.add(phone);
+
+        // All-time unique phones for cross-referencing sales/opened
         byList[list].tPhones.add(phone);
         if (!byList[list].phoneToAgent.has(phone)) {
           byList[list].phoneToAgent.set(phone, agent);
@@ -159,10 +170,9 @@ export async function GET(request: Request) {
     }
 
     // ── SERIALIZE ─────────────────────────────────────────────────────────────
-    // Convert Sets/Maps to plain objects for JSON serialization
     const byListOut: Record<string, {
-      t: number;
-      phones: string[];        // ← transferred phone numbers for cross-ref
+      t: number;           // sum of per-day unique phone counts (matches manual)
+      phones: string[];    // all-time unique phones for cross-ref
       phoneToAgent: Record<string, string>;
       min: number;
       cost: number;
@@ -170,13 +180,17 @@ export async function GET(request: Request) {
     }> = {};
 
     for (const [li, v] of Object.entries(byList)) {
+      // Sum per-day unique counts — matches manual methodology
+      const tCount = Array.from(v.phonesByDay.values())
+        .reduce((sum, daySet) => sum + daySet.size, 0);
+
       byListOut[li] = {
-        t:           v.tPhones.size,
-        phones:      Array.from(v.tPhones),
+        t:            tCount,
+        phones:       Array.from(v.tPhones),
         phoneToAgent: Object.fromEntries(v.phoneToAgent),
-        min:         Math.round(v.min),
-        cost:        Math.round(v.cost * 100) / 100,
-        listCost:    v.listCost,
+        min:          Math.round(v.min),
+        cost:         Math.round(v.cost * 100) / 100,
+        listCost:     v.listCost,
       };
     }
 
