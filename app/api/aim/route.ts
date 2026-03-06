@@ -14,7 +14,7 @@ const KNOWN_LISTS: Record<string, number> = {
 
 const detectListKey = (text: string): string | null => {
   if (!text) return null;
-  if (text.toLowerCase().includes("responder")) return "RT";
+  if (text.toLowerCase().includes("respond")) return "RT";
   const match10 = text.match(/([A-Za-z]{2})(\d{6})([A-Za-z]{2})/);
   if (match10) return (match10[1] + match10[2] + match10[3]).toUpperCase();
   const match8 = text.match(/([A-Za-z]{2})(\d{6})/);

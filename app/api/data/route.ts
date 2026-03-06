@@ -29,7 +29,7 @@ const toISO = (s: string): string | null => {
 
 const detectListKey = (text: string): string | null => {
   if (!text) return null;
-  if (text.toLowerCase().includes("responder")) return "RT";
+  if (text.toLowerCase().includes("respond")) return "RT";
   const m10 = text.match(/([A-Za-z]{2})(\d{6})([A-Za-z]{2})/);
   if (m10) return (m10[1] + m10[2] + m10[3]).toUpperCase();
   const m8 = text.match(/([A-Za-z]{2})(\d{6})/);
