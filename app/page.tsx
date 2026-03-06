@@ -1,7 +1,6 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
-// ── TYPES ────────────────────────────────────────────────────
 interface ListStats { t: number; o: number; s: number; min: number; cost: number; listCost: number; }
 interface AgentStats { calls: number; min: number; cost: number; t: number; deals: number; }
 interface MatrixCell { t: number; o: number; d: number; }
@@ -20,13 +19,18 @@ interface DashData {
   dataDateRange?: { min: string | null; max: string | null };
   error?: string;
 }
+interface AimData {
+  ok: boolean;
+  byList: Record<string, { t: number; min: number; cost: number; listCost: number }>;
+  byAgent: Record<string, { t: number; min: number; cost: number }>;
+  lastUpdated: string;
+}
 interface NonListSale {
   firstName: string; lastName: string; soldDate: string;
   promoCode: string; salesperson: string;
   homePhone: string; mobilePhone: string; onOpened: boolean;
 }
 
-// ── DATE PRESETS ─────────────────────────────────────────────
 type DatePreset = "itd" | "today" | "yesterday" | "week" | "custom";
 
 function getPresetDates(preset: DatePreset): { start: string | null; end: string | null } {
@@ -35,35 +39,35 @@ function getPresetDates(preset: DatePreset): { start: string | null; end: string
   const today = iso(now);
   if (preset === "itd") return { start: null, end: null };
   if (preset === "today") return { start: today, end: today };
-  if (preset === "yesterday") {
-    const y = new Date(now); y.setDate(y.getDate() - 1);
-    return { start: iso(y), end: iso(y) };
-  }
-  if (preset === "week") {
-    const mon = new Date(now);
-    mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7));
-    return { start: iso(mon), end: today };
-  }
+  if (preset === "yesterday") { const y = new Date(now); y.setDate(y.getDate() - 1); return { start: iso(y), end: iso(y) }; }
+  if (preset === "week") { const mon = new Date(now); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7)); return { start: iso(mon), end: today }; }
   return { start: null, end: null };
 }
 
-// ── DEMO DATA ────────────────────────────────────────────────
+function daysPast7(start: string | null): number {
+  if (!start) return 0;
+  const campaignStart = new Date("2026-02-25");
+  const startDate = new Date(start);
+  const diffDays = Math.ceil((campaignStart.getTime() - startDate.getTime()) / 86400000);
+  return Math.max(0, diffDays);
+}
+
 const DEMO: DashData = {
   byList: {
-    RT:          { t: 987, o: 597, s: 37, min: 8200,  cost: 1640, listCost: 0     },
-    JL021926LP:  { t: 208, o: 124, s: 6,  min: 1750,  cost: 350,  listCost: 8000  },
-    BL021926BO:  { t: 145, o: 93,  s: 4,  min: 1200,  cost: 240,  listCost: 8000  },
-    JH022326MN:  { t: 67,  o: 38,  s: 0,  min: 580,   cost: 116,  listCost: 8000  },
-    JL021926CR:  { t: 36,  o: 15,  s: 0,  min: 310,   cost: 62,   listCost: 8000  },
-    DG021726SC:  { t: 55,  o: 24,  s: 1,  min: 460,   cost: 92,   listCost: 5000  },
-    JL022526RS:  { t: 30,  o: 12,  s: 0,  min: 260,   cost: 52,   listCost: 6000  },
+    RT:         { t:987, o:597, s:37, min:8200,  cost:1640, listCost:0     },
+    JL021926LP: { t:208, o:124, s:6,  min:1750,  cost:350,  listCost:8000  },
+    BL021926BO: { t:145, o:93,  s:4,  min:1200,  cost:240,  listCost:8000  },
+    JH022326MN: { t:67,  o:38,  s:0,  min:580,   cost:116,  listCost:8000  },
+    JL021926CR: { t:36,  o:15,  s:0,  min:310,   cost:62,   listCost:8000  },
+    DG021726SC: { t:55,  o:24,  s:1,  min:460,   cost:92,   listCost:5000  },
+    JL022526RS: { t:30,  o:12,  s:0,  min:260,   cost:52,   listCost:6000  },
   },
   byAgent: {
-    "Moxy OG":   { calls: 12400, min: 9800, cost: 1960, t: 907, deals: 15 },
-    Activation:  { calls: 2100,  min: 1680, cost: 336,  t: 170, deals: 9  },
-    "Female v3": { calls: 1400,  min: 1120, cost: 224,  t: 112, deals: 6  },
-    "Moxy v2":   { calls: 1050,  min: 840,  cost: 168,  t: 84,  deals: 4  },
-    "Male v3":   { calls: 930,   min: 740,  cost: 148,  t: 74,  deals: 3  },
+    "Moxy OG":   { calls:12400, min:9800, cost:1960, t:907, deals:15 },
+    Activation:  { calls:2100,  min:1680, cost:336,  t:170, deals:9  },
+    "Female v3": { calls:1400,  min:1120, cost:224,  t:112, deals:6  },
+    "Moxy v2":   { calls:1050,  min:840,  cost:168,  t:84,  deals:4  },
+    "Male v3":   { calls:930,   min:740,  cost:148,  t:74,  deals:3  },
   },
   matrix: {
     "Moxy OG":   { RT:{t:550,o:340,d:10},JL021926LP:{t:130,o:80,d:3},BL021926BO:{t:90,o:55,d:2},JH022326MN:{t:67,o:38,d:0},JL021926CR:{t:36,o:15,d:0},DG021726SC:{t:30,o:14,d:0},JL022526RS:{t:4,o:2,d:0}},
@@ -82,10 +86,9 @@ const DEMO: DashData = {
   hasData: false,
 };
 
-// ── UTILS ─────────────────────────────────────────────────── 
 const f = (n: number) => (n || 0).toLocaleString();
 const fc = (n: number) => "$" + (n || 0).toFixed(2);
-const pct = (n: number, d: number) => d > 0 ? ((n / d) * 100).toFixed(1) + "%" : "—";
+const pct = (n: number, d: number) => d > 0 ? ((n / d) * 100).toFixed(1) + "%" : "-";
 const C = {
   bg: "#06080F", surface: "#0C0F1A", card: "#101525", border: "#1B2440",
   accent: "#00D4B8", amber: "#F59E0B", red: "#EF4444", green: "#22C55E",
@@ -97,7 +100,6 @@ function ClosePct({ n, d }: { n: number; d: number }) {
   const color = v >= 5 ? C.green : v >= 3 ? C.amber : C.muted;
   return <span style={{ fontFamily: "monospace", fontSize: 12, color }}>{pct(n, d)}</span>;
 }
-
 function Th({ children, left }: { children: React.ReactNode; left?: boolean }) {
   return <th style={{ background: C.surface, color: C.muted, fontSize: 11, letterSpacing: ".1em", textTransform: "uppercase", padding: "9px 12px", textAlign: left ? "left" : "right", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{children}</th>;
 }
@@ -105,67 +107,60 @@ function Td({ children, style }: { children: React.ReactNode; style?: React.CSSP
   return <td style={{ padding: "8px 12px", textAlign: "right", fontSize: 13, borderBottom: `1px solid ${C.dim}`, ...style }}>{children}</td>;
 }
 
-// ── DATE FILTER BAR ──────────────────────────────────────────
-function DateFilterBar({
-  preset, setPreset, customStart, setCustomStart, customEnd, setCustomEnd, onApply, dataRange
-}: {
-  preset: DatePreset;
-  setPreset: (p: DatePreset) => void;
+function DateFilterBar({ preset, setPreset, customStart, setCustomStart, customEnd, setCustomEnd, onApply, dataRange, warnDays }: {
+  preset: DatePreset; setPreset: (p: DatePreset) => void;
   customStart: string; setCustomStart: (s: string) => void;
   customEnd: string; setCustomEnd: (s: string) => void;
   onApply: () => void;
   dataRange?: { min: string | null; max: string | null };
+  warnDays: number;
 }) {
   const presets: { id: DatePreset; label: string }[] = [
-    { id: "itd", label: "ITD" },
-    { id: "today", label: "Today" },
-    { id: "yesterday", label: "Yesterday" },
-    { id: "week", label: "This Week" },
+    { id: "itd", label: "ITD" }, { id: "today", label: "Today" },
+    { id: "yesterday", label: "Yesterday" }, { id: "week", label: "This Week" },
     { id: "custom", label: "Custom" },
   ];
-
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", background: C.surface, borderBottom: `1px solid ${C.border}`, flexWrap: "wrap" }}>
-      <span style={{ fontSize: 10, color: C.muted, letterSpacing: ".1em", textTransform: "uppercase", marginRight: 4 }}>Date Range:</span>
-      {presets.map(p => (
-        <button key={p.id} onClick={() => { setPreset(p.id); if (p.id !== "custom") onApply(); }}
-          style={{ padding: "4px 12px", borderRadius: 4, border: `1px solid ${preset === p.id ? C.accent : C.dim}`, background: preset === p.id ? "rgba(0,212,184,.1)" : "transparent", color: preset === p.id ? C.accent : C.muted, cursor: "pointer", fontSize: 12, fontWeight: preset === p.id ? 600 : 400, transition: "all .15s" }}>
-          {p.label}
-        </button>
-      ))}
-      {preset === "custom" && (
-        <>
-          <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)}
-            style={{ padding: "3px 8px", borderRadius: 4, border: `1px solid ${C.dim}`, background: C.card, color: C.text, fontSize: 12 }} />
-          <span style={{ color: C.muted, fontSize: 12 }}>to</span>
-          <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)}
-            style={{ padding: "3px 8px", borderRadius: 4, border: `1px solid ${C.dim}`, background: C.card, color: C.text, fontSize: 12 }} />
-          <button onClick={onApply}
-            style={{ padding: "4px 14px", borderRadius: 4, border: "none", background: C.accent, color: C.bg, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
-            Apply
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", background: C.surface, borderBottom: `1px solid ${C.border}`, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 10, color: C.muted, letterSpacing: ".1em", textTransform: "uppercase", marginRight: 4 }}>Date Range:</span>
+        {presets.map(p => (
+          <button key={p.id} onClick={() => { setPreset(p.id); if (p.id !== "custom") onApply(); }}
+            style={{ padding: "4px 12px", borderRadius: 4, border: `1px solid ${preset === p.id ? C.accent : C.dim}`, background: preset === p.id ? "rgba(0,212,184,.1)" : "transparent", color: preset === p.id ? C.accent : C.muted, cursor: "pointer", fontSize: 12, fontWeight: preset === p.id ? 600 : 400 }}>
+            {p.label}
           </button>
-        </>
-      )}
-      {dataRange?.min && (
-        <span style={{ marginLeft: "auto", fontSize: 10, color: C.muted }}>
-          Data: {dataRange.min} → {dataRange.max}
-        </span>
+        ))}
+        {preset === "custom" && (
+          <>
+            <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)}
+              style={{ padding: "3px 8px", borderRadius: 4, border: `1px solid ${C.dim}`, background: C.card, color: C.text, fontSize: 12 }} />
+            <span style={{ color: C.muted, fontSize: 12 }}>to</span>
+            <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)}
+              style={{ padding: "3px 8px", borderRadius: 4, border: `1px solid ${C.dim}`, background: C.card, color: C.text, fontSize: 12 }} />
+            <button onClick={onApply}
+              style={{ padding: "4px 14px", borderRadius: 4, border: "none", background: C.accent, color: C.bg, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Apply</button>
+          </>
+        )}
+        {dataRange?.min && <span style={{ marginLeft: "auto", fontSize: 10, color: C.muted }}>Data: {dataRange.min} to {dataRange.max}</span>}
+      </div>
+      {warnDays > 0 && (
+        <div style={{ padding: "8px 16px", background: "rgba(245,158,11,.08)", borderBottom: `1px solid rgba(245,158,11,.25)`, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 14 }}>⚠️</span>
+          <span style={{ fontSize: 12, color: C.amber }}>
+            This date range may result in longer load times (~{warnDays * 2} min — 2 min per day past 7 days)
+          </span>
+        </div>
       )}
     </div>
   );
 }
 
-// ── ITD VIEW ─────────────────────────────────────────────────
 function ITDView({ data }: { data: DashData }) {
   const lists = data.allLists?.length ? data.allLists : Object.keys(data.byList);
-  const totals = lists.reduce(
-    (a, li) => {
-      const r = data.byList[li] || { t: 0, o: 0, s: 0, min: 0, cost: 0, listCost: 0 };
-      return { t: a.t + r.t, o: a.o + r.o, s: a.s + r.s, min: a.min + r.min, cost: a.cost + r.cost, listCost: a.listCost + r.listCost };
-    },
-    { t: 0, o: 0, s: 0, min: 0, cost: 0, listCost: 0 }
-  );
-
+  const totals = lists.reduce((a, li) => {
+    const r = data.byList[li] || { t:0,o:0,s:0,min:0,cost:0,listCost:0 };
+    return { t:a.t+r.t, o:a.o+r.o, s:a.s+r.s, min:a.min+r.min, cost:a.cost+r.cost, listCost:a.listCost+r.listCost };
+  }, { t:0,o:0,s:0,min:0,cost:0,listCost:0 });
   const kpis = [
     { label: "Transfers", val: f(totals.t), color: C.accent },
     { label: "Opened", val: f(totals.o), color: C.text },
@@ -174,7 +169,6 @@ function ITDView({ data }: { data: DashData }) {
     { label: "Minutes", val: f(Math.round(totals.min)), color: C.muted },
     { label: "Dial Cost", val: fc(totals.cost), color: C.muted },
   ];
-
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))", gap: 10, marginBottom: 20 }}>
@@ -187,23 +181,14 @@ function ITDView({ data }: { data: DashData }) {
       </div>
       <div style={{ overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
-          <thead>
-            <tr>
-              <Th left>List</Th>
-              <Th>List Cost</Th><Th>Transfers</Th><Th>Opened</Th>
-              <Th>Sales</Th><Th>Close %</Th><Th>Minutes</Th>
-              <Th>Dial Cost</Th><Th>Cost/Sale</Th>
-            </tr>
-          </thead>
+          <thead><tr><Th left>List</Th><Th>List Cost</Th><Th>Transfers</Th><Th>Opened</Th><Th>Sales</Th><Th>Close %</Th><Th>Minutes</Th><Th>Dial Cost</Th><Th>Cost/Sale</Th></tr></thead>
           <tbody>
             {lists.map(li => {
-              const r = data.byList[li] || { t: 0, o: 0, s: 0, min: 0, cost: 0, listCost: 0 };
+              const r = data.byList[li] || { t:0,o:0,s:0,min:0,cost:0,listCost:0 };
               const cps = r.s > 0 ? (r.listCost + r.cost) / r.s : null;
               return (
                 <tr key={li}>
-                  <Td style={{ textAlign: "left" }}>
-                    <span style={{ color: C.accent, fontWeight: 600, fontSize: 14 }}>{li}</span>
-                  </Td>
+                  <Td style={{ textAlign: "left" }}><span style={{ color: C.accent, fontWeight: 600, fontSize: 14 }}>{li}</span></Td>
                   <Td><span style={{ fontFamily: "monospace", color: r.listCost > 0 ? C.text : C.muted }}>{r.listCost > 0 ? fc(r.listCost) : "free"}</span></Td>
                   <Td><span style={{ fontFamily: "monospace", color: C.accent }}>{f(r.t)}</span></Td>
                   <Td><span style={{ fontFamily: "monospace" }}>{f(r.o)}</span></Td>
@@ -211,7 +196,7 @@ function ITDView({ data }: { data: DashData }) {
                   <Td><ClosePct n={r.s} d={r.o} /></Td>
                   <Td><span style={{ fontFamily: "monospace", color: C.muted }}>{f(Math.round(r.min))}</span></Td>
                   <Td><span style={{ fontFamily: "monospace", color: C.muted }}>{fc(r.cost)}</span></Td>
-                  <Td>{cps ? <span style={{ fontFamily: "monospace", color: cps > 1000 ? C.red : cps > 500 ? C.amber : C.green }}>{fc(cps)}</span> : <span style={{ color: C.dim }}>—</span>}</Td>
+                  <Td>{cps ? <span style={{ fontFamily: "monospace", color: cps > 1000 ? C.red : cps > 500 ? C.amber : C.green }}>{fc(cps)}</span> : <span style={{ color: C.dim }}>-</span>}</Td>
                 </tr>
               );
             })}
@@ -224,7 +209,7 @@ function ITDView({ data }: { data: DashData }) {
               <Td><ClosePct n={totals.s} d={totals.o} /></Td>
               <Td><span style={{ fontFamily: "monospace", color: C.muted }}>{f(Math.round(totals.min))}</span></Td>
               <Td><span style={{ fontFamily: "monospace", color: C.muted }}>{fc(totals.cost)}</span></Td>
-              <Td>{totals.s > 0 ? <span style={{ fontFamily: "monospace", color: C.amber }}>{fc((totals.listCost + totals.cost) / totals.s)}</span> : <span style={{ color: C.dim }}>—</span>}</Td>
+              <Td>{totals.s > 0 ? <span style={{ fontFamily: "monospace", color: C.amber }}>{fc((totals.listCost + totals.cost) / totals.s)}</span> : <span style={{ color: C.dim }}>-</span>}</Td>
             </tr>
           </tbody>
         </table>
@@ -233,36 +218,26 @@ function ITDView({ data }: { data: DashData }) {
   );
 }
 
-// ── MATRIX VIEW ──────────────────────────────────────────────
 function MatrixView({ data }: { data: DashData }) {
   const lists = data.allLists?.length ? data.allLists : Object.keys(data.byList);
   const agents = data.allAgents?.length ? data.allAgents : Object.keys(data.byAgent);
-
   return (
     <div>
-      <div style={{ marginBottom: 10, fontSize: 11, color: C.muted }}>
-        Each cell: <span style={{ color: C.accent }}>Transfers</span> / <span style={{ color: C.text }}>Opened</span> / <span style={{ color: C.green }}>Deals</span> / Close%
-      </div>
+      <div style={{ marginBottom: 10, fontSize: 11, color: C.muted }}>Each cell: <span style={{ color: C.accent }}>Transfers</span> / <span style={{ color: C.text }}>Opened</span> / <span style={{ color: C.green }}>Deals</span> / Close%</div>
       <div style={{ overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
-          <thead>
-            <tr>
-              <Th left>Agent</Th>
-              {lists.map(li => <Th key={li}>{li}</Th>)}
-              <Th>Tot. T</Th><Th>Tot. D</Th><Th>Close %</Th>
-            </tr>
-          </thead>
+          <thead><tr><Th left>Agent</Th>{lists.map(li => <Th key={li}>{li}</Th>)}<Th>Tot. T</Th><Th>Tot. D</Th><Th>Close %</Th></tr></thead>
           <tbody>
             {agents.map(agent => {
               const m = data.matrix[agent] || {};
               let tT = 0, tD = 0, tO = 0;
-              for (const li of lists) { const c = m[li] || { t: 0, o: 0, d: 0 }; tT += c.t; tD += c.d; tO += c.o; }
+              for (const li of lists) { const c = m[li] || {t:0,o:0,d:0}; tT+=c.t; tD+=c.d; tO+=c.o; }
               return (
                 <tr key={agent} style={{ borderBottom: `1px solid ${C.dim}` }}>
                   <Td style={{ textAlign: "left", color: C.text, fontWeight: 600, fontSize: 13 }}>{agent}</Td>
                   {lists.map(li => {
-                    const c = m[li] || { t: 0, o: 0, d: 0 };
-                    if (!c.t && !c.o && !c.d) return <Td key={li} style={{ color: C.dim }}>—</Td>;
+                    const c = m[li] || {t:0,o:0,d:0};
+                    if (!c.t && !c.o && !c.d) return <Td key={li} style={{ color: C.dim }}>-</Td>;
                     return (
                       <td key={li} style={{ padding: "5px 10px", textAlign: "right", borderBottom: `1px solid ${C.dim}` }}>
                         <div style={{ display: "flex", flexDirection: "column", gap: 1, alignItems: "flex-end" }}>
@@ -287,22 +262,15 @@ function MatrixView({ data }: { data: DashData }) {
   );
 }
 
-// ── AGENT VIEW ───────────────────────────────────────────────
 function AgentView({ data }: { data: DashData }) {
   const agents = data.allAgents?.length ? data.allAgents : Object.keys(data.byAgent);
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
-        <thead>
-          <tr>
-            <Th left>Agent</Th>
-            <Th>Calls</Th><Th>Minutes</Th><Th>Dial Cost</Th>
-            <Th>Transfers</Th><Th>Deals</Th><Th>Close %</Th><Th>Cost/Deal</Th>
-          </tr>
-        </thead>
+        <thead><tr><Th left>Agent</Th><Th>Calls</Th><Th>Minutes</Th><Th>Dial Cost</Th><Th>Transfers</Th><Th>Deals</Th><Th>Close %</Th><Th>Cost/Deal</Th></tr></thead>
         <tbody>
           {agents.map(agent => {
-            const a = data.byAgent[agent] || { calls: 0, min: 0, cost: 0, t: 0, deals: 0 };
+            const a = data.byAgent[agent] || { calls:0,min:0,cost:0,t:0,deals:0 };
             const cpd = a.deals > 0 ? a.cost / a.deals : null;
             return (
               <tr key={agent} style={{ borderBottom: `1px solid ${C.dim}` }}>
@@ -313,7 +281,7 @@ function AgentView({ data }: { data: DashData }) {
                 <Td><span style={{ fontFamily: "monospace", color: C.accent }}>{f(a.t)}</span></Td>
                 <Td><span style={{ fontFamily: "monospace", color: a.deals > 0 ? C.green : C.muted, fontWeight: 600 }}>{a.deals}</span></Td>
                 <Td><ClosePct n={a.deals} d={a.t} /></Td>
-                <Td>{cpd ? <span style={{ fontFamily: "monospace", color: cpd > 200 ? C.red : cpd > 100 ? C.amber : C.green }}>{fc(cpd)}</span> : <span style={{ color: C.dim }}>—</span>}</Td>
+                <Td>{cpd ? <span style={{ fontFamily: "monospace", color: cpd > 200 ? C.red : cpd > 100 ? C.amber : C.green }}>{fc(cpd)}</span> : <span style={{ color: C.dim }}>-</span>}</Td>
               </tr>
             );
           })}
@@ -323,34 +291,27 @@ function AgentView({ data }: { data: DashData }) {
   );
 }
 
-// ── NON-LIST VIEW ────────────────────────────────────────────
 function NonListView({ data }: { data: DashData }) {
   const sales = data.nonListSales || [];
   if (!sales.length) return (
     <div style={{ padding: "40px 24px", textAlign: "center", color: C.muted }}>
-      <div style={{ fontSize: 32, marginBottom: 8 }}>∅</div>
-      <div style={{ fontSize: 14 }}>No non-list API sales detected</div>
+      <div style={{ fontSize: 14 }}>No non-list sales detected</div>
     </div>
   );
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
-        <thead>
-          <tr>
-            <Th left>Name</Th><Th>Date</Th><Th>Promo</Th>
-            <Th>Salesperson</Th><Th>Home #</Th><Th>Mobile #</Th><Th>On Opened</Th>
-          </tr>
-        </thead>
+        <thead><tr><Th left>Name</Th><Th>Date</Th><Th>Promo</Th><Th>Salesperson</Th><Th>Home #</Th><Th>Mobile #</Th><Th>On Opened</Th></tr></thead>
         <tbody>
           {sales.map((s, i) => (
             <tr key={i} style={{ borderBottom: `1px solid ${C.dim}` }}>
               <Td style={{ textAlign: "left", color: C.text }}>{s.firstName} {s.lastName}</Td>
-              <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.soldDate || "—"}</span></Td>
+              <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.soldDate || "-"}</span></Td>
               <Td><span style={{ fontSize: 11, color: C.amber }}>{s.promoCode}</span></Td>
               <Td><span style={{ color: C.muted, fontSize: 12 }}>{s.salesperson}</span></Td>
-              <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.homePhone || "—"}</span></Td>
-              <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.mobilePhone || "—"}</span></Td>
-              <Td style={{ textAlign: "center" }}>{s.onOpened ? <span style={{ color: C.green }}>✓</span> : <span style={{ color: C.dim }}>✗</span>}</Td>
+              <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.homePhone || "-"}</span></Td>
+              <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.mobilePhone || "-"}</span></Td>
+              <Td style={{ textAlign: "center" }}>{s.onOpened ? <span style={{ color: C.green }}>Y</span> : <span style={{ color: C.dim }}>N</span>}</Td>
             </tr>
           ))}
         </tbody>
@@ -359,78 +320,105 @@ function NonListView({ data }: { data: DashData }) {
   );
 }
 
-// ── MAIN APP ─────────────────────────────────────────────────
 export default function Home() {
   const [data, setData] = useState<DashData>(DEMO);
-  const [isDemo, setIsDemo] = useState(true);
+  const [isLive, setIsLive] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [lastRefresh, setLastRefresh] = useState<string>("");
   const [tab, setTab] = useState("itd");
   const [preset, setPreset] = useState<DatePreset>("itd");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchData = useCallback((start: string | null, end: string | null) => {
+  const activeStart = preset === "custom" ? customStart : getPresetDates(preset).start;
+  const warnDays = daysPast7(activeStart);
+
+  const loadData = useCallback(async (start: string | null, end: string | null) => {
     setLoading(true);
-    const params = new URLSearchParams();
-    if (start) params.set("start", start);
-    if (end) params.set("end", end);
-    const url = `/api/data${params.toString() ? "?" + params.toString() : ""}`;
-    fetch(url)
-      .then(r => r.json())
-      .then((d: DashData) => {
-        if (d.error || !d.hasData) { setIsDemo(true); }
-        else { setData(d); setIsDemo(false); }
-      })
-      .catch(() => setIsDemo(true))
-      .finally(() => setLoading(false));
+    try {
+      const qs = new URLSearchParams();
+      if (start) qs.set("start", start);
+      if (end) qs.set("end", end);
+      const q = qs.toString() ? "?" + qs.toString() : "";
+
+      const [fileRes, aimRes] = await Promise.allSettled([
+        fetch(`/api/data${q}`).then(r => r.json()),
+        fetch(`/api/aim${q}`).then(r => r.json()),
+      ]);
+
+      const fileData: DashData | null = fileRes.status === "fulfilled" && fileRes.value?.hasData ? fileRes.value : null;
+      const aimData: AimData | null = aimRes.status === "fulfilled" && aimRes.value?.ok ? aimRes.value : null;
+
+      if (!fileData && !aimData) { setIsLive(false); setData(DEMO); return; }
+
+      const base: DashData = fileData || DEMO;
+
+      if (aimData) {
+        const allLists = base.allLists?.length ? base.allLists : Object.keys(base.byList);
+        const newByList: Record<string, ListStats> = {};
+        for (const li of allLists) {
+          const fl = base.byList[li] || { t:0,o:0,s:0,min:0,cost:0,listCost:0 };
+          const al = aimData.byList[li];
+          newByList[li] = { ...fl, t: al?.t ?? fl.t, min: al?.min ?? fl.min, cost: al?.cost ?? fl.cost, listCost: al?.listCost ?? fl.listCost };
+        }
+        const allAgents = base.allAgents?.length ? base.allAgents : Object.keys(base.byAgent);
+        const newByAgent: Record<string, AgentStats> = {};
+        for (const ag of allAgents) {
+          const fa = base.byAgent[ag] || { calls:0,min:0,cost:0,t:0,deals:0 };
+          const aa = aimData.byAgent[ag];
+          newByAgent[ag] = { ...fa, t: aa?.t ?? fa.t, min: aa?.min ?? fa.min, cost: aa?.cost ?? fa.cost };
+        }
+        for (const ag of Object.keys(aimData.byAgent)) {
+          if (!newByAgent[ag]) { const a = aimData.byAgent[ag]; newByAgent[ag] = { calls:0, min:a.min, cost:a.cost, t:a.t, deals:0 }; }
+        }
+        setData({ ...base, byList: newByList, byAgent: newByAgent, lastUpdated: aimData.lastUpdated });
+        setIsLive(true);
+      } else {
+        setData(base);
+        setIsLive(!!fileData);
+      }
+      setLastRefresh(new Date().toLocaleTimeString());
+    } catch { setIsLive(false); }
+    finally { setLoading(false); }
   }, []);
 
-  // Initial load
-  useEffect(() => { fetchData(null, null); }, [fetchData]);
-
   const handleApply = useCallback(() => {
-    if (preset === "custom") {
-      fetchData(customStart || null, customEnd || null);
-    } else {
-      const { start, end } = getPresetDates(preset);
-      fetchData(start, end);
-    }
-  }, [preset, customStart, customEnd, fetchData]);
+    const { start, end } = preset === "custom" ? { start: customStart || null, end: customEnd || null } : getPresetDates(preset);
+    loadData(start, end);
+  }, [preset, customStart, customEnd, loadData]);
 
-  // Auto-apply when preset changes (not custom)
+  useEffect(() => { loadData(null, null); }, [loadData]);
+  useEffect(() => { if (preset !== "custom") handleApply(); }, [preset]); // eslint-disable-line
+
   useEffect(() => {
-    if (preset !== "custom") handleApply();
-  }, [preset]); // eslint-disable-line
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(handleApply, 15 * 60 * 1000);
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [handleApply]);
 
   const tabs = [
-    { id: "itd", label: "By List" },
-    { id: "matrix", label: "Agent × List" },
-    { id: "agents", label: "Agent Summary" },
-    { id: "nonlist", label: "Non-List Sales" },
+    { id: "itd", label: "By List" }, { id: "matrix", label: "Agent x List" },
+    { id: "agents", label: "Agent Summary" }, { id: "nonlist", label: "Non-List Sales" },
   ];
-
   const sideTotal = Object.values(data.byList).reduce((a, r) => a + (r.s || 0), 0);
   const lists = data.allLists?.length ? data.allLists : Object.keys(data.byList);
 
   return (
     <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: "system-ui, sans-serif" }}>
-      {/* HEADER */}
       <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "13px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <div style={{ width: 8, height: 8, borderRadius: "50%", background: C.accent, boxShadow: `0 0 10px ${C.accent}`, animation: "pulse 2s infinite" }} />
           <div>
-            <div style={{ fontSize: 17, fontWeight: 700, color: C.text, letterSpacing: ".06em", textTransform: "uppercase" }}>
-              APC — AI Voice Agent Dashboard
-            </div>
-            <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>
-              Auto Protection Center · AIM Now / Moxy · AI-Attributed Sales Only
-            </div>
+            <div style={{ fontSize: 17, fontWeight: 700, color: C.text, letterSpacing: ".06em", textTransform: "uppercase" }}>APC - AI Voice Agent Dashboard</div>
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>Auto Protection Center · AIM Now / Moxy · AI-Attributed Sales Only</div>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {loading && <span style={{ fontSize: 11, color: C.muted, fontFamily: "monospace" }}>Loading...</span>}
-          <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 3, fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", background: isDemo ? "rgba(245,158,11,.12)" : "rgba(34,197,94,.12)", color: isDemo ? C.amber : C.green, border: `1px solid ${isDemo ? "rgba(245,158,11,.3)" : "rgba(34,197,94,.3)"}` }}>
-            {isDemo ? "Demo Mode" : "Live Data"}
+          {!loading && lastRefresh && <span style={{ fontSize: 10, color: C.muted, fontFamily: "monospace" }}>↻ {lastRefresh}</span>}
+          <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 3, fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", background: isLive ? "rgba(34,197,94,.12)" : "rgba(245,158,11,.12)", color: isLive ? C.green : C.amber, border: `1px solid ${isLive ? "rgba(34,197,94,.3)" : "rgba(245,158,11,.3)"}` }}>
+            {isLive ? "Live Data" : "Demo Mode"}
           </span>
           <span style={{ fontFamily: "monospace", fontSize: 11, color: C.muted }}>
             {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
@@ -438,46 +426,34 @@ export default function Home() {
         </div>
       </div>
 
-      {/* DATE FILTER BAR */}
-      <DateFilterBar
-        preset={preset} setPreset={setPreset}
-        customStart={customStart} setCustomStart={setCustomStart}
-        customEnd={customEnd} setCustomEnd={setCustomEnd}
-        onApply={handleApply}
-        dataRange={data.dataDateRange}
-      />
+      <DateFilterBar preset={preset} setPreset={setPreset} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd} onApply={handleApply} dataRange={data.dataDateRange} warnDays={warnDays} />
 
       <div style={{ display: "flex", minHeight: "calc(100vh - 100px)" }}>
-        {/* SIDEBAR */}
         <div style={{ width: 200, flexShrink: 0, background: C.surface, borderRight: `1px solid ${C.border}`, padding: "16px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ fontSize: 10, color: C.muted, letterSpacing: ".12em", textTransform: "uppercase", marginBottom: 2 }}>Report Files</div>
-          {["opened", "transfer", "sales", "minutes"].map(name => {
-            const loaded = data.loadedFiles?.some(f => f.toLowerCase().startsWith(name));
-            return (
-              <div key={name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", background: C.card, borderRadius: 4, border: `1px solid ${loaded ? "rgba(34,197,94,.3)" : C.border}` }}>
-                <span style={{ color: loaded ? C.green : C.dim, fontSize: 12 }}>{loaded ? "✓" : "○"}</span>
-                <span style={{ fontSize: 11, color: loaded ? C.text : C.muted }}>{name}.csv/xls</span>
-              </div>
-            );
-          })}
+          <div style={{ fontSize: 10, color: C.muted, letterSpacing: ".12em", textTransform: "uppercase", marginBottom: 2 }}>Data Sources</div>
+          {[
+            { label: "AIM Live API", live: isLive },
+            { label: "sales.csv/xls", live: data.loadedFiles?.some(f => f.toLowerCase().startsWith("sales")) },
+            { label: "opened.csv/xls", live: data.loadedFiles?.some(f => f.toLowerCase().startsWith("opened")) },
+          ].map(item => (
+            <div key={item.label} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", background: C.card, borderRadius: 4, border: `1px solid ${item.live ? "rgba(34,197,94,.3)" : C.border}` }}>
+              <span style={{ color: item.live ? C.green : C.dim, fontSize: 12 }}>{item.live ? "✔" : "○"}</span>
+              <span style={{ fontSize: 11, color: item.live ? C.text : C.muted }}>{item.label}</span>
+            </div>
+          ))}
 
-          <div style={{ fontSize: 10, color: C.muted, letterSpacing: ".12em", textTransform: "uppercase", marginTop: 8 }}>List Files</div>
-          {lists.map(li => {
-            const loaded = data.loadedFiles?.some(f => f.toLowerCase().includes(li.toLowerCase().slice(0, 6)));
-            return (
-              <div key={li} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: C.card, borderRadius: 4, border: `1px solid ${loaded ? "rgba(0,212,184,.2)" : C.border}` }}>
-                <span style={{ color: loaded ? C.accent : C.dim, fontSize: 12 }}>{loaded ? "✓" : "○"}</span>
-                <span style={{ fontSize: 11, color: loaded ? C.accent : C.muted, fontWeight: loaded ? 600 : 400 }}>{li}</span>
-              </div>
-            );
-          })}
+          <div style={{ fontSize: 10, color: C.muted, letterSpacing: ".12em", textTransform: "uppercase", marginTop: 8 }}>Lists</div>
+          {lists.map(li => (
+            <div key={li} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: C.card, borderRadius: 4, border: `1px solid ${isLive ? "rgba(0,212,184,.2)" : C.border}` }}>
+              <span style={{ color: isLive ? C.accent : C.dim, fontSize: 12 }}>{isLive ? "✔" : "○"}</span>
+              <span style={{ fontSize: 11, color: isLive ? C.accent : C.muted, fontWeight: isLive ? 600 : 400 }}>{li}</span>
+            </div>
+          ))}
 
-          <button onClick={() => handleApply()}
-            style={{ marginTop: 8, padding: "9px 0", background: C.accent, color: C.bg, border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 700, fontSize: 12, letterSpacing: ".1em", textTransform: "uppercase" }}>
+          <button onClick={handleApply} style={{ marginTop: 8, padding: "9px 0", background: C.accent, color: C.bg, border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 700, fontSize: 12, letterSpacing: ".1em", textTransform: "uppercase" }}>
             ↻ Refresh
           </button>
 
-          {/* Mini snapshot */}
           <div style={{ marginTop: "auto", paddingTop: 14, borderTop: `1px solid ${C.dim}` }}>
             <div style={{ fontSize: 10, color: C.muted, letterSpacing: ".1em", textTransform: "uppercase", marginBottom: 8 }}>Snapshot</div>
             {lists.map(li => {
@@ -499,7 +475,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* MAIN CONTENT */}
         <div style={{ flex: 1, padding: "18px 22px", minWidth: 0 }}>
           <div style={{ display: "flex", borderBottom: `1px solid ${C.border}`, marginBottom: 18 }}>
             {tabs.map(t => (
@@ -509,29 +484,15 @@ export default function Home() {
               </div>
             ))}
           </div>
-
           <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: 18 }}>
             {tab === "itd" && <ITDView data={data} />}
             {tab === "matrix" && <MatrixView data={data} />}
             {tab === "agents" && <AgentView data={data} />}
             {tab === "nonlist" && <NonListView data={data} />}
           </div>
-
-          {isDemo && (
-            <div style={{ marginTop: 16, padding: "14px 16px", background: "rgba(245,158,11,.06)", border: "1px solid rgba(245,158,11,.2)", borderRadius: 6 }}>
-              <div style={{ fontSize: 12, color: C.amber, fontWeight: 600, marginBottom: 8 }}>📁 How to load your data</div>
-              <div style={{ fontSize: 11, color: C.muted, lineHeight: "1.8" }}>
-                Add files to the <code style={{ color: C.accent, background: C.surface, padding: "1px 4px", borderRadius: 3 }}>/data</code> folder in your GitHub repo:<br />
-                <code style={{ color: C.text }}>opened.csv</code> · <code style={{ color: C.text }}>transfer.csv</code> · <code style={{ color: C.text }}>sales.xls</code> · <code style={{ color: C.text }}>minutes.xlsx</code><br />
-                List files use original filenames: <code style={{ color: C.accent }}>BL021926BOA1.csv</code> · <code style={{ color: C.accent }}>DG021726SCA1.csv</code> · etc.<br />
-                New lists are detected automatically from the filename.
-              </div>
-            </div>
-          )}
-
-          {!isDemo && data.lastUpdated && (
+          {isLive && data.lastUpdated && (
             <div style={{ marginTop: 10, fontSize: 10, color: C.muted, textAlign: "right" }}>
-              Last updated: {new Date(data.lastUpdated).toLocaleString()}
+              Last updated: {new Date(data.lastUpdated).toLocaleString()} · Auto-refreshes every 15 min
             </div>
           )}
         </div>
