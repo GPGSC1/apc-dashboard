@@ -169,11 +169,14 @@ export async function GET(request: Request) {
     }
 
     // ── 3. FETCH 3CX CALLS (opened) ──────────────────────────────────────────
-    // A phone is opened if:
+    // Opened rules:
     //   1. Passed all 4 3CX rules (answered + not AI F + talk time > 0 + mail 4)
     //   2. Exists in data list files (phoneToList)
     //   3. Was transferred by AIM (aimTransferPhones)
-    const openedPhones = new Set<string>();
+    // COUNT every qualifying call row (no dedup) — matches manual methodology
+    // Keep a Set for sales cross-referencing
+    const openedPhones    = new Set<string>();   // for sales matching
+    const openedByList: Record<string, number> = {}; // raw count per list
 
     try {
       const callsResp = await fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`);
@@ -187,7 +190,9 @@ export async function GET(request: Request) {
             phoneToList.has(phone) &&
             aimTransferPhones.has(phone)
           ) {
-            openedPhones.add(phone);
+            openedPhones.add(phone); // for sales matching
+            const li = phoneToList.get(phone)!;
+            openedByList[li] = (openedByList[li] ?? 0) + 1; // count every instance
           }
         }
       }
@@ -255,10 +260,9 @@ export async function GET(request: Request) {
       }
     }
 
-    // OPENED — phone in openedPhones (already triple-checked)
-    for (const phone of openedPhones) {
-      const li = phoneToList.get(phone);
-      if (li && byList[li]) byList[li].o++;
+    // OPENED — use raw per-call counts (matches manual: no dedup across dates)
+    for (const [li, count] of Object.entries(openedByList)) {
+      if (byList[li]) byList[li].o += count;
     }
 
     // SALES — homePhone OR cellPhone must be in data list + AIM transfers + opened
@@ -270,9 +274,8 @@ export async function GET(request: Request) {
       if (seenSales.has(key)) continue;
       seenSales.add(key);
 
-      const isAPI       = s.promoCode?.toUpperCase().includes("API");
       const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
-      if (!isAPI || !notFishbein) continue;
+      if (!notFishbein) continue;
 
       const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
 
@@ -299,9 +302,8 @@ export async function GET(request: Request) {
 
     // Deals per agent
     for (const s of salesRows) {
-      const isAPI       = s.promoCode?.toUpperCase().includes("API");
       const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
-      if (!isAPI || !notFishbein) continue;
+      if (!notFishbein) continue;
 
       const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
       const matchedPhone = phones.find(p =>
@@ -335,9 +337,8 @@ export async function GET(request: Request) {
       if (li && agent && matrix[agent]?.[li] !== undefined) matrix[agent][li].o++;
     }
     for (const s of salesRows) {
-      const isAPI       = s.promoCode?.toUpperCase().includes("API");
       const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
-      if (!isAPI || !notFishbein) continue;
+      if (!notFishbein) continue;
       const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
       const matchedPhone = phones.find(p =>
         phoneToList.has(p) && aimTransferPhones.has(p) && openedPhones.has(p)
