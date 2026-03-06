@@ -2,9 +2,8 @@ import { NextResponse } from "next/server";
 
 const AIM_BASE = "https://dash.aimnow.ai";
 
-// Known list keys — only these show in the dashboard
 const KNOWN_LISTS: Record<string, number> = {
-  RT: 0,
+  RT:         0,
   JL021926LP: 8000,
   BL021926BO: 8000,
   JH022326MN: 8000,
@@ -34,9 +33,8 @@ const AGENT_SHORT: Record<string, string> = {
 };
 const shortAgent = (name: string) => AGENT_SHORT[name] || name;
 
-// ── LOGIN ────────────────────────────────────────────────────────────────────
 async function getSessionCookie(): Promise<string> {
-  const email = process.env.AIM_EMAIL;
+  const email    = process.env.AIM_EMAIL;
   const password = process.env.AIM_PASSWORD;
   if (!email || !password) throw new Error("AIM_EMAIL or AIM_PASSWORD not set");
 
@@ -45,71 +43,58 @@ async function getSessionCookie(): Promise<string> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password, rememberMe: true, callbackURL: "/" }),
   });
-
   if (!res.ok) throw new Error(`AIM login failed: ${res.status}`);
 
-  // Extract session cookie from response headers
-  const setCookie = res.headers.get("set-cookie") || "";
+  const setCookie  = res.headers.get("set-cookie") || "";
   const tokenMatch = setCookie.match(/__Secure-better-auth\.session_token=([^;]+)/);
   if (!tokenMatch) throw new Error("No session token in login response");
   return `__Secure-better-auth.session_token=${tokenMatch[1]}`;
 }
 
-// ── FETCH CALLS PAGE ─────────────────────────────────────────────────────────
 async function fetchCallsPage(
-  cookie: string,
-  startISO: string,
-  endISO: string,
-  page: number,
-  perPage = 100
+  cookie: string, startISO: string, endISO: string, page: number, perPage = 100
 ) {
   const res = await fetch(`${AIM_BASE}/rpc/calls/list`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Cookie: cookie,
-    },
+    headers: { "Content-Type": "application/json", Cookie: cookie },
     body: JSON.stringify({
       json: {
         query: {
-          page,
-          perPage,
+          page, perPage,
           startedAt: [startISO, endISO],
           outcomes: [89], // 89 = transferred
         },
       },
     }),
   });
-
   if (!res.ok) throw new Error(`AIM calls/list failed: ${res.status}`);
   const data = await res.json();
   return data?.json?.body ?? data?.body ?? null;
 }
 
-// ── ROUTE HANDLER ────────────────────────────────────────────────────────────
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
 
-    // Date range — default to campaign start → now
     const startISO = searchParams.get("start")
       ? new Date(searchParams.get("start")! + "T06:00:00.000Z").toISOString()
       : "2026-02-25T06:00:00.000Z";
     const endISO = searchParams.get("end")
-      ? (() => { const d = new Date(searchParams.get("end")! + "T06:00:00.000Z"); d.setDate(d.getDate() + 1); d.setSeconds(d.getSeconds() - 1); return d.toISOString(); })()
+      ? (() => {
+          const d = new Date(searchParams.get("end")! + "T06:00:00.000Z");
+          d.setDate(d.getDate() + 1);
+          d.setSeconds(d.getSeconds() - 1);
+          return d.toISOString();
+        })()
       : new Date().toISOString();
 
-    // Login
-    const cookie = await getSessionCookie();
-
-    // Fetch first page to get total count
+    const cookie    = await getSessionCookie();
     const firstPage = await fetchCallsPage(cookie, startISO, endISO, 1, 100);
     if (!firstPage) throw new Error("Empty response from AIM");
 
     const totalCount: number = firstPage.count ?? 0;
     const allCalls = [...(firstPage.data ?? [])];
 
-    // Fetch remaining pages if needed (max 2000 calls = 20 pages to keep it fast)
     const totalPages = Math.min(Math.ceil(totalCount / 100), 20);
     const pagePromises = [];
     for (let p = 2; p <= totalPages; p++) {
@@ -122,17 +107,22 @@ export async function GET(request: Request) {
 
     // ── AGGREGATE ────────────────────────────────────────────────────────────
     const byList: Record<string, {
-      t: number; tPhones: Set<string>;
-      min: number; cost: number; listCost: number;
+      tPhones: Set<string>;   // unique transferred phones (for cross-ref)
+      phoneToAgent: Map<string, string>; // phone → agent name
+      min: number;
+      cost: number;
+      listCost: number;
     }> = {};
 
     const byAgent: Record<string, { t: number; min: number; cost: number }> = {};
 
     const ensure = (li: string) => {
       if (!byList[li]) byList[li] = {
-        t: 0, tPhones: new Set(),
-        min: 0, cost: 0,
-        listCost: KNOWN_LISTS[li] ?? 0
+        tPhones:     new Set(),
+        phoneToAgent: new Map(),
+        min:      0,
+        cost:     0,
+        listCost: KNOWN_LISTS[li] ?? 0,
       };
     };
 
@@ -143,8 +133,8 @@ export async function GET(request: Request) {
       const list = detectListKey(campaignName);
       if (!list || !KNOWN_LISTS.hasOwnProperty(list)) continue;
 
-      const phone = (call.to ?? "").replace(/\D/g, "").slice(-10);
-      const agent = shortAgent(call.agent?.name ?? "Unknown");
+      const phone      = (call.to ?? "").replace(/\D/g, "").slice(-10);
+      const agent      = shortAgent(call.agent?.name ?? "Unknown");
       const isTransfer = call.outcomes?.some((o: { label: string }) => o.label === "transferred");
       const durationMin = call.endedAt && call.startedAt
         ? (new Date(call.endedAt).getTime() - new Date(call.startedAt).getTime()) / 60000
@@ -152,38 +142,51 @@ export async function GET(request: Request) {
       const cost = call.price ?? 0;
 
       ensure(list);
-      byList[list].min += durationMin;
+      byList[list].min  += durationMin;
       byList[list].cost += cost;
+
       if (isTransfer && phone.length === 10) {
         byList[list].tPhones.add(phone);
+        if (!byList[list].phoneToAgent.has(phone)) {
+          byList[list].phoneToAgent.set(phone, agent);
+        }
       }
 
       if (!byAgent[agent]) byAgent[agent] = { t: 0, min: 0, cost: 0 };
-      byAgent[agent].min += durationMin;
+      byAgent[agent].min  += durationMin;
       byAgent[agent].cost += cost;
       if (isTransfer) byAgent[agent].t++;
     }
 
-    // Convert Sets to counts
+    // ── SERIALIZE ─────────────────────────────────────────────────────────────
+    // Convert Sets/Maps to plain objects for JSON serialization
     const byListOut: Record<string, {
-      t: number; min: number; cost: number; listCost: number;
+      t: number;
+      phones: string[];        // ← transferred phone numbers for cross-ref
+      phoneToAgent: Record<string, string>;
+      min: number;
+      cost: number;
+      listCost: number;
     }> = {};
+
     for (const [li, v] of Object.entries(byList)) {
       byListOut[li] = {
-        t: v.tPhones.size,
-        min: Math.round(v.min),
-        cost: Math.round(v.cost * 100) / 100,
-        listCost: v.listCost,
+        t:           v.tPhones.size,
+        phones:      Array.from(v.tPhones),
+        phoneToAgent: Object.fromEntries(v.phoneToAgent),
+        min:         Math.round(v.min),
+        cost:        Math.round(v.cost * 100) / 100,
+        listCost:    v.listCost,
       };
     }
 
     return NextResponse.json({
-      ok: true,
-      dateRange: { start: startISO, end: endISO },
+      ok:                true,
+      dateRange:         { start: startISO, end: endISO },
       totalCallsFetched: allCalls.length,
-      byList: byListOut,
+      byList:            byListOut,
       byAgent,
-      lastUpdated: new Date().toISOString(),
+      lastUpdated:       new Date().toISOString(),
     });
 
   } catch (err) {
