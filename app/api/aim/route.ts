@@ -75,6 +75,7 @@ async function fetchCallsPage(
           page,
           perPage,
           startedAt: [startISO, endISO],
+          outcomes: [89], // 89 = transferred
         },
       },
     }),
