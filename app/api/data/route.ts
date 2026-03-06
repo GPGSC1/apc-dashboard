@@ -15,7 +15,6 @@ const AGENT_SHORT: Record<string, string> = {
   "Outbound Jr. Closer to TO Agent with Moxy Tools": "Jr Closer",
 };
 
-// JR manual pre-campaign sales (2/25 before campaign started)
 const JR_SALES = [
   { list: "JL021926LP", phone: "7139069790", name: "Mohammed Omar" },
   { list: "JL021926LP", phone: "4235441118", name: "Ronald Dupree" },
@@ -25,9 +24,7 @@ const JR_SALES = [
 
 const BL_HARDCODE_PHONE = "5125854726";
 const BL_HARDCODE_LIST  = "BL021926BO";
-
-// Campaign start date — never fetch 3CX data before this
-const CAMPAIGN_START = "2026-02-25";
+const CAMPAIGN_START    = "2026-02-25";
 
 const DEFAULT_COSTS: Record<string, number> = {
   RT:         0,
@@ -201,7 +198,8 @@ function loadListCosts(): Record<string, number> {
 
 // ── ATTRIBUTION ENGINE ───────────────────────────────────────────────────────
 function computeMetrics(
-  opened: { phone: string; destName: string; status: string; date: string | null }[],
+  // opened: 3CX calls that passed all 4 rules (already filtered in route-calls.ts)
+  openedCalls: { phone: string; date: string | null }[],
   calls: CallRow[],
   xfrRows: XfrRow[],
   sales: {
@@ -222,29 +220,30 @@ function computeMetrics(
     return true;
   };
 
-  const fOpened = opened.filter(r => inRange(r.date));
+  const fOpened = openedCalls.filter(r => inRange(r.date));
   const fCalls  = calls.filter(r => inRange(r.date));
   const fXfr    = xfrRows.filter(r => inRange(r.date));
-  // Moxy returns ALL sales — filter to campaign start at minimum
+  // Clamp Moxy sales to campaign start
   const fSales  = sales.filter(r => r.soldDate && r.soldDate >= CAMPAIGN_START && inRange(r.soldDate));
 
-  // Ground truth phones that reached a rep
-  const openedSet = new Set<string>();
-  for (const r of fOpened)
-    if (r.status === "answered" && r.destName) openedSet.add(r.phone);
-
-  // phone → list / agent mapping
-  const p2list   = new Map<string, string>();
-  const p2agent  = new Map<string, string>();
-  const p2agList = new Map<string, { agent: string; list: string }>();
+  // ── Build phone → list map from XFR file ─────────────────────────────────
+  // XFR is the authoritative source for:
+  //   (a) which phones were transferred
+  //   (b) which list each phone belongs to
+  const xfrPhones  = new Set<string>();
+  const p2list     = new Map<string, string>();
+  const p2agent    = new Map<string, string>();
+  const p2agList   = new Map<string, { agent: string; list: string }>();
 
   p2list.set(BL_HARDCODE_PHONE, BL_HARDCODE_LIST);
 
+  // List membership files supplement the XFR for list attribution
   for (const [listKey, phones] of Object.entries(listPhones))
     for (const phone of phones)
       if (!p2list.has(phone)) p2list.set(phone, listKey);
 
   for (const x of fXfr) {
+    xfrPhones.add(x.phone);
     if (x.list  && !p2list.has(x.phone))  p2list.set(x.phone, x.list);
     if (x.agent && !p2agent.has(x.phone)) p2agent.set(x.phone, x.agent);
     const list = p2list.get(x.phone) || x.list;
@@ -259,6 +258,15 @@ function computeMetrics(
     const list = p2list.get(c.phone) || c.list;
     if (list && c.agent && !p2agList.has(c.phone))
       p2agList.set(c.phone, { agent: c.agent, list });
+  }
+
+  // ── OPENED SET ───────────────────────────────────────────────────────────
+  // A phone counts as opened ONLY if:
+  //   1. It passed all 4 3CX rules (already done in route-calls.ts)
+  //   2. It also exists in the XFR file (was a transfer)
+  const openedSet = new Set<string>();
+  for (const r of fOpened) {
+    if (xfrPhones.has(r.phone)) openedSet.add(r.phone);
   }
 
   const allListKeys = new Set<string>(Object.keys(DEFAULT_COSTS));
@@ -282,7 +290,12 @@ function computeMetrics(
     }
   }
 
-  // Sales attribution
+  // ── SALES ATTRIBUTION ────────────────────────────────────────────────────
+  // A sale is attributed to a list if:
+  //   1. homePhone OR cellPhone exists in XFR file (was a transfer)
+  //   2. That same phone exists in openedSet (was answered in Mail 4 with talk time)
+  //   3. promoCode contains "API"
+  //   4. salesperson is not Fishbein
   const seen = new Set<string>();
   const aiSales: (typeof fSales[0] & { list: string; agent: string | null; isJR?: boolean })[] = [];
   const nonListSales: (typeof fSales[0] & { onOpened: boolean })[] = [];
@@ -291,16 +304,33 @@ function computeMetrics(
     const key = `${s.homePhone}|${s.mobilePhone}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const phones   = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
+
+    const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
+
+    // Check both home and cell against XFR and opened
+    const matchedPhone = phones.find(p => xfrPhones.has(p) && openedSet.has(p))
+      ?? phones.find(p => xfrPhones.has(p)); // fallback: in XFR but not yet opened
+
     const onOpened = phones.some(p => openedSet.has(p));
-    const list     = phones.includes(BL_HARDCODE_PHONE) ? BL_HARDCODE_LIST
-      : (p2list.get(s.homePhone) || p2list.get(s.mobilePhone) || null);
-    const isAPI    = s.promoCode?.toUpperCase().includes("API");
-    const notJ     = !s.salesperson?.toLowerCase().includes("fishbien");
-    if (isAPI && notJ && !list) { nonListSales.push({ ...s, onOpened }); continue; }
+
+    // Hardcoded BL phone
+    const isBLHardcode = phones.includes(BL_HARDCODE_PHONE);
+    const list = isBLHardcode ? BL_HARDCODE_LIST
+      : (matchedPhone ? (p2list.get(matchedPhone) || null)
+        : (p2list.get(s.homePhone) || p2list.get(s.mobilePhone) || null));
+
+    const isAPI = s.promoCode?.toUpperCase().includes("API");
+    const notJ  = !s.salesperson?.toLowerCase().includes("fishbien");
+
+    if (!isAPI || !notJ) continue; // must have API promo and not be Fishbein
+
+    if (!list) { nonListSales.push({ ...s, onOpened }); continue; }
+
+    // Must be in XFR (transferred) AND opened to count as attributed sale
     if (onOpened) {
+      const phone = matchedPhone || s.homePhone || s.mobilePhone;
       const agent = p2agent.get(s.homePhone) || p2agent.get(s.mobilePhone) || null;
-      aiSales.push({ ...s, list: list || "Unknown", agent });
+      aiSales.push({ ...s, list, agent });
     }
   }
 
@@ -318,7 +348,7 @@ function computeMetrics(
     }
   }
 
-  // byList aggregates
+  // ── byList aggregates ─────────────────────────────────────────────────────
   const byList: Record<string, { t: number; o: number; s: number; min: number; cost: number; listCost: number }> = {};
   const ensure = (li: string) => {
     if (!byList[li]) byList[li] = { t: 0, o: 0, s: 0, min: 0, cost: 0, listCost: listCosts[li] || 0 };
@@ -327,10 +357,10 @@ function computeMetrics(
 
   for (const [li, phones] of Object.entries(txByList)) { ensure(li); byList[li].t += phones.size; }
 
-  for (const r of fOpened) {
-    if (r.status !== "answered" || !r.destName) continue;
-    const li = p2list.get(r.phone) || "Unknown";
-    if (!DEFAULT_COSTS.hasOwnProperty(li)) continue;
+  // Opened count per list — phone must be in openedSet AND have a known list
+  for (const phone of openedSet) {
+    const li = p2list.get(phone);
+    if (!li || !DEFAULT_COSTS.hasOwnProperty(li)) continue;
     ensure(li); byList[li].o++;
   }
 
@@ -386,9 +416,8 @@ function computeMetrics(
     const li = p2list.get(item.phone) || item.list;
     if (li && matrix[item.agent]?.[li]) matrix[item.agent][li].t++;
   }
-  for (const r of fOpened) {
-    if (r.status !== "answered" || !r.destName) continue;
-    const al = p2agList.get(r.phone);
+  for (const phone of openedSet) {
+    const al = p2agList.get(phone);
     if (!al || !matrix[al.agent]?.[al.list]) continue;
     matrix[al.agent][al.list].o++;
   }
@@ -410,38 +439,33 @@ export async function GET(request: Request) {
     const dateStart = searchParams.get("start");
     const dateEnd   = searchParams.get("end");
 
-    // Clamp date range to campaign start — never go earlier than Feb 25
     const today    = new Date().toISOString().slice(0, 10);
-    const fromDate = dateStart && dateStart > CAMPAIGN_START ? dateStart : CAMPAIGN_START;
+    const fromDate = dateStart ?? CAMPAIGN_START;
     const toDate   = dateEnd   ?? today;
 
-    // ── 1. FETCH 3CX CALLS for the current date range ─────────────────────
-    // We pass the actual date range so the API only fetches what we need,
-    // avoiding the 2000-call cap cutting off recent data on ITD queries.
-    let openedRows: { phone: string; destName: string; status: string; date: string | null }[] = [];
+    // ── 1. FETCH 3CX CALLS for the date range ─────────────────────────────
+    // route-calls.ts already applies all 4 opened rules and sets opened:true/false
+    let openedCalls: { phone: string; date: string | null }[] = [];
+    let totalCalls3CX = 0;
     try {
-      const callsResp = await fetch(
-        `${origin}/api/calls?from=${fromDate}&to=${toDate}`
-      );
+      const callsResp = await fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`);
       if (callsResp.ok) {
         const callsData = await callsResp.json();
-        openedRows = (callsData.calls ?? []).map((c: {
-          phoneNumber: string; destName: string; answered: boolean;
-          status: string; startTime: string;
-        }) => ({
-          phone:    c.phoneNumber,
-          destName: c.destName ?? "",
-          status:   c.answered ? "answered" : (c.status ?? ""),
-          date:     toISO(c.startTime ?? ""),
-        })).filter((r: { phone: string }) => r.phone && r.phone.length === 10);
+        totalCalls3CX = callsData.totalCalls ?? 0;
+        // Only keep calls that passed all 4 opened rules
+        openedCalls = (callsData.calls ?? [])
+          .filter((c: { opened: boolean }) => c.opened)
+          .map((c: { phoneNumber: string; startTime: string }) => ({
+            phone: c.phoneNumber,
+            date:  toISO(c.startTime ?? ""),
+          }))
+          .filter((r: { phone: string }) => r.phone && r.phone.length === 10);
       }
     } catch (e) {
       console.error("[data/route] 3CX calls fetch failed:", e);
     }
 
     // ── 2. FETCH MOXY SALES ───────────────────────────────────────────────
-    // Moxy returns ALL sales — date filtering happens in computeMetrics
-    // which clamps to CAMPAIGN_START and the requested date range.
     let salesRows: {
       soldDate: string | null; lastName: string; firstName: string;
       promoCode: string; homePhone: string; mobilePhone: string;
@@ -511,16 +535,13 @@ export async function GET(request: Request) {
     const listCosts   = loadListCosts();
 
     const metrics = computeMetrics(
-      openedRows, allCallRows, xfrRows, salesRows,
+      openedCalls, allCallRows, xfrRows, salesRows,
       listPhones, listCosts,
       { start: dateStart, end: dateEnd },
       hasXfrFile
     );
 
-    const allDates = [
-      ...openedRows.map(r => r.date),
-      ...allCallRows.map(r => r.date),
-    ].filter(Boolean) as string[];
+    const allDates = allCallRows.map(r => r.date).filter(Boolean) as string[];
     const minDate = allDates.length ? allDates.reduce((a, b) => a < b ? a : b) : null;
     const maxDate = allDates.length ? allDates.reduce((a, b) => a > b ? a : b) : null;
 
@@ -528,15 +549,16 @@ export async function GET(request: Request) {
       ...metrics,
       loadedFiles,
       lastUpdated:   new Date().toISOString(),
-      hasData:       openedRows.length > 0 || salesRows.length > 0 || loadedFiles.length > 0,
+      hasData:       openedCalls.length > 0 || salesRows.length > 0 || loadedFiles.length > 0,
       dataDateRange: { min: minDate, max: maxDate },
       totalCallRows: allCallRows.length,
       xfrRows:       xfrRows.length,
       hasXfrFile,
       apiSources: {
-        openedCount: openedRows.length,
-        salesCount:  salesRows.length,
-        dateRange:   { from: fromDate, to: toDate },
+        totalCalls3CX,
+        openedCount:  openedCalls.length,
+        salesCount:   salesRows.length,
+        dateRange:    { from: fromDate, to: toDate },
       },
     });
 

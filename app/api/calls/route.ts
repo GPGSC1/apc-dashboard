@@ -5,11 +5,12 @@ import https from 'https';
 export interface CallRecord {
   callId:      string;
   startTime:   string;
-  phoneNumber: string;   // 10-digit normalised customer phone (Originated By)
-  destName:    string;   // rep name from Destination Name col — non-empty = reached a rep
-  status:      string;   // 'answered' | 'unanswered' | etc.
-  queueName:   string;
-  answered:    boolean;  // status === 'answered' AND destName non-empty
+  phoneNumber: string;   // 10-digit normalised (Originated By)
+  destName:    string;   // Destination Name — rep name
+  status:      string;
+  talkTimeSec: number;   // Talk Time (sec) col O
+  queueName:   string;   // Queue Name col T
+  opened:      boolean;  // passes all 4 opened rules
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -46,9 +47,7 @@ function httpsGet(url: string, headers: Record<string, string> = {}): Promise<st
 }
 
 function httpsPost(
-  url: string,
-  body: string,
-  headers: Record<string, string> = {}
+  url: string, body: string, headers: Record<string, string> = {}
 ): Promise<{ body: string; cookies: string }> {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
@@ -80,12 +79,25 @@ function parseCsvLine(line: string): string[] {
   return cols;
 }
 
+// ── OPENED RULES ──────────────────────────────────────────────────────────────
+// A call counts as "opened" if ALL 4 conditions are met:
+//   1. Status (col M, index 12) = "answered"
+//   2. Destination Name (col L, index 11) is non-empty AND does NOT start with "AI F"
+//   3. Talk Time in seconds (col O, index 14) > 0
+//   4. Queue Name (col T, index 19) contains "mail 4" (case insensitive)
+function isOpened(destName: string, status: string, talkTimeSec: number, queueName: string): boolean {
+  if (status !== 'answered') return false;
+  if (!destName || destName.toUpperCase().startsWith('AI F')) return false;
+  if (talkTimeSec <= 0) return false;
+  if (!queueName.toLowerCase().includes('mail 4')) return false;
+  return true;
+}
+
 function parseCSV(csv: string): CallRecord[] {
   const lines = csv.split('\n');
   if (lines.length < 5) return [];
 
-  // Find header row by scanning for 'callid'
-  // 3CX export structure: line 0=title, line 1=params, line 2=section, line 3=headers, line 4+=data
+  // Find header row (contains 'callid')
   let headerRowIdx = 3;
   for (let i = 0; i < Math.min(10, lines.length); i++) {
     if (lines[i].toLowerCase().includes('callid')) { headerRowIdx = i; break; }
@@ -93,13 +105,6 @@ function parseCSV(csv: string): CallRecord[] {
 
   const headers = parseCsvLine(lines[headerRowIdx]).map(h => h.trim().toLowerCase());
 
-  // Locate columns by header name, with hard fallbacks matching actual 3CX column positions:
-  // 0:CallID  1:Start Time  2:End Time  3:In/Out
-  // 4:First Extension  5:First Extension Name
-  // 6:Last Extension   7:Last Extension Name
-  // 8:Originated By    9:Originated By Name
-  // 10:Destination     11:Destination Name (rep name)
-  // 12:Status          ...  19:Queue Name
   const find = (...names: string[]): number => {
     for (const name of names) {
       const idx = headers.findIndex(h => h === name);
@@ -112,12 +117,21 @@ function parseCSV(csv: string): CallRecord[] {
     return -1;
   };
 
-  const CI  = find('callid')           >= 0 ? find('callid')           : 0;
-  const STI = find('start time')       >= 0 ? find('start time')       : 1;
-  const PHI = find('originated by')    >= 0 ? find('originated by')    : 8;   // customer phone
-  const DNI = find('destination name') >= 0 ? find('destination name') : 11;  // rep name
-  const SSI = find('status')           >= 0 ? find('status')           : 12;
-  const QI  = find('queue name')       >= 0 ? find('queue name')       : 19;
+  // Map columns by header name with hard fallbacks matching actual 3CX positions:
+  // 0:CallID  1:Start Time  2:End Time  3:In/Out
+  // 4:First Extension  5:First Extension Name
+  // 6:Last Extension   7:Last Extension Name
+  // 8:Originated By    9:Originated By Name
+  // 10:Destination     11:Destination Name
+  // 12:Status          13:Talk Time  14:Talk Time (sec)
+  // ...                19:Queue Name
+  const CI  = find('callid')              >= 0 ? find('callid')              : 0;
+  const STI = find('start time')          >= 0 ? find('start time')          : 1;
+  const PHI = find('originated by')       >= 0 ? find('originated by')       : 8;
+  const DNI = find('destination name')    >= 0 ? find('destination name')    : 11;
+  const SSI = find('status')              >= 0 ? find('status')              : 12;
+  const TTI = find('talk time (sec)')     >= 0 ? find('talk time (sec)')     : 14;
+  const QI  = find('queue name')          >= 0 ? find('queue name')          : 19;
 
   const records: CallRecord[] = [];
   for (let i = headerRowIdx + 1; i < lines.length; i++) {
@@ -129,8 +143,10 @@ function parseCSV(csv: string): CallRecord[] {
     const phone = normalizePhone(c[PHI] ?? '');
     if (!phone || phone.length !== 10) continue;
 
-    const destName = (c[DNI] ?? '').trim();
-    const status   = (c[SSI] ?? '').trim().toLowerCase();
+    const destName    = (c[DNI] ?? '').trim();
+    const status      = (c[SSI] ?? '').trim().toLowerCase();
+    const talkTimeSec = parseFloat(c[TTI] ?? '0') || 0;
+    const queueName   = (c[QI]  ?? '').trim();
 
     records.push({
       callId:      (c[CI]  ?? '').trim(),
@@ -138,8 +154,9 @@ function parseCSV(csv: string): CallRecord[] {
       phoneNumber: phone,
       destName,
       status,
-      queueName:   (c[QI]  ?? '').trim(),
-      answered:    status === 'answered' && destName.length > 0,
+      talkTimeSec,
+      queueName,
+      opened: isOpened(destName, status, talkTimeSec, queueName),
     });
   }
   return records;
@@ -196,7 +213,7 @@ export async function GET(request: Request) {
       );
     }
 
-    // 3. Fetch call-log report (all queues, all statuses)
+    // 3. Fetch call log report
     const fromFmt = formatDate(from);
     const toFmt   = formatDate(to);
     const reportUrl =
@@ -213,13 +230,13 @@ export async function GET(request: Request) {
     const calls = parseCSV(csv);
 
     return NextResponse.json({
-      ok:            true,
+      ok:          true,
       from,
       to,
-      totalCalls:    calls.length,
-      answeredCalls: calls.filter(c => c.answered).length,
+      totalCalls:  calls.length,
+      openedCalls: calls.filter(c => c.opened).length,
       calls,
-      lastUpdated:   new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
     });
 
   } catch (err: any) {
