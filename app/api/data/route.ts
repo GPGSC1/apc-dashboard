@@ -121,7 +121,7 @@ export async function GET(request: Request) {
         const listKey = detectListKey(file.replace(/\.(csv|xls|xlsx)$/i, ""));
         if (!listKey) continue;
 
-        const text   = fs.readFileSync(path.join(DATA_DIR, file), "utf8");
+        const text   = fs.readFileSync(path.join(DATA_DIR, file), "latin1");
         const phones = parseListFile(text);
         listPhones[listKey] = phones;
         loadedFiles.push(file);
