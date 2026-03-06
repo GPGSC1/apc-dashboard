@@ -75,7 +75,6 @@ async function fetchCallsPage(
           page,
           perPage,
           startedAt: [startISO, endISO],
-          outcomes: ["transferred"], // filter to transfers only server-side
         },
       },
     }),
