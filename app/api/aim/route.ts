@@ -96,7 +96,7 @@ export async function GET(request: Request) {
       ? new Date(searchParams.get("start")! + "T06:00:00.000Z").toISOString()
       : "2026-02-25T06:00:00.000Z";
     const endISO = searchParams.get("end")
-      ? new Date(searchParams.get("end")! + "T05:59:59.999Z").toISOString()
+      ? (() => { const d = new Date(searchParams.get("end")! + "T06:00:00.000Z"); d.setDate(d.getDate() + 1); d.setSeconds(d.getSeconds() - 1); return d.toISOString(); })()
       : new Date().toISOString();
 
     // Login

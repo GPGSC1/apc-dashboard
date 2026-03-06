@@ -155,11 +155,11 @@ function DateFilterBar({ preset, setPreset, customStart, setCustomStart, customE
   );
 }
 
-function ITDView({ data }: { data: DashData }) {
+function ITDView({ data, showListCost }: { data: DashData; showListCost: boolean }) {
   const lists = data.allLists?.length ? data.allLists : Object.keys(data.byList);
   const totals = lists.reduce((a, li) => {
     const r = data.byList[li] || { t:0,o:0,s:0,min:0,cost:0,listCost:0 };
-    return { t:a.t+r.t, o:a.o+r.o, s:a.s+r.s, min:a.min+r.min, cost:a.cost+r.cost, listCost:a.listCost+r.listCost };
+    return { t:a.t+r.t, o:a.o+r.o, s:a.s+r.s, min:a.min+r.min, cost:a.cost+r.cost, listCost: showListCost ? a.listCost+r.listCost : 0 };
   }, { t:0,o:0,s:0,min:0,cost:0,listCost:0 });
   const kpis = [
     { label: "Transfers", val: f(totals.t), color: C.accent },
@@ -181,7 +181,7 @@ function ITDView({ data }: { data: DashData }) {
       </div>
       <div style={{ overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
-          <thead><tr><Th left>List</Th><Th>List Cost</Th><Th>Transfers</Th><Th>Opened</Th><Th>Sales</Th><Th>Close %</Th><Th>Minutes</Th><Th>Dial Cost</Th><Th>Cost/Sale</Th></tr></thead>
+          <thead><tr><Th left>List</Th>{showListCost && <Th>List Cost</Th>}<Th>Transfers</Th><Th>Opened</Th><Th>Sales</Th><Th>Close %</Th><Th>Minutes</Th><Th>Dial Cost</Th>{showListCost && <Th>Cost/Sale</Th>}</tr></thead>
           <tbody>
             {lists.map(li => {
               const r = data.byList[li] || { t:0,o:0,s:0,min:0,cost:0,listCost:0 };
@@ -189,27 +189,27 @@ function ITDView({ data }: { data: DashData }) {
               return (
                 <tr key={li}>
                   <Td style={{ textAlign: "left" }}><span style={{ color: C.accent, fontWeight: 600, fontSize: 14 }}>{li}</span></Td>
-                  <Td><span style={{ fontFamily: "monospace", color: r.listCost > 0 ? C.text : C.muted }}>{r.listCost > 0 ? fc(r.listCost) : "free"}</span></Td>
+                  {showListCost && <Td><span style={{ fontFamily: "monospace", color: r.listCost > 0 ? C.text : C.muted }}>{r.listCost > 0 ? fc(r.listCost) : "free"}</span></Td>}
                   <Td><span style={{ fontFamily: "monospace", color: C.accent }}>{f(r.t)}</span></Td>
                   <Td><span style={{ fontFamily: "monospace" }}>{f(r.o)}</span></Td>
                   <Td><span style={{ fontFamily: "monospace", color: r.s > 0 ? C.green : C.muted, fontWeight: r.s > 0 ? 600 : 400 }}>{r.s}</span></Td>
                   <Td><ClosePct n={r.s} d={r.o} /></Td>
                   <Td><span style={{ fontFamily: "monospace", color: C.muted }}>{f(Math.round(r.min))}</span></Td>
                   <Td><span style={{ fontFamily: "monospace", color: C.muted }}>{fc(r.cost)}</span></Td>
-                  <Td>{cps ? <span style={{ fontFamily: "monospace", color: cps > 1000 ? C.red : cps > 500 ? C.amber : C.green }}>{fc(cps)}</span> : <span style={{ color: C.dim }}>-</span>}</Td>
+                  {showListCost && <Td>{cps ? <span style={{ fontFamily: "monospace", color: cps > 1000 ? C.red : cps > 500 ? C.amber : C.green }}>{fc(cps)}</span> : <span style={{ color: C.dim }}>-</span>}</Td>}
                 </tr>
               );
             })}
             <tr style={{ background: C.surface, borderTop: `1px solid ${C.border}` }}>
               <Td style={{ textAlign: "left", fontWeight: 700, color: C.text }}>TOTAL</Td>
-              <Td><span style={{ fontFamily: "monospace" }}>{fc(totals.listCost)}</span></Td>
+              {showListCost && <Td><span style={{ fontFamily: "monospace" }}>{fc(totals.listCost)}</span></Td>}
               <Td><span style={{ fontFamily: "monospace", color: C.accent, fontWeight: 600 }}>{f(totals.t)}</span></Td>
               <Td><span style={{ fontFamily: "monospace" }}>{f(totals.o)}</span></Td>
               <Td><span style={{ fontFamily: "monospace", color: C.green, fontWeight: 700 }}>{totals.s}</span></Td>
               <Td><ClosePct n={totals.s} d={totals.o} /></Td>
               <Td><span style={{ fontFamily: "monospace", color: C.muted }}>{f(Math.round(totals.min))}</span></Td>
               <Td><span style={{ fontFamily: "monospace", color: C.muted }}>{fc(totals.cost)}</span></Td>
-              <Td>{totals.s > 0 ? <span style={{ fontFamily: "monospace", color: C.amber }}>{fc((totals.listCost + totals.cost) / totals.s)}</span> : <span style={{ color: C.dim }}>-</span>}</Td>
+              {showListCost && <Td>{totals.s > 0 ? <span style={{ fontFamily: "monospace", color: C.amber }}>{fc((totals.listCost + totals.cost) / totals.s)}</span> : <span style={{ color: C.dim }}>-</span>}</Td>}
             </tr>
           </tbody>
         </table>
@@ -485,7 +485,7 @@ export default function Home() {
             ))}
           </div>
           <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: 18 }}>
-            {tab === "itd" && <ITDView data={data} />}
+            {tab === "itd" && <ITDView data={data} showListCost={preset === "itd"} />}
             {tab === "matrix" && <MatrixView data={data} />}
             {tab === "agents" && <AgentView data={data} />}
             {tab === "nonlist" && <NonListView data={data} />}
