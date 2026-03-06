@@ -1,26 +1,23 @@
 import { NextResponse } from 'next/server';
 import https from 'https';
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 export interface CallRecord {
-  callId: string;
-  startTime: string;
-  agentName: string;
-  phoneNumber: string;   // 10-digit normalised
-  status: string;
-  queueName: string;
-  answered: boolean;     // status === 'answered' AND destName present
-  destName: string;
+  callId:      string;
+  startTime:   string;
+  phoneNumber: string;   // 10-digit normalised customer phone (Originated By)
+  destName:    string;   // rep name from Destination Name col — non-empty = reached a rep
+  status:      string;   // 'answered' | 'unanswered' | etc.
+  queueName:   string;
+  answered:    boolean;  // status === 'answered' AND destName non-empty
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function extractViewState(html: string, field: string): string {
-  const re = new RegExp(`id="${field}"[^>]*value="([^"]*)"`, 'i');
-  const m = html.match(re);
+  let m = html.match(new RegExp(`id="${field}"[^>]*value="([^"]*)"`, 'i'));
   if (m) return m[1];
-  const re2 = new RegExp(`name="${field}"[^>]*value="([^"]*)"`, 'i');
-  const m2 = html.match(re2);
-  return m2 ? m2[1] : '';
+  m = html.match(new RegExp(`name="${field}"[^>]*value="([^"]*)"`, 'i'));
+  return m ? m[1] : '';
 }
 
 function formatDate(iso: string): string {
@@ -29,9 +26,11 @@ function formatDate(iso: string): string {
 }
 
 function normalizePhone(raw: string): string {
-  const digits = raw.replace(/\D/g, '');
+  const cleaned = raw.replace(/^=/, '').replace(/^"/, '').replace(/"$/, '');
+  const digits  = cleaned.replace(/\D/g, '');
   if (digits.length === 11 && digits.startsWith('1')) return digits.slice(1);
-  return digits.length === 10 ? digits : '';
+  if (digits.length === 10) return digits;
+  return digits.slice(-10);
 }
 
 function httpsGet(url: string, headers: Record<string, string> = {}): Promise<string> {
@@ -46,7 +45,11 @@ function httpsGet(url: string, headers: Record<string, string> = {}): Promise<st
   });
 }
 
-function httpsPost(url: string, body: string, headers: Record<string, string> = {}): Promise<{ body: string; cookies: string }> {
+function httpsPost(
+  url: string,
+  body: string,
+  headers: Record<string, string> = {}
+): Promise<{ body: string; cookies: string }> {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const req = https.request(
@@ -64,7 +67,7 @@ function httpsPost(url: string, body: string, headers: Record<string, string> = 
   });
 }
 
-function parseCSVLine(line: string): string[] {
+function parseCsvLine(line: string): string[] {
   const cols: string[] = [];
   let cur = '';
   let inQ = false;
@@ -80,42 +83,77 @@ function parseCSVLine(line: string): string[] {
 function parseCSV(csv: string): CallRecord[] {
   const lines = csv.split('\n');
   if (lines.length < 5) return [];
+
+  // Find header row by scanning for 'callid'
+  // 3CX export structure: line 0=title, line 1=params, line 2=section, line 3=headers, line 4+=data
+  let headerRowIdx = 3;
+  for (let i = 0; i < Math.min(10, lines.length); i++) {
+    if (lines[i].toLowerCase().includes('callid')) { headerRowIdx = i; break; }
+  }
+
+  const headers = parseCsvLine(lines[headerRowIdx]).map(h => h.trim().toLowerCase());
+
+  // Locate columns by header name, with hard fallbacks matching actual 3CX column positions:
+  // 0:CallID  1:Start Time  2:End Time  3:In/Out
+  // 4:First Extension  5:First Extension Name
+  // 6:Last Extension   7:Last Extension Name
+  // 8:Originated By    9:Originated By Name
+  // 10:Destination     11:Destination Name (rep name)
+  // 12:Status          ...  19:Queue Name
+  const find = (...names: string[]): number => {
+    for (const name of names) {
+      const idx = headers.findIndex(h => h === name);
+      if (idx >= 0) return idx;
+    }
+    for (const name of names) {
+      const idx = headers.findIndex(h => h.includes(name));
+      if (idx >= 0) return idx;
+    }
+    return -1;
+  };
+
+  const CI  = find('callid')           >= 0 ? find('callid')           : 0;
+  const STI = find('start time')       >= 0 ? find('start time')       : 1;
+  const PHI = find('originated by')    >= 0 ? find('originated by')    : 8;   // customer phone
+  const DNI = find('destination name') >= 0 ? find('destination name') : 11;  // rep name
+  const SSI = find('status')           >= 0 ? find('status')           : 12;
+  const QI  = find('queue name')       >= 0 ? find('queue name')       : 19;
+
   const records: CallRecord[] = [];
-  // Skip 4 header lines (3 metadata + 1 column header)
-  for (let i = 4; i < lines.length; i++) {
+  for (let i = headerRowIdx + 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-    const c = parseCSVLine(line);
-    if (c.length < 20) continue;
-    // col[5] = Destination Name (rep name), col[7] = fallback agent name
-    const destName = (c[5] || '').trim();
-    const agentName = destName || (c[7] || '').trim();
-    const rawPhone = (c[8] || '').replace(/^=/, '').replace(/"/g, '').trim();
-    const status = (c[12] || '').trim().toLowerCase();
+    const c = parseCsvLine(line);
+    if (c.length < 13) continue;
+
+    const phone = normalizePhone(c[PHI] ?? '');
+    if (!phone || phone.length !== 10) continue;
+
+    const destName = (c[DNI] ?? '').trim();
+    const status   = (c[SSI] ?? '').trim().toLowerCase();
+
     records.push({
-      callId:      c[0] || '',
-      startTime:   c[1] || '',
-      agentName,
+      callId:      (c[CI]  ?? '').trim(),
+      startTime:   (c[STI] ?? '').trim(),
+      phoneNumber: phone,
       destName,
-      phoneNumber: normalizePhone(rawPhone),
       status,
-      queueName:   c[19] || '',
-      // "opened" = answered AND a rep name is present (destName non-empty)
+      queueName:   (c[QI]  ?? '').trim(),
       answered:    status === 'answered' && destName.length > 0,
     });
   }
   return records;
 }
 
-// ─── Route handler ────────────────────────────────────────────────────────────
+// ─── Route handler ─────────────────────────────────────────────────────────────
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const from = searchParams.get('from') ?? '2026-02-25'; // default = campaign start
+  const from = searchParams.get('from') ?? '2026-02-25';
   const to   = searchParams.get('to')   ?? new Date().toISOString().slice(0, 10);
 
-  const domain = process.env.TCX_DOMAIN ?? 'gpgsc.innicom.com';
+  const domain   = process.env.TCX_DOMAIN   ?? 'gpgsc.innicom.com';
   const username = process.env.TCX_USERNAME ?? '1911';
-  const password = process.env.TCX_PASSWORD!;
+  const password = process.env.TCX_PASSWORD;
 
   if (!password) {
     return NextResponse.json({ ok: false, error: 'TCX_PASSWORD env var not set' }, { status: 500 });
@@ -129,7 +167,10 @@ export async function GET(request: Request) {
     const eventVal      = extractViewState(loginPageHtml, '__EVENTVALIDATION');
 
     if (!viewState) {
-      return NextResponse.json({ ok: false, error: 'Could not extract ViewState from 3CX login page' }, { status: 500 });
+      return NextResponse.json(
+        { ok: false, error: 'Could not extract ViewState from 3CX login page' },
+        { status: 500 }
+      );
     }
 
     // 2. POST credentials → get .ASPXAUTH cookie
@@ -145,14 +186,17 @@ export async function GET(request: Request) {
 
     const loginResp = await httpsPost(`https://${domain}/LoginPage.aspx`, loginBody, {
       'Content-Type': 'application/x-www-form-urlencoded',
-      'Accept': 'text/html',
+      'Accept':       'text/html',
     });
 
     if (!loginResp.cookies.includes('.ASPXAUTH')) {
-      return NextResponse.json({ ok: false, error: '3CX login failed — no auth cookie returned' }, { status: 401 });
+      return NextResponse.json(
+        { ok: false, error: '3CX login failed — no auth cookie returned' },
+        { status: 401 }
+      );
     }
 
-    // 3. Fetch call-log report (all queues, answered + unanswered)
+    // 3. Fetch call-log report (all queues, all statuses)
     const fromFmt = formatDate(from);
     const toFmt   = formatDate(to);
     const reportUrl =
@@ -165,11 +209,11 @@ export async function GET(request: Request) {
       `PageNumber%3D1%7C%7C%7CPageCnt%3D2000%7C%7C%7C` +
       `SortColumn%3D%7C%7C%7CSortAorD%3D`;
 
-    const csv = await httpsGet(reportUrl, { Cookie: loginResp.cookies });
+    const csv   = await httpsGet(reportUrl, { Cookie: loginResp.cookies });
     const calls = parseCSV(csv);
 
     return NextResponse.json({
-      ok: true,
+      ok:            true,
       from,
       to,
       totalCalls:    calls.length,
