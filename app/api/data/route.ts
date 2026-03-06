@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import * as fs from "fs";
 import * as path from "path";
-import * as XLSX from "xlsx";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 
@@ -53,11 +52,6 @@ const toISO = (s: string): string | null => {
   return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 };
 
-const excelToISO = (s: number): string | null => {
-  if (isNaN(s)) return null;
-  return new Date(Math.round((s - 25569) * 86400000)).toISOString().slice(0, 10);
-};
-
 // ── LIST KEY DETECTION ───────────────────────────────────────────────────────
 const detectListKey = (text: string): string | null => {
   if (!text) return null;
@@ -80,33 +74,6 @@ function parseCsvLine(line: string): string[] {
   }
   r.push(cur);
   return r;
-}
-
-// ── PARSE OPENED REPORT (3CX Call Summary) ──────────────────────────────────
-function parseOpened(text: string) {
-  const lines = text.split(/\r?\n/);
-  const rows: { phone: string; destName: string; status: string; date: string | null }[] = [];
-  let dataStart = 4;
-  for (let i = 0; i < Math.min(10, lines.length); i++) {
-    if (lines[i].toLowerCase().includes("callid")) { dataStart = i + 1; break; }
-  }
-  const headers = parseCsvLine(lines[dataStart - 1] || "").map(h => h.trim().toLowerCase());
-  const stIdx = headers.findIndex(h => h === "start time") >= 0 ? headers.findIndex(h => h === "start time") : 1;
-  const phoneIdx = headers.findIndex(h => h === "originated by") >= 0 ? headers.findIndex(h => h === "originated by") : 8;
-  const dnIdx = headers.findIndex(h => h === "destination name") >= 0 ? headers.findIndex(h => h === "destination name") : 11;
-  const sIdx = headers.findIndex(h => h === "status") >= 0 ? headers.findIndex(h => h === "status") : 12;
-  for (let i = dataStart; i < lines.length; i++) {
-    const l = lines[i].trim();
-    if (!l) continue;
-    const c = parseCsvLine(l);
-    if (c.length < 5) continue;
-    const phone = cleanPhone(c[phoneIdx] || "");
-    const destName = (c[dnIdx] || "").trim();
-    const status = (c[sIdx] || "").trim().toLowerCase();
-    const date = toISO(c[stIdx] || "");
-    if (phone && phone.length === 10) rows.push({ phone, destName, status, date });
-  }
-  return rows;
 }
 
 // ── PARSE XFR TRANSFER FILE ──────────────────────────────────────────────────
@@ -134,8 +101,8 @@ function parseXfrFile(text: string): XfrRow[] {
 
   const phoneI = findCol("phone", "number", "to", "destination");
   const agentI = findCol("agent");
-  const campI = findCol("campaign");
-  const dateI = findCol("date", "started", "time", "created");
+  const campI  = findCol("campaign");
+  const dateI  = findCol("date", "started", "time", "created");
 
   const rows: XfrRow[] = [];
   for (let i = 1; i < lines.length; i++) {
@@ -146,11 +113,11 @@ function parseXfrFile(text: string): XfrRow[] {
     const phone = cleanPhone(c[phoneI >= 0 ? phoneI : 2] || "");
     if (!phone || phone.length !== 10) continue;
 
-    const agFull = (c[agentI >= 0 ? agentI : 0] || "").trim();
-    const agent = shortAgent(agFull);
+    const agFull  = (c[agentI >= 0 ? agentI : 0] || "").trim();
+    const agent   = shortAgent(agFull);
     const campaign = (c[campI >= 0 ? campI : 3] || "").trim();
-    const date = dateI >= 0 ? toISO((c[dateI] || "").trim()) : null;
-    const list = detectListKey(campaign);
+    const date    = dateI >= 0 ? toISO((c[dateI] || "").trim()) : null;
+    const list    = detectListKey(campaign);
 
     rows.push({ phone, agent, campaign, list, date });
   }
@@ -158,7 +125,7 @@ function parseXfrFile(text: string): XfrRow[] {
 }
 
 // ── PARSE AIM CALLS REPORT ───────────────────────────────────────────────────
-// Used for minutes/cost. Filtered to known campaigns only.
+// Used for minutes/cost only. Filtered to known campaigns at aggregation step.
 interface CallRow {
   callId: string;
   phone: string;
@@ -178,13 +145,13 @@ function parseCallsReport(text: string): CallRow[] {
   const headers = parseCsvLine(lines[0]).map(h => h.trim().toLowerCase());
 
   const gi = (name: string) => headers.findIndex(h => h === name);
-  const aI = gi("agent name");
-  const durI = gi("duration (seconds)");
-  const tDurI = gi("transfer call duration");
-  const cI = gi("cost");
-  const sI = gi("started at");
-  const campI = gi("campaign name");
-  const outI = gi("outcomes");
+  const aI     = gi("agent name");
+  const durI   = gi("duration (seconds)");
+  const tDurI  = gi("transfer call duration");
+  const cI     = gi("cost");
+  const sI     = gi("started at");
+  const campI  = gi("campaign name");
+  const outI   = gi("outcomes");
   const callIdI = gi("call id");
   const phoneI = gi("phone number");
 
@@ -199,26 +166,22 @@ function parseCallsReport(text: string): CallRow[] {
 
     let phone = cleanPhone(c[phoneI >= 0 ? phoneI : 15] || "");
     if (!phone || phone.length !== 10) {
-      const dir = (c[4] || "").trim().toLowerCase();
+      const dir  = (c[4] || "").trim().toLowerCase();
       const fromP = cleanPhone(c[2] || "");
-      const toP = cleanPhone(c[3] || "");
+      const toP   = cleanPhone(c[3] || "");
       phone = dir === "outbound" ? toP : fromP;
     }
     if (!phone || phone.length !== 10) continue;
 
     const campaign = (c[campI >= 0 ? campI : 13] || "").trim();
-    const list = detectListKey(campaign);
-
-    // Note: we do NOT filter by campaign here — all rows contribute to minutes/cost
-    // Unknown campaigns are filtered out at the aggregation step in computeMetrics
-
-    const agFull = (c[aI >= 0 ? aI : 1] || "").trim();
-    const agent = shortAgent(agFull);
-    const dur = (parseFloat(c[durI >= 0 ? durI : 6]) || 0) / 60;
-    const tDur = (parseFloat(c[tDurI >= 0 ? tDurI : 7]) || 0) / 60;
-    const cost = parseFloat(c[cI >= 0 ? cI : 8]) || 0;
-    const date = toISO((c[sI >= 0 ? sI : 11] || "").trim());
-    const outcome = (c[outI >= 0 ? outI : 10] || "").trim().toLowerCase();
+    const list     = detectListKey(campaign);
+    const agFull   = (c[aI >= 0 ? aI : 1] || "").trim();
+    const agent    = shortAgent(agFull);
+    const dur      = (parseFloat(c[durI >= 0 ? durI : 6]) || 0) / 60;
+    const tDur     = (parseFloat(c[tDurI >= 0 ? tDurI : 7]) || 0) / 60;
+    const cost     = parseFloat(c[cI >= 0 ? cI : 8]) || 0;
+    const date     = toISO((c[sI >= 0 ? sI : 11] || "").trim());
+    const outcome  = (c[outI >= 0 ? outI : 10] || "").trim().toLowerCase();
     const isTransfer = outcome === "transferred";
 
     rows.push({ callId, phone, agent, duration: dur, transferDuration: tDur, cost, date, campaign, list, isTransfer });
@@ -226,40 +189,10 @@ function parseCallsReport(text: string): CallRow[] {
   return rows;
 }
 
-// ── PARSE SALES REPORT ───────────────────────────────────────────────────────
-function parseSales(buf: Buffer) {
-  const wb = XLSX.read(buf, { type: "buffer", cellDates: false });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: "" }) as unknown[][];
-  const res: {
-    soldDate: string | null; lastName: string; firstName: string;
-    promoCode: string; homePhone: string; mobilePhone: string;
-    dealStatus: string; salesperson: string;
-  }[] = [];
-  for (let i = 2; i < rows.length; i++) {
-    const r = rows[i];
-    if (!r || r.length < 11) continue;
-    const soldDate = typeof r[0] === "number" ? excelToISO(r[0]) : toISO(String(r[0]));
-    if (soldDate?.includes("-09-27")) continue;
-    if (String(r[30] || "").trim() !== "Sold") continue;
-    res.push({
-      soldDate,
-      lastName: String(r[1] || "").trim(),
-      firstName: String(r[2] || "").trim(),
-      promoCode: String(r[7] || "").trim(),
-      homePhone: cleanPhone(r[9]),
-      mobilePhone: cleanPhone(r[10]),
-      dealStatus: String(r[30] || "").trim(),
-      salesperson: String(r[43] || "").trim(),
-    });
-  }
-  return res;
-}
-
 // ── PARSE LIST FILE ──────────────────────────────────────────────────────────
 function parseListFile(text: string): Set<string> {
   const phones = new Set<string>();
-  const lines = text.split(/\r?\n/);
+  const lines  = text.split(/\r?\n/);
   if (lines.length < 2) return phones;
   const headers = parseCsvLine(lines[0]).map(h => h.trim());
   const phoneColIndices = headers
@@ -290,10 +223,14 @@ function loadListCosts(): Record<string, number> {
 
 // ── ATTRIBUTION ENGINE ───────────────────────────────────────────────────────
 function computeMetrics(
-  opened: ReturnType<typeof parseOpened>,
+  opened: { phone: string; destName: string; status: string; date: string | null }[],
   calls: CallRow[],
   xfrRows: XfrRow[],
-  sales: ReturnType<typeof parseSales>,
+  sales: {
+    soldDate: string | null; lastName: string; firstName: string;
+    promoCode: string; homePhone: string; mobilePhone: string;
+    dealStatus: string; salesperson: string;
+  }[],
   listPhones: Record<string, Set<string>>,
   listCosts: Record<string, number>,
   dateFilter: { start: string | null; end: string | null },
@@ -308,30 +245,28 @@ function computeMetrics(
   };
 
   const fOpened = opened.filter(r => inRange(r.date));
-  const fCalls = calls.filter(r => inRange(r.date));
-  const fXfr = xfrRows.filter(r => inRange(r.date));
-  const fSales = sales.filter(r => inRange(r.soldDate));
+  const fCalls  = calls.filter(r => inRange(r.date));
+  const fXfr    = xfrRows.filter(r => inRange(r.date));
+  const fSales  = sales.filter(r => inRange(r.soldDate));
 
   // Ground truth phones that reached a rep
   const openedSet = new Set<string>();
   for (const r of fOpened)
     if (r.status === "answered" && r.destName) openedSet.add(r.phone);
 
-  // phone → list mapping
-  const p2list = new Map<string, string>();
+  // phone → list / agent mapping
+  const p2list  = new Map<string, string>();
   const p2agent = new Map<string, string>();
   const p2agList = new Map<string, { agent: string; list: string }>();
 
   p2list.set(BL_HARDCODE_PHONE, BL_HARDCODE_LIST);
 
-  for (const [listKey, phones] of Object.entries(listPhones)) {
-    for (const phone of phones) {
+  for (const [listKey, phones] of Object.entries(listPhones))
+    for (const phone of phones)
       if (!p2list.has(phone)) p2list.set(phone, listKey);
-    }
-  }
 
   for (const x of fXfr) {
-    if (x.list && !p2list.has(x.phone)) p2list.set(x.phone, x.list);
+    if (x.list && !p2list.has(x.phone))  p2list.set(x.phone, x.list);
     if (x.agent && !p2agent.has(x.phone)) p2agent.set(x.phone, x.agent);
     const list = p2list.get(x.phone) || x.list;
     if (list && x.agent && !p2agList.has(x.phone))
@@ -340,14 +275,13 @@ function computeMetrics(
 
   for (const c of fCalls) {
     if (!c.phone) continue;
-    if (c.list && !p2list.has(c.phone)) p2list.set(c.phone, c.list);
+    if (c.list && !p2list.has(c.phone))   p2list.set(c.phone, c.list);
     if (c.agent && !p2agent.has(c.phone)) p2agent.set(c.phone, c.agent);
     const list = p2list.get(c.phone) || c.list;
     if (list && c.agent && !p2agList.has(c.phone))
       p2agList.set(c.phone, { agent: c.agent, list });
   }
 
-  // Known list keys only
   const allListKeys = new Set<string>(Object.keys(DEFAULT_COSTS));
   for (const k of Object.keys(listPhones)) allListKeys.add(k);
 
@@ -373,21 +307,19 @@ function computeMetrics(
 
   // Sales attribution
   const seen = new Set<string>();
-  const aiSales: (ReturnType<typeof parseSales>[0] & {
-    list: string; agent: string | null; isJR?: boolean;
-  })[] = [];
-  const nonListSales: (ReturnType<typeof parseSales>[0] & { onOpened: boolean })[] = [];
+  const aiSales: (typeof fSales[0] & { list: string; agent: string | null; isJR?: boolean })[] = [];
+  const nonListSales: (typeof fSales[0] & { onOpened: boolean })[] = [];
 
   for (const s of fSales) {
     const key = `${s.homePhone}|${s.mobilePhone}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
+    const phones  = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
     const onOpened = phones.some(p => openedSet.has(p));
-    const list = phones.includes(BL_HARDCODE_PHONE) ? BL_HARDCODE_LIST
+    const list    = phones.includes(BL_HARDCODE_PHONE) ? BL_HARDCODE_LIST
       : (p2list.get(s.homePhone) || p2list.get(s.mobilePhone) || null);
-    const isAPI = s.promoCode?.toUpperCase().includes("API");
-    const notJ = !s.salesperson?.toLowerCase().includes("fishbien");
+    const isAPI   = s.promoCode?.toUpperCase().includes("API");
+    const notJ    = !s.salesperson?.toLowerCase().includes("fishbien");
     if (isAPI && notJ && !list) { nonListSales.push({ ...s, onOpened }); continue; }
     if (onOpened) {
       const agent = p2agent.get(s.homePhone) || p2agent.get(s.mobilePhone) || null;
@@ -437,7 +369,7 @@ function computeMetrics(
     const li = p2list.get(c.phone) || c.list || "Unknown";
     if (!DEFAULT_COSTS.hasOwnProperty(li)) continue;
     ensure(li);
-    byList[li].min += c.duration;
+    byList[li].min  += c.duration;
     byList[li].cost += c.cost;
   }
 
@@ -446,7 +378,7 @@ function computeMetrics(
   for (const c of fCalls) {
     if (!byAgent[c.agent]) byAgent[c.agent] = { calls: 0, min: 0, cost: 0, t: 0, deals: 0 };
     byAgent[c.agent].calls++;
-    byAgent[c.agent].min += c.duration;
+    byAgent[c.agent].min  += c.duration;
     byAgent[c.agent].cost += c.cost;
     if (c.isTransfer) byAgent[c.agent].t++;
   }
@@ -464,9 +396,12 @@ function computeMetrics(
 
   // Agent × List matrix
   const allAgents = Object.keys(byAgent);
-  const allLists = Object.keys(byList);
+  const allLists  = Object.keys(byList);
   const matrix: Record<string, Record<string, { t: number; o: number; d: number }>> = {};
-  for (const a of allAgents) { matrix[a] = {}; for (const li of allLists) matrix[a][li] = { t: 0, o: 0, d: 0 }; }
+  for (const a of allAgents) {
+    matrix[a] = {};
+    for (const li of allLists) matrix[a][li] = { t: 0, o: 0, d: 0 };
+  }
 
   const transferItems = hasXfrFile && fXfr.length > 0
     ? fXfr.map(x => ({ phone: x.phone, agent: x.agent, list: x.list }))
@@ -494,71 +429,111 @@ function computeMetrics(
   return { byList, byAgent, matrix, nonListSales, totalSales: aiSales.length, listCosts, allLists, allAgents };
 }
 
-// ── ROUTE HANDLER ────────────────────────────────────────────────────────────
+// ── ROUTE HANDLER ─────────────────────────────────────────────────────────────
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url);
+    const { searchParams, origin } = new URL(request.url);
     const dateStart = searchParams.get("start");
-    const dateEnd = searchParams.get("end");
+    const dateEnd   = searchParams.get("end");
 
-    if (!fs.existsSync(DATA_DIR)) {
-      return NextResponse.json({ error: "No data folder found.", hasData: false, byList: {}, byAgent: {}, matrix: {}, nonListSales: [], totalSales: 0, listCosts: {}, allLists: [], allAgents: [], loadedFiles: [] });
+    // ── 1. FETCH OPENED CALLS FROM 3CX API (replaces opened.csv) ─────────────
+    let openedRows: { phone: string; destName: string; status: string; date: string | null }[] = [];
+    try {
+      const callsResp = await fetch(
+        `${origin}/api/calls?from=2026-02-25&to=${new Date().toISOString().slice(0, 10)}`
+      );
+      if (callsResp.ok) {
+        const callsData = await callsResp.json();
+        openedRows = (callsData.calls ?? []).map((c: {
+          phoneNumber: string; destName: string; answered: boolean;
+          status: string; startTime: string;
+        }) => ({
+          phone:    c.phoneNumber,
+          destName: c.destName ?? "",
+          status:   c.answered ? "answered" : (c.status ?? ""),
+          date:     toISO(c.startTime ?? ""),
+        })).filter((r: { phone: string }) => r.phone && r.phone.length === 10);
+      }
+    } catch (e) {
+      console.error("[data/route] 3CX calls fetch failed:", e);
     }
 
-    const files = fs.readdirSync(DATA_DIR);
-    let openedRows: ReturnType<typeof parseOpened> = [];
-    let salesRows: ReturnType<typeof parseSales> = [];
-    let xfrRows: XfrRow[] = [];
-    let hasXfrFile = false;
+    // ── 2. FETCH SALES FROM MOXY API (replaces sales.xls) ────────────────────
+    let salesRows: {
+      soldDate: string | null; lastName: string; firstName: string;
+      promoCode: string; homePhone: string; mobilePhone: string;
+      dealStatus: string; salesperson: string;
+    }[] = [];
+    try {
+      const moxyResp = await fetch(`${origin}/api/moxy`);
+      if (moxyResp.ok) {
+        const moxyData = await moxyResp.json();
+        salesRows = (moxyData.sales ?? [])
+          .filter((s: { status: string }) => (s.status ?? "").trim() === "Sold")
+          .map((s: {
+            soldDate: string; lastName: string; firstName: string;
+            promoCode: string; homePhone: string; cellPhone: string;
+            status: string; salesRep: string;
+          }) => ({
+            soldDate:   toISO(s.soldDate ?? ""),
+            lastName:   s.lastName  ?? "",
+            firstName:  s.firstName ?? "",
+            promoCode:  s.promoCode ?? "",
+            homePhone:  s.homePhone  ?? "",   // already 10-digit normalised by moxy route
+            mobilePhone: s.cellPhone ?? "",
+            dealStatus: s.status    ?? "",
+            salesperson: s.salesRep ?? "",
+          }));
+      }
+    } catch (e) {
+      console.error("[data/route] Moxy sales fetch failed:", e);
+    }
+
+    // ── 3. LOAD FILE-BASED DATA (XFR, AIM calls export, list files) ──────────
     const listPhones: Record<string, Set<string>> = {};
+    let xfrRows:    XfrRow[]  = [];
+    let hasXfrFile = false;
     const loadedFiles: string[] = [];
     const allCallRowsMap = new Map<string, CallRow>();
 
-    for (const file of files) {
-      const lower = file.toLowerCase();
-      const full = path.join(DATA_DIR, file);
+    if (fs.existsSync(DATA_DIR)) {
+      const files = fs.readdirSync(DATA_DIR);
 
-      if (lower === "opened.csv") {
-        openedRows = parseOpened(fs.readFileSync(full, "utf8"));
-        loadedFiles.push(file);
+      for (const file of files) {
+        const lower = file.toLowerCase();
+        const full  = path.join(DATA_DIR, file);
 
-      } else if (lower === "sales.xls" || lower === "sales.xlsx") {
-        salesRows = parseSales(fs.readFileSync(full));
-        loadedFiles.push(file);
+        if (lower.endsWith(".csv") && lower !== ".gitkeep" && lower !== "opened.csv") {
 
-      } else if (lower.endsWith(".csv") && lower !== ".gitkeep" && lower !== "opened.csv") {
+          if (lower.startsWith("xfr")) {
+            xfrRows    = parseXfrFile(fs.readFileSync(full, "utf8"));
+            hasXfrFile = true;
+            loadedFiles.push(file);
 
-        if (lower.startsWith("xfr")) {
-          // XFR file — authoritative transfer source
-          xfrRows = parseXfrFile(fs.readFileSync(full, "utf8"));
-          hasXfrFile = true;
-          loadedFiles.push(file);
+          } else {
+            const listKey  = detectListKey(file.replace(/\.csv$/i, ""));
+            const text     = fs.readFileSync(full, "utf8");
+            const firstLine = text.split(/\r?\n/)[0] || "";
 
-        } else {
-          const listKey = detectListKey(file.replace(/\.csv$/i, ""));
-          const text = fs.readFileSync(full, "utf8");
-          const firstLine = text.split(/\r?\n/)[0] || "";
+            if (firstLine.toLowerCase().includes("agent id") || firstLine.toLowerCase().includes("agent name")) {
+              // AIM calls export — minutes/cost only
+              const callRows = parseCallsReport(text);
+              for (const row of callRows)
+                if (!allCallRowsMap.has(row.callId)) allCallRowsMap.set(row.callId, row);
+              loadedFiles.push(file);
 
-          if (firstLine.toLowerCase().includes("agent id") || firstLine.toLowerCase().includes("agent name")) {
-            // AIM calls export — minutes/cost only, unknown campaigns filtered out
-            const callRows = parseCallsReport(text);
-            for (const row of callRows) {
-              if (!allCallRowsMap.has(row.callId)) {
-                allCallRowsMap.set(row.callId, row);
-              }
+            } else if (listKey) {
+              listPhones[listKey] = parseListFile(text);
+              loadedFiles.push(file);
             }
-            loadedFiles.push(file);
-
-          } else if (listKey) {
-            listPhones[listKey] = parseListFile(text);
-            loadedFiles.push(file);
           }
         }
       }
     }
 
     const allCallRows = Array.from(allCallRowsMap.values());
-    const listCosts = loadListCosts();
+    const listCosts   = loadListCosts();
+
     const metrics = computeMetrics(
       openedRows, allCallRows, xfrRows, salesRows,
       listPhones, listCosts,
@@ -576,13 +551,18 @@ export async function GET(request: Request) {
     return NextResponse.json({
       ...metrics,
       loadedFiles,
-      lastUpdated: new Date().toISOString(),
-      hasData: loadedFiles.length > 0,
-      dataDateRange: { min: minDate, max: maxDate },
-      totalCallRows: allCallRows.length,
-      xfrRows: xfrRows.length,
+      lastUpdated:    new Date().toISOString(),
+      hasData:        openedRows.length > 0 || salesRows.length > 0 || loadedFiles.length > 0,
+      dataDateRange:  { min: minDate, max: maxDate },
+      totalCallRows:  allCallRows.length,
+      xfrRows:        xfrRows.length,
       hasXfrFile,
+      apiSources: {
+        openedCount: openedRows.length,
+        salesCount:  salesRows.length,
+      },
     });
+
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: String(err), hasData: false }, { status: 500 });
