@@ -24,11 +24,13 @@ const JR_SALES = [
 ];
 
 const BL_HARDCODE_PHONE = "5125854726";
-const BL_HARDCODE_LIST = "BL021926BO";
+const BL_HARDCODE_LIST  = "BL021926BO";
 
-// Known list keys — only these show up in the dashboard
+// Campaign start date — never fetch 3CX data before this
+const CAMPAIGN_START = "2026-02-25";
+
 const DEFAULT_COSTS: Record<string, number> = {
-  RT: 0,
+  RT:         0,
   JL021926LP: 8000,
   BL021926BO: 8000,
   JH022326MN: 8000,
@@ -56,10 +58,10 @@ const toISO = (s: string): string | null => {
 const detectListKey = (text: string): string | null => {
   if (!text) return null;
   if (text.toLowerCase().includes("responder")) return "RT";
-  const match10 = text.match(/([A-Za-z]{2})(\d{6})([A-Za-z]{2})/);
-  if (match10) return (match10[1] + match10[2] + match10[3]).toUpperCase();
-  const match8 = text.match(/([A-Za-z]{2})(\d{6})/);
-  if (match8) return (match8[1] + match8[2]).toUpperCase();
+  const m10 = text.match(/([A-Za-z]{2})(\d{6})([A-Za-z]{2})/);
+  if (m10) return (m10[1] + m10[2] + m10[3]).toUpperCase();
+  const m8 = text.match(/([A-Za-z]{2})(\d{6})/);
+  if (m8) return (m8[1] + m8[2]).toUpperCase();
   return null;
 };
 
@@ -77,20 +79,15 @@ function parseCsvLine(line: string): string[] {
 }
 
 // ── PARSE XFR TRANSFER FILE ──────────────────────────────────────────────────
-// XFR file is the authoritative source for transfer counts.
 interface XfrRow {
-  phone: string;
-  agent: string;
-  campaign: string;
-  list: string | null;
-  date: string | null;
+  phone: string; agent: string; campaign: string;
+  list: string | null; date: string | null;
 }
 
 function parseXfrFile(text: string): XfrRow[] {
   const lines = text.split(/\r?\n/);
   if (lines.length < 2) return [];
   const headers = parseCsvLine(lines[0]).map(h => h.trim().toLowerCase());
-
   const findCol = (...names: string[]) => {
     for (const name of names) {
       const idx = headers.findIndex(h => h.includes(name));
@@ -98,93 +95,74 @@ function parseXfrFile(text: string): XfrRow[] {
     }
     return -1;
   };
-
   const phoneI = findCol("phone", "number", "to", "destination");
   const agentI = findCol("agent");
   const campI  = findCol("campaign");
   const dateI  = findCol("date", "started", "time", "created");
-
   const rows: XfrRow[] = [];
   for (let i = 1; i < lines.length; i++) {
     const l = lines[i].trim();
     if (!l) continue;
     const c = parseCsvLine(l);
-
     const phone = cleanPhone(c[phoneI >= 0 ? phoneI : 2] || "");
     if (!phone || phone.length !== 10) continue;
-
-    const agFull  = (c[agentI >= 0 ? agentI : 0] || "").trim();
-    const agent   = shortAgent(agFull);
-    const campaign = (c[campI >= 0 ? campI : 3] || "").trim();
-    const date    = dateI >= 0 ? toISO((c[dateI] || "").trim()) : null;
-    const list    = detectListKey(campaign);
-
-    rows.push({ phone, agent, campaign, list, date });
+    const agFull   = (c[agentI >= 0 ? agentI : 0] || "").trim();
+    const campaign = (c[campI  >= 0 ? campI  : 3] || "").trim();
+    const date     = dateI >= 0 ? toISO((c[dateI] || "").trim()) : null;
+    rows.push({ phone, agent: shortAgent(agFull), campaign, list: detectListKey(campaign), date });
   }
   return rows;
 }
 
 // ── PARSE AIM CALLS REPORT ───────────────────────────────────────────────────
-// Used for minutes/cost only. Filtered to known campaigns at aggregation step.
 interface CallRow {
-  callId: string;
-  phone: string;
-  agent: string;
-  duration: number;
-  transferDuration: number;
-  cost: number;
-  date: string | null;
-  campaign: string;
-  list: string | null;
-  isTransfer: boolean;
+  callId: string; phone: string; agent: string;
+  duration: number; transferDuration: number; cost: number;
+  date: string | null; campaign: string; list: string | null; isTransfer: boolean;
 }
 
 function parseCallsReport(text: string): CallRow[] {
   const lines = text.split(/\r?\n/);
   if (lines.length < 2) return [];
   const headers = parseCsvLine(lines[0]).map(h => h.trim().toLowerCase());
-
   const gi = (name: string) => headers.findIndex(h => h === name);
-  const aI     = gi("agent name");
-  const durI   = gi("duration (seconds)");
-  const tDurI  = gi("transfer call duration");
-  const cI     = gi("cost");
-  const sI     = gi("started at");
-  const campI  = gi("campaign name");
-  const outI   = gi("outcomes");
+  const aI      = gi("agent name");
+  const durI    = gi("duration (seconds)");
+  const tDurI   = gi("transfer call duration");
+  const cI      = gi("cost");
+  const sI      = gi("started at");
+  const campI   = gi("campaign name");
+  const outI    = gi("outcomes");
   const callIdI = gi("call id");
-  const phoneI = gi("phone number");
-
+  const phoneI  = gi("phone number");
   const rows: CallRow[] = [];
   for (let i = 1; i < lines.length; i++) {
     const l = lines[i].trim();
     if (!l) continue;
     const c = parseCsvLine(l);
-
     const callId = (c[callIdI >= 0 ? callIdI : 12] || "").trim();
     if (!callId) continue;
-
     let phone = cleanPhone(c[phoneI >= 0 ? phoneI : 15] || "");
     if (!phone || phone.length !== 10) {
-      const dir  = (c[4] || "").trim().toLowerCase();
+      const dir   = (c[4] || "").trim().toLowerCase();
       const fromP = cleanPhone(c[2] || "");
       const toP   = cleanPhone(c[3] || "");
       phone = dir === "outbound" ? toP : fromP;
     }
     if (!phone || phone.length !== 10) continue;
-
-    const campaign = (c[campI >= 0 ? campI : 13] || "").trim();
-    const list     = detectListKey(campaign);
-    const agFull   = (c[aI >= 0 ? aI : 1] || "").trim();
-    const agent    = shortAgent(agFull);
-    const dur      = (parseFloat(c[durI >= 0 ? durI : 6]) || 0) / 60;
-    const tDur     = (parseFloat(c[tDurI >= 0 ? tDurI : 7]) || 0) / 60;
-    const cost     = parseFloat(c[cI >= 0 ? cI : 8]) || 0;
-    const date     = toISO((c[sI >= 0 ? sI : 11] || "").trim());
-    const outcome  = (c[outI >= 0 ? outI : 10] || "").trim().toLowerCase();
-    const isTransfer = outcome === "transferred";
-
-    rows.push({ callId, phone, agent, duration: dur, transferDuration: tDur, cost, date, campaign, list, isTransfer });
+    const campaign  = (c[campI >= 0 ? campI : 13] || "").trim();
+    const agFull    = (c[aI    >= 0 ? aI    : 1]  || "").trim();
+    const dur       = (parseFloat(c[durI  >= 0 ? durI  : 6]) || 0) / 60;
+    const tDur      = (parseFloat(c[tDurI >= 0 ? tDurI : 7]) || 0) / 60;
+    const cost      = parseFloat(c[cI    >= 0 ? cI    : 8]) || 0;
+    const date      = toISO((c[sI >= 0 ? sI : 11] || "").trim());
+    const outcome   = (c[outI >= 0 ? outI : 10] || "").trim().toLowerCase();
+    rows.push({
+      callId, phone, agent: shortAgent(agFull),
+      duration: dur, transferDuration: tDur, cost, date,
+      campaign, list: detectListKey(campaign),
+      isTransfer: outcome === "transferred",
+    });
   }
   return rows;
 }
@@ -240,14 +218,15 @@ function computeMetrics(
   const inRange = (date: string | null) => {
     if (!date) return true;
     if (start && date < start) return false;
-    if (end && date > end) return false;
+    if (end   && date > end)   return false;
     return true;
   };
 
   const fOpened = opened.filter(r => inRange(r.date));
   const fCalls  = calls.filter(r => inRange(r.date));
   const fXfr    = xfrRows.filter(r => inRange(r.date));
-  const fSales  = sales.filter(r => inRange(r.soldDate));
+  // Moxy returns ALL sales — filter to campaign start at minimum
+  const fSales  = sales.filter(r => r.soldDate && r.soldDate >= CAMPAIGN_START && inRange(r.soldDate));
 
   // Ground truth phones that reached a rep
   const openedSet = new Set<string>();
@@ -255,8 +234,8 @@ function computeMetrics(
     if (r.status === "answered" && r.destName) openedSet.add(r.phone);
 
   // phone → list / agent mapping
-  const p2list  = new Map<string, string>();
-  const p2agent = new Map<string, string>();
+  const p2list   = new Map<string, string>();
+  const p2agent  = new Map<string, string>();
   const p2agList = new Map<string, { agent: string; list: string }>();
 
   p2list.set(BL_HARDCODE_PHONE, BL_HARDCODE_LIST);
@@ -266,7 +245,7 @@ function computeMetrics(
       if (!p2list.has(phone)) p2list.set(phone, listKey);
 
   for (const x of fXfr) {
-    if (x.list && !p2list.has(x.phone))  p2list.set(x.phone, x.list);
+    if (x.list  && !p2list.has(x.phone))  p2list.set(x.phone, x.list);
     if (x.agent && !p2agent.has(x.phone)) p2agent.set(x.phone, x.agent);
     const list = p2list.get(x.phone) || x.list;
     if (list && x.agent && !p2agList.has(x.phone))
@@ -275,7 +254,7 @@ function computeMetrics(
 
   for (const c of fCalls) {
     if (!c.phone) continue;
-    if (c.list && !p2list.has(c.phone))   p2list.set(c.phone, c.list);
+    if (c.list  && !p2list.has(c.phone))  p2list.set(c.phone, c.list);
     if (c.agent && !p2agent.has(c.phone)) p2agent.set(c.phone, c.agent);
     const list = p2list.get(c.phone) || c.list;
     if (list && c.agent && !p2agList.has(c.phone))
@@ -286,9 +265,7 @@ function computeMetrics(
   for (const k of Object.keys(listPhones)) allListKeys.add(k);
 
   // ── TRANSFER COUNTS ──────────────────────────────────────────────────────
-  // XFR file = sole source of truth when present
   const txByList: Record<string, Set<string>> = {};
-
   if (hasXfrFile && fXfr.length > 0) {
     for (const x of fXfr) {
       const li = p2list.get(x.phone) || x.list;
@@ -314,12 +291,12 @@ function computeMetrics(
     const key = `${s.homePhone}|${s.mobilePhone}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const phones  = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
+    const phones   = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
     const onOpened = phones.some(p => openedSet.has(p));
-    const list    = phones.includes(BL_HARDCODE_PHONE) ? BL_HARDCODE_LIST
+    const list     = phones.includes(BL_HARDCODE_PHONE) ? BL_HARDCODE_LIST
       : (p2list.get(s.homePhone) || p2list.get(s.mobilePhone) || null);
-    const isAPI   = s.promoCode?.toUpperCase().includes("API");
-    const notJ    = !s.salesperson?.toLowerCase().includes("fishbien");
+    const isAPI    = s.promoCode?.toUpperCase().includes("API");
+    const notJ     = !s.salesperson?.toLowerCase().includes("fishbien");
     if (isAPI && notJ && !list) { nonListSales.push({ ...s, onOpened }); continue; }
     if (onOpened) {
       const agent = p2agent.get(s.homePhone) || p2agent.get(s.mobilePhone) || null;
@@ -332,11 +309,9 @@ function computeMetrics(
     for (const jr of JR_SALES) {
       if (!aiSales.some(s => s.homePhone === jr.phone || s.mobilePhone === jr.phone)) {
         aiSales.push({
-          soldDate: "2026-02-25",
-          lastName: jr.name.split(" ").slice(1).join(" "),
-          firstName: jr.name.split(" ")[0],
-          promoCode: "", homePhone: jr.phone, mobilePhone: "",
-          dealStatus: "Sold", salesperson: "",
+          soldDate: "2026-02-25", lastName: jr.name.split(" ").slice(1).join(" "),
+          firstName: jr.name.split(" ")[0], promoCode: "", homePhone: jr.phone,
+          mobilePhone: "", dealStatus: "Sold", salesperson: "",
           list: jr.list, agent: null, isJR: true,
         });
       }
@@ -411,7 +386,6 @@ function computeMetrics(
     const li = p2list.get(item.phone) || item.list;
     if (li && matrix[item.agent]?.[li]) matrix[item.agent][li].t++;
   }
-
   for (const r of fOpened) {
     if (r.status !== "answered" || !r.destName) continue;
     const al = p2agList.get(r.phone);
@@ -436,11 +410,18 @@ export async function GET(request: Request) {
     const dateStart = searchParams.get("start");
     const dateEnd   = searchParams.get("end");
 
-    // ── 1. FETCH OPENED CALLS FROM 3CX API (replaces opened.csv) ─────────────
+    // Clamp date range to campaign start — never go earlier than Feb 25
+    const today    = new Date().toISOString().slice(0, 10);
+    const fromDate = dateStart && dateStart > CAMPAIGN_START ? dateStart : CAMPAIGN_START;
+    const toDate   = dateEnd   ?? today;
+
+    // ── 1. FETCH 3CX CALLS for the current date range ─────────────────────
+    // We pass the actual date range so the API only fetches what we need,
+    // avoiding the 2000-call cap cutting off recent data on ITD queries.
     let openedRows: { phone: string; destName: string; status: string; date: string | null }[] = [];
     try {
       const callsResp = await fetch(
-        `${origin}/api/calls?from=2026-02-25&to=${new Date().toISOString().slice(0, 10)}`
+        `${origin}/api/calls?from=${fromDate}&to=${toDate}`
       );
       if (callsResp.ok) {
         const callsData = await callsResp.json();
@@ -458,7 +439,9 @@ export async function GET(request: Request) {
       console.error("[data/route] 3CX calls fetch failed:", e);
     }
 
-    // ── 2. FETCH SALES FROM MOXY API (replaces sales.xls) ────────────────────
+    // ── 2. FETCH MOXY SALES ───────────────────────────────────────────────
+    // Moxy returns ALL sales — date filtering happens in computeMetrics
+    // which clamps to CAMPAIGN_START and the requested date range.
     let salesRows: {
       soldDate: string | null; lastName: string; firstName: string;
       promoCode: string; homePhone: string; mobilePhone: string;
@@ -475,53 +458,46 @@ export async function GET(request: Request) {
             promoCode: string; homePhone: string; cellPhone: string;
             status: string; salesRep: string;
           }) => ({
-            soldDate:   toISO(s.soldDate ?? ""),
-            lastName:   s.lastName  ?? "",
-            firstName:  s.firstName ?? "",
-            promoCode:  s.promoCode ?? "",
-            homePhone:  s.homePhone  ?? "",   // already 10-digit normalised by moxy route
-            mobilePhone: s.cellPhone ?? "",
-            dealStatus: s.status    ?? "",
-            salesperson: s.salesRep ?? "",
+            soldDate:    toISO(s.soldDate ?? ""),
+            lastName:    s.lastName  ?? "",
+            firstName:   s.firstName ?? "",
+            promoCode:   s.promoCode ?? "",
+            homePhone:   s.homePhone  ?? "",
+            mobilePhone: s.cellPhone  ?? "",
+            dealStatus:  s.status     ?? "",
+            salesperson: s.salesRep   ?? "",
           }));
       }
     } catch (e) {
       console.error("[data/route] Moxy sales fetch failed:", e);
     }
 
-    // ── 3. LOAD FILE-BASED DATA (XFR, AIM calls export, list files) ──────────
+    // ── 3. FILE-BASED DATA (XFR, AIM calls export, list files) ───────────
     const listPhones: Record<string, Set<string>> = {};
-    let xfrRows:    XfrRow[]  = [];
+    let xfrRows:    XfrRow[] = [];
     let hasXfrFile = false;
     const loadedFiles: string[] = [];
     const allCallRowsMap = new Map<string, CallRow>();
 
     if (fs.existsSync(DATA_DIR)) {
       const files = fs.readdirSync(DATA_DIR);
-
       for (const file of files) {
         const lower = file.toLowerCase();
         const full  = path.join(DATA_DIR, file);
-
         if (lower.endsWith(".csv") && lower !== ".gitkeep" && lower !== "opened.csv") {
-
           if (lower.startsWith("xfr")) {
             xfrRows    = parseXfrFile(fs.readFileSync(full, "utf8"));
             hasXfrFile = true;
             loadedFiles.push(file);
-
           } else {
-            const listKey  = detectListKey(file.replace(/\.csv$/i, ""));
-            const text     = fs.readFileSync(full, "utf8");
+            const listKey   = detectListKey(file.replace(/\.csv$/i, ""));
+            const text      = fs.readFileSync(full, "utf8");
             const firstLine = text.split(/\r?\n/)[0] || "";
-
             if (firstLine.toLowerCase().includes("agent id") || firstLine.toLowerCase().includes("agent name")) {
-              // AIM calls export — minutes/cost only
               const callRows = parseCallsReport(text);
               for (const row of callRows)
                 if (!allCallRowsMap.has(row.callId)) allCallRowsMap.set(row.callId, row);
               loadedFiles.push(file);
-
             } else if (listKey) {
               listPhones[listKey] = parseListFile(text);
               loadedFiles.push(file);
@@ -551,15 +527,16 @@ export async function GET(request: Request) {
     return NextResponse.json({
       ...metrics,
       loadedFiles,
-      lastUpdated:    new Date().toISOString(),
-      hasData:        openedRows.length > 0 || salesRows.length > 0 || loadedFiles.length > 0,
-      dataDateRange:  { min: minDate, max: maxDate },
-      totalCallRows:  allCallRows.length,
-      xfrRows:        xfrRows.length,
+      lastUpdated:   new Date().toISOString(),
+      hasData:       openedRows.length > 0 || salesRows.length > 0 || loadedFiles.length > 0,
+      dataDateRange: { min: minDate, max: maxDate },
+      totalCallRows: allCallRows.length,
+      xfrRows:       xfrRows.length,
       hasXfrFile,
       apiSources: {
         openedCount: openedRows.length,
         salesCount:  salesRows.length,
+        dateRange:   { from: fromDate, to: toDate },
       },
     });
 
