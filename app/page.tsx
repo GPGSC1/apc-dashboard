@@ -107,11 +107,12 @@ function Td({ children, style }: { children: React.ReactNode; style?: React.CSSP
   return <td style={{ padding: "8px 12px", textAlign: "right", fontSize: 13, borderBottom: `1px solid ${C.dim}`, ...style }}>{children}</td>;
 }
 
-function DateFilterBar({ preset, setPreset, customStart, setCustomStart, customEnd, setCustomEnd, onApply, dataRange, warnDays }: {
+function DateFilterBar({ preset, setPreset, customStart, setCustomStart, customEnd, setCustomEnd, onApply, onApplyWithPreset, dataRange, warnDays }: {
   preset: DatePreset; setPreset: (p: DatePreset) => void;
   customStart: string; setCustomStart: (s: string) => void;
   customEnd: string; setCustomEnd: (s: string) => void;
   onApply: () => void;
+  onApplyWithPreset: (preset: DatePreset) => void;
   dataRange?: { min: string | null; max: string | null };
   warnDays: number;
 }) {
@@ -120,12 +121,24 @@ function DateFilterBar({ preset, setPreset, customStart, setCustomStart, customE
     { id: "yesterday", label: "Yesterday" }, { id: "week", label: "This Week" },
     { id: "custom", label: "Custom" },
   ];
+
+  // Format the display date range based on active preset
+  const getDisplayRange = () => {
+    if (preset === "custom") return customStart && customEnd ? `${customStart} to ${customEnd}` : null;
+    const { start, end } = getPresetDates(preset);
+    if (!start && !end) return "2026-02-25 to " + new Date().toISOString().slice(0, 10);
+    return `${start} to ${end}`;
+  };
+
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", background: C.surface, borderBottom: `1px solid ${C.border}`, flexWrap: "wrap" }}>
         <span style={{ fontSize: 10, color: C.muted, letterSpacing: ".1em", textTransform: "uppercase", marginRight: 4 }}>Date Range:</span>
         {presets.map(p => (
-          <button key={p.id} onClick={() => { setPreset(p.id); if (p.id !== "custom") onApply(); }}
+          <button key={p.id} onClick={() => {
+            setPreset(p.id);
+            if (p.id !== "custom") onApplyWithPreset(p.id); // ← FIX: pass preset directly, no stale closure
+          }}
             style={{ padding: "4px 12px", borderRadius: 4, border: `1px solid ${preset === p.id ? C.accent : C.dim}`, background: preset === p.id ? "rgba(0,212,184,.1)" : "transparent", color: preset === p.id ? C.accent : C.muted, cursor: "pointer", fontSize: 12, fontWeight: preset === p.id ? 600 : 400 }}>
             {p.label}
           </button>
@@ -141,7 +154,7 @@ function DateFilterBar({ preset, setPreset, customStart, setCustomStart, customE
               style={{ padding: "4px 14px", borderRadius: 4, border: "none", background: C.accent, color: C.bg, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Apply</button>
           </>
         )}
-        {dataRange?.min && <span style={{ marginLeft: "auto", fontSize: 10, color: C.muted }}>Data: {dataRange.min} to {dataRange.max}</span>}
+        <span style={{ marginLeft: "auto", fontSize: 10, color: C.muted }}>Date: {getDisplayRange()}</span>
       </div>
       {warnDays > 0 && (
         <div style={{ padding: "8px 16px", background: "rgba(245,158,11,.08)", borderBottom: `1px solid rgba(245,158,11,.25)`, display: "flex", alignItems: "center", gap: 8 }}>
@@ -326,7 +339,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<string>("");
   const [tab, setTab] = useState("itd");
-  const [preset, setPreset] = useState<DatePreset>("itd");
+  const [preset, setPreset] = useState<DatePreset>("today");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -383,14 +396,26 @@ export default function Home() {
     finally { setLoading(false); }
   }, []);
 
+  // FIX: handleApplyWithPreset accepts preset directly to avoid stale closure
+  const handleApplyWithPreset = useCallback((newPreset: DatePreset) => {
+    const { start, end } = getPresetDates(newPreset);
+    loadData(start, end);
+  }, [loadData]);
+
   const handleApply = useCallback(() => {
-    const { start, end } = preset === "custom" ? { start: customStart || null, end: customEnd || null } : getPresetDates(preset);
+    const { start, end } = preset === "custom"
+      ? { start: customStart || null, end: customEnd || null }
+      : getPresetDates(preset);
     loadData(start, end);
   }, [preset, customStart, customEnd, loadData]);
 
-  useEffect(() => { loadData(null, null); }, [loadData]);
-  useEffect(() => { if (preset !== "custom") handleApply(); }, [preset]); // eslint-disable-line
+  // Load today on mount (not ITD)
+  useEffect(() => {
+    const { start, end } = getPresetDates("today");
+    loadData(start, end);
+  }, [loadData]);
 
+  // Auto-refresh every 15 min using current preset
   useEffect(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(handleApply, 15 * 60 * 1000);
@@ -426,7 +451,15 @@ export default function Home() {
         </div>
       </div>
 
-      <DateFilterBar preset={preset} setPreset={setPreset} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd} onApply={handleApply} dataRange={data.dataDateRange} warnDays={warnDays} />
+      <DateFilterBar
+        preset={preset} setPreset={setPreset}
+        customStart={customStart} setCustomStart={setCustomStart}
+        customEnd={customEnd} setCustomEnd={setCustomEnd}
+        onApply={handleApply}
+        onApplyWithPreset={handleApplyWithPreset}
+        dataRange={data.dataDateRange}
+        warnDays={warnDays}
+      />
 
       <div style={{ display: "flex", minHeight: "calc(100vh - 100px)" }}>
         <div style={{ width: 200, flexShrink: 0, background: C.surface, borderRight: `1px solid ${C.border}`, padding: "16px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
@@ -437,7 +470,7 @@ export default function Home() {
             { label: "opened.csv/xls", live: data.loadedFiles?.some(f => f.toLowerCase().startsWith("opened")) },
           ].map(item => (
             <div key={item.label} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", background: C.card, borderRadius: 4, border: `1px solid ${item.live ? "rgba(34,197,94,.3)" : C.border}` }}>
-              <span style={{ color: item.live ? C.green : C.dim, fontSize: 12 }}>{item.live ? "✔" : "○"}</span>
+              <span style={{ color: item.live ? C.green : C.dim, fontSize: 12 }}>{item.live ? "✓" : "○"}</span>
               <span style={{ fontSize: 11, color: item.live ? C.text : C.muted }}>{item.label}</span>
             </div>
           ))}
@@ -445,7 +478,7 @@ export default function Home() {
           <div style={{ fontSize: 10, color: C.muted, letterSpacing: ".12em", textTransform: "uppercase", marginTop: 8 }}>Lists</div>
           {lists.map(li => (
             <div key={li} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: C.card, borderRadius: 4, border: `1px solid ${isLive ? "rgba(0,212,184,.2)" : C.border}` }}>
-              <span style={{ color: isLive ? C.accent : C.dim, fontSize: 12 }}>{isLive ? "✔" : "○"}</span>
+              <span style={{ color: isLive ? C.accent : C.dim, fontSize: 12 }}>{isLive ? "✓" : "○"}</span>
               <span style={{ fontSize: 11, color: isLive ? C.accent : C.muted, fontWeight: isLive ? 600 : 400 }}>{li}</span>
             </div>
           ))}
