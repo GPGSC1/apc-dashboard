@@ -118,10 +118,18 @@ export async function GET(request: Request) {
         if (lower === ".gitkeep") continue;
         if (!lower.endsWith(".csv") && !lower.endsWith(".xls") && !lower.endsWith(".xlsx")) continue;
 
-        const listKey = detectListKey(file.replace(/\.(csv|xls|xlsx)$/i, ""));
+        const baseName = file.replace(/\.(csv|xls|xlsx)$/i, "");
+        const listKey = DEFAULT_LISTS[baseName.toUpperCase()] !== undefined
+          ? baseName.toUpperCase()
+          : detectListKey(baseName);
         if (!listKey) continue;
 
-        const text   = fs.readFileSync(path.join(DATA_DIR, file), "latin1");
+        let text: string;
+        try {
+          text = fs.readFileSync(path.join(DATA_DIR, file), "utf8");
+        } catch {
+          text = fs.readFileSync(path.join(DATA_DIR, file), "latin1");
+        }
         const phones = parseListFile(text);
         listPhones[listKey] = phones;
         loadedFiles.push(file);
