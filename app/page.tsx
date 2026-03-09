@@ -183,42 +183,6 @@ function ByListView({ data, showListCost }: { data: DashData; showListCost: bool
   );
 }
 
-function NonListView({ data }: { data: DashData }) {
-  const sales = data.nonListSales || [];
-  if (!sales.length) return (
-    <div style={{ padding: "40px 24px", textAlign: "center", color: C.muted }}>
-      <div style={{ fontSize: 14 }}>No non-list sales detected</div>
-      <div style={{ fontSize: 11, marginTop: 8 }}>Sales where the phone number was not found in any data list file</div>
-    </div>
-  );
-  return (
-    <div style={{ overflowX: "auto" }}>
-      <table style={{ borderCollapse: "collapse", width: "100%" }}>
-        <thead>
-          <tr>
-            <Th left>Name</Th><Th>Date</Th><Th>Salesperson</Th><Th>Home #</Th><Th>Mobile #</Th><Th>On Opened</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {sales.map((s, i) => (
-            <tr key={i} style={{ borderBottom: `1px solid ${C.dim}` }}>
-              <Td style={{ textAlign: "left", color: C.text }}>{s.firstName} {s.lastName}</Td>
-              <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.soldDate || "-"}</span></Td>
-              <Td><span style={{ color: C.muted, fontSize: 12 }}>{s.salesperson}</span></Td>
-              <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.homePhone || "-"}</span></Td>
-              <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.mobilePhone || "-"}</span></Td>
-              <Td style={{ textAlign: "center" }}>
-                {s.onOpened
-                  ? <span style={{ color: C.green, fontWeight: 600 }}>✓ Yes</span>
-                  : <span style={{ color: C.dim }}>No</span>}
-              </Td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 export default function Home() {
   const [data, setData]             = useState<DashData>(DEMO);
