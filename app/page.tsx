@@ -2,14 +2,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 interface ListStats { o: number; s: number; min: number; cost: number; listCost: number; }
-interface NonListSale {
-  firstName: string; lastName: string; soldDate: string;
-  promoCode: string; salesperson: string;
-  homePhone: string; mobilePhone: string;
-}
 interface DashData {
   byList:       Record<string, ListStats>;
-  nonListSales: NonListSale[];
   totalSales:   number;
   listCosts:    Record<string, number>;
   allLists:     string[];
@@ -43,7 +37,6 @@ const DEMO: DashData = {
     DG021726SC: { o:24,  s:1,  min:460,   cost:92,   listCost:5000 },
     JL022526RS: { o:12,  s:0,  min:260,   cost:52,   listCost:6000 },
   },
-  nonListSales: [],
   totalSales:  48,
   listCosts:   { RT:0, JL021926LP:8000, BL021926BO:8000, JH022326MN:8000, JL021926CR:8000, DG021726SC:5000, JL022526RS:6000 },
   allLists:    ["RT","JL021926LP","BL021926BO","JH022326MN","JL021926CR","DG021726SC","JL022526RS"],
@@ -203,7 +196,7 @@ function NonListView({ data }: { data: DashData }) {
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
         <thead>
           <tr>
-            <Th left>Name</Th><Th>Date</Th><Th>Salesperson</Th><Th>Home #</Th><Th>Mobile #</Th>
+            <Th left>Name</Th><Th>Date</Th><Th>Salesperson</Th><Th>Home #</Th><Th>Mobile #</Th><Th>On Opened</Th>
           </tr>
         </thead>
         <tbody>
@@ -214,6 +207,11 @@ function NonListView({ data }: { data: DashData }) {
               <Td><span style={{ color: C.muted, fontSize: 12 }}>{s.salesperson}</span></Td>
               <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.homePhone || "-"}</span></Td>
               <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.mobilePhone || "-"}</span></Td>
+              <Td style={{ textAlign: "center" }}>
+                {s.onOpened
+                  ? <span style={{ color: C.green, fontWeight: 600 }}>✓ Yes</span>
+                  : <span style={{ color: C.dim }}>No</span>}
+              </Td>
             </tr>
           ))}
         </tbody>
@@ -283,8 +281,7 @@ export default function Home() {
   }, [handleApply]);
 
   const tabs = [
-    { id: "bylist",  label: "By List" },
-    { id: "nonlist", label: "Non-List Sales" },
+    { id: "bylist", label: "By List" },
   ];
 
   const lists     = data.allLists?.length ? data.allLists : Object.keys(data.byList);
@@ -383,8 +380,7 @@ export default function Home() {
             ))}
           </div>
           <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: 18 }}>
-            {tab === "bylist"  && <ByListView  data={data} showListCost={preset === "itd"} />}
-            {tab === "nonlist" && <NonListView data={data} />}
+            {tab === "bylist" && <ByListView data={data} showListCost={preset === "itd"} />}
           </div>
           {isLive && data.lastUpdated && (
             <div style={{ marginTop: 10, fontSize: 10, color: C.muted, textAlign: "right" }}>
