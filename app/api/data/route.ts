@@ -1,30 +1,16 @@
 import { NextResponse } from "next/server";
+import { Redis } from "@upstash/redis";
 import * as fs from "fs";
 import * as path from "path";
 
-const DATA_DIR       = path.join(process.cwd(), "data");
+// One-time endpoint to seed KV with historical AIM data from CSV export
+// GET /api/aim-seed  (no auth — restrict by deleting file after seeding)
+
 const CAMPAIGN_START = "2026-02-25";
 
-const DEFAULT_LISTS: Record<string, number> = {
-  RT:         0,
-  JL021926LP: 8000,
-  BL021926BO: 8000,
-  JH022326MN: 8000,
-  JL021926CR: 8000,
-  DG021726SC: 5000,
-  JL022526RS: 6000,
-};
-
-// ── UTILITIES ────────────────────────────────────────────────────────────────
-const cleanPhone = (p: unknown): string => {
-  let s = String(p || "").replace(/^=/, "").replace(/^"/, "").replace(/"$/, "");
-  return s.replace(/\D/g, "").slice(-10);
-};
-
-const toISO = (s: string): string | null => {
-  if (!s) return null;
-  const d = new Date(s.replace(/"/g, "").trim());
-  return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+const KNOWN_LISTS: Record<string, number> = {
+  RT: 0, JL021926LP: 8000, BL021926BO: 8000,
+  JH022326MN: 8000, JL021926CR: 8000, DG021726SC: 5000, JL022526RS: 6000,
 };
 
 const detectListKey = (text: string): string | null => {
@@ -37,341 +23,138 @@ const detectListKey = (text: string): string | null => {
   return null;
 };
 
-// ── CSV PARSER ───────────────────────────────────────────────────────────────
 function parseCsvLine(line: string): string[] {
-  const r: string[] = [];
-  let cur = "", q = false;
+  const cols: string[] = [];
+  let cur = '', inQ = false;
   for (const ch of line) {
-    if (ch === '"') q = !q;
-    else if (ch === "," && !q) { r.push(cur); cur = ""; }
-    else cur += ch;
+    if (ch === '"') { inQ = !inQ; }
+    else if (ch === ',' && !inQ) { cols.push(cur.trim()); cur = ''; }
+    else { cur += ch; }
   }
-  r.push(cur);
-  return r;
+  cols.push(cur.trim());
+  return cols;
 }
 
-// ── PARSE DATA LIST FILE ─────────────────────────────────────────────────────
-function parseListFile(text: string): Set<string> {
-  const phones = new Set<string>();
-  const lines  = text.split(/\r?\n/);
-  if (lines.length < 2) return phones;
-
-  const headers = parseCsvLine(lines[0]).map(h => h.trim().toLowerCase());
-
-  const phoneColIndices = headers
-    .map((h, i) => ({ h, i }))
-    .filter(({ h }) =>
-      h.includes("phone") || h.includes("number") ||
-      h.includes("cell")  || h.includes("mobile") || h.includes("home")
-    )
-    .map(({ i }) => i);
-
-  const colsToCheck = phoneColIndices.length > 0 ? phoneColIndices : headers.map((_, i) => i);
-
-  for (let i = 1; i < lines.length; i++) {
-    const l = lines[i].trim();
-    if (!l) continue;
-    const c = parseCsvLine(l);
-    for (const idx of colsToCheck) {
-      const p = cleanPhone(c[idx] || "");
-      if (p.length === 10) phones.add(p);
-    }
+export async function GET() {
+  const url   = process.env.KV_REST_API_URL;
+  const token = process.env.KV_REST_API_TOKEN;
+  if (!url || !token) {
+    return NextResponse.json({ ok: false, error: "KV not configured" }, { status: 500 });
   }
-  return phones;
-}
+  const redis = new Redis({ url, token });
 
-// ── LOAD LIST COSTS ──────────────────────────────────────────────────────────
-function loadListCosts(): Record<string, number> {
-  const costFile = path.join(DATA_DIR, "list_costs.json");
-  if (fs.existsSync(costFile)) {
-    try { return JSON.parse(fs.readFileSync(costFile, "utf8")); } catch { /* fall */ }
-  }
-  return DEFAULT_LISTS;
-}
+  // Find AIM CSV in /data folder
+  const dataDir = path.join(process.cwd(), "data");
+  const files   = fs.readdirSync(dataDir);
 
-// ── MAIN ROUTE HANDLER ────────────────────────────────────────────────────────
-export async function GET(request: Request) {
-  try {
-    const { searchParams, origin } = new URL(request.url);
-    const dateStart = searchParams.get("start");
-    const dateEnd   = searchParams.get("end");
-    const today     = new Date().toISOString().slice(0, 10);
-    const fromDate  = dateStart ?? CAMPAIGN_START;
-    const toDate    = dateEnd   ?? today;
+  // Look for files with "calls" in the name (AIM exports)
+  const csvFiles = files.filter(f =>
+    f.toLowerCase().endsWith('.csv') &&
+    (f.toLowerCase().includes('call') || f.toLowerCase().includes('aim'))
+  );
 
-    const inRange = (date: string | null) => {
-      if (!date) return true;
-      if (dateStart && date < dateStart) return false;
-      if (dateEnd   && date > dateEnd)   return false;
-      return true;
-    };
-
-    // ── 1. LOAD DATA LIST FILES (source of truth: phone → list) ─────────────
-    const listPhones:  Record<string, Set<string>> = {};
-    const phoneToList: Map<string, string>         = new Map();
-    const listCosts    = loadListCosts();
-    const loadedFiles: string[] = [];
-
-    if (fs.existsSync(DATA_DIR)) {
-      for (const file of fs.readdirSync(DATA_DIR)) {
-        const lower = file.toLowerCase();
-        if (lower === ".gitkeep") continue;
-        if (!lower.endsWith(".csv") && !lower.endsWith(".xls") && !lower.endsWith(".xlsx")) continue;
-
-        const baseName = file.replace(/\.(csv|xls|xlsx)$/i, "");
-        const listKey = DEFAULT_LISTS[baseName.toUpperCase()] !== undefined
-          ? baseName.toUpperCase()
-          : detectListKey(baseName);
-        if (!listKey) continue;
-
-        let text: string;
-        try {
-          text = fs.readFileSync(path.join(DATA_DIR, file), "utf8");
-        } catch {
-          text = fs.readFileSync(path.join(DATA_DIR, file), "latin1");
-        }
-        const phones = parseListFile(text);
-        listPhones[listKey] = phones;
-        loadedFiles.push(file);
-
-        for (const phone of phones) {
-          if (!phoneToList.has(phone)) phoneToList.set(phone, listKey);
-        }
-      }
-    }
-
-    // ── 2. FETCH AIM API ─────────────────────────────────────────────────────
-    // Returns phones[] per list — used for transfer attribution and minutes/cost
-    const aimTransferPhones = new Set<string>();
-    const phoneToAgent      = new Map<string, string>();
-    let aimByList:  Record<string, { t: number; phones: string[]; phoneToAgent: Record<string,string>; min: number; cost: number; listCost: number }> = {};
-    let aimByAgent: Record<string, { t: number; min: number; cost: number }> = {};
-
-    try {
-      const aimResp = await fetch(`${origin}/api/aim?start=${fromDate}&end=${toDate}`);
-      if (aimResp.ok) {
-        const aimData = await aimResp.json();
-        if (aimData.ok) {
-          aimByList  = aimData.byList  ?? {};
-          aimByAgent = aimData.byAgent ?? {};
-          for (const v of Object.values(aimByList)) {
-            for (const phone of (v.phones ?? [])) {
-              aimTransferPhones.add(phone);
-              if (v.phoneToAgent?.[phone] && !phoneToAgent.has(phone)) {
-                phoneToAgent.set(phone, v.phoneToAgent[phone]);
-              }
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.error("[data/route] AIM fetch failed:", e);
-    }
-
-    // ── 3. FETCH 3CX CALLS (opened) ──────────────────────────────────────────
-    // Opened rules:
-    //   1. Passed all 4 3CX rules (answered + not AI F + talk time > 0 + mail 4)
-    //   2. Exists in data list files (phoneToList)
-    //   3. Was transferred by AIM (aimTransferPhones)
-    // COUNT every qualifying call row (no dedup) — matches manual methodology
-    // Keep a Set for sales cross-referencing
-    const openedPhones    = new Set<string>();   // for sales matching
-    const openedByList: Record<string, number> = {}; // raw count per list
-
-    try {
-      const callsResp = await fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`);
-      if (callsResp.ok) {
-        const callsData = await callsResp.json();
-        for (const call of (callsData.calls ?? [])) {
-          const phone = call.phoneNumber;
-          if (
-            call.opened &&
-            phone?.length === 10 &&
-            phoneToList.has(phone) &&
-            aimTransferPhones.has(phone)
-          ) {
-            openedPhones.add(phone); // for sales matching
-            const li = phoneToList.get(phone)!;
-            openedByList[li] = (openedByList[li] ?? 0) + 1; // count every instance
-          }
-        }
-      }
-    } catch (e) {
-      console.error("[data/route] 3CX fetch failed:", e);
-    }
-
-    // ── 4. FETCH MOXY SALES ──────────────────────────────────────────────────
-    let salesRows: {
-      soldDate: string | null; lastName: string; firstName: string;
-      promoCode: string; homePhone: string; mobilePhone: string;
-      dealStatus: string; salesperson: string;
-    }[] = [];
-
-    try {
-      const moxyResp = await fetch(`${origin}/api/moxy`);
-      if (moxyResp.ok) {
-        const moxyData = await moxyResp.json();
-        salesRows = (moxyData.sales ?? [])
-          .filter((s: { status: string }) => (s.status ?? "").trim() === "Sold")
-          .map((s: {
-            soldDate: string; lastName: string; firstName: string;
-            promoCode: string; homePhone: string; cellPhone: string;
-            status: string; salesRep: string;
-          }) => ({
-            soldDate:    toISO(s.soldDate ?? ""),
-            lastName:    s.lastName  ?? "",
-            firstName:   s.firstName ?? "",
-            promoCode:   s.promoCode ?? "",
-            homePhone:   cleanPhone(s.homePhone ?? ""),
-            mobilePhone: cleanPhone(s.cellPhone ?? ""),
-            dealStatus:  s.status    ?? "",
-            salesperson: s.salesRep  ?? "",
-          }))
-          .filter((s: { soldDate: string | null }) =>
-            s.soldDate && s.soldDate >= CAMPAIGN_START && inRange(s.soldDate)
-          );
-      }
-    } catch (e) {
-      console.error("[data/route] Moxy fetch failed:", e);
-    }
-
-    // ── 5. COMPUTE METRICS ───────────────────────────────────────────────────
-    const allListKeys = new Set([...Object.keys(DEFAULT_LISTS), ...Object.keys(listPhones)]);
-
-    const byList: Record<string, { t: number; o: number; s: number; min: number; cost: number; listCost: number }> = {};
-    const ensure = (li: string) => {
-      if (!byList[li]) byList[li] = { t: 0, o: 0, s: 0, min: 0, cost: 0, listCost: listCosts[li] ?? 0 };
-    };
-    for (const li of allListKeys) ensure(li as string);
-
-    // TRANSFERS — phone in data list file AND in AIM transfer set
-    for (const [listKey, phones] of Object.entries(listPhones)) {
-      ensure(listKey);
-      for (const phone of phones) {
-        if (aimTransferPhones.has(phone)) byList[listKey].t++;
-      }
-    }
-
-    // MINUTES & COST — from AIM campaign-level data
-    for (const [aimListKey, aimStats] of Object.entries(aimByList)) {
-      if (byList[aimListKey]) {
-        byList[aimListKey].min  += aimStats.min  ?? 0;
-        byList[aimListKey].cost += aimStats.cost ?? 0;
-      }
-    }
-
-    // OPENED — use raw per-call counts (matches manual: no dedup across dates)
-    for (const [li, count] of Object.entries(openedByList)) {
-      if (byList[li]) byList[li].o += count;
-    }
-
-    // SALES — homePhone OR cellPhone must be in data list + AIM transfers + opened
-    const nonListSales: (typeof salesRows[0] & { onOpened: boolean })[] = [];
-    const seenSales = new Set<string>();
-
-    for (const s of salesRows) {
-      const key = `${s.homePhone}|${s.mobilePhone}`;
-      if (seenSales.has(key)) continue;
-      seenSales.add(key);
-
-      const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
-      if (!notFishbein) continue;
-
-      const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
-
-      const matchedPhone = phones.find(p =>
-        phoneToList.has(p) && aimTransferPhones.has(p) && openedPhones.has(p)
-      );
-
-      const onOpened = phones.some(p => openedPhones.has(p));
-
-      if (!matchedPhone) {
-        nonListSales.push({ ...s, onOpened });
-        continue;
-      }
-
-      const li = phoneToList.get(matchedPhone)!;
-      if (byList[li]) byList[li].s++;
-    }
-
-    // AGENT SUMMARY
-    const byAgent: Record<string, { calls: number; min: number; cost: number; t: number; deals: number }> = {};
-    for (const [agent, stats] of Object.entries(aimByAgent)) {
-      byAgent[agent] = { calls: 0, min: stats.min, cost: stats.cost, t: stats.t, deals: 0 };
-    }
-
-    // Deals per agent
-    for (const s of salesRows) {
-      const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
-      if (!notFishbein) continue;
-
-      const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
-      const matchedPhone = phones.find(p =>
-        phoneToList.has(p) && aimTransferPhones.has(p) && openedPhones.has(p)
-      );
-      if (!matchedPhone) continue;
-
-      const agent = phoneToAgent.get(matchedPhone);
-      if (agent && byAgent[agent]) byAgent[agent].deals++;
-    }
-
-    // AGENT × LIST MATRIX
-    const allAgents = Object.keys(byAgent);
-    const allLists  = Array.from(allListKeys);
-    const matrix: Record<string, Record<string, { t: number; o: number; d: number }>> = {};
-    for (const agent of allAgents) {
-      matrix[agent] = {};
-      for (const li of allLists) matrix[agent][li] = { t: 0, o: 0, d: 0 };
-    }
-
-    for (const [listKey, phones] of Object.entries(listPhones)) {
-      for (const phone of phones) {
-        if (!aimTransferPhones.has(phone)) continue;
-        const agent = phoneToAgent.get(phone);
-        if (agent && matrix[agent]?.[listKey] !== undefined) matrix[agent][listKey].t++;
-      }
-    }
-    for (const phone of openedPhones) {
-      const li    = phoneToList.get(phone);
-      const agent = phoneToAgent.get(phone);
-      if (li && agent && matrix[agent]?.[li] !== undefined) matrix[agent][li].o++;
-    }
-    for (const s of salesRows) {
-      const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
-      if (!notFishbein) continue;
-      const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
-      const matchedPhone = phones.find(p =>
-        phoneToList.has(p) && aimTransferPhones.has(p) && openedPhones.has(p)
-      );
-      if (!matchedPhone) continue;
-      const li    = phoneToList.get(matchedPhone);
-      const agent = phoneToAgent.get(matchedPhone);
-      if (li && agent && matrix[agent]?.[li] !== undefined) matrix[agent][li].d++;
-    }
-
+  if (csvFiles.length === 0) {
     return NextResponse.json({
-      byList,
-      byAgent,
-      matrix,
-      nonListSales,
-      totalSales:  Object.values(byList).reduce((a, r) => a + r.s, 0),
-      listCosts,
-      allLists,
-      allAgents,
-      loadedFiles,
-      lastUpdated: new Date().toISOString(),
-      hasData:     aimTransferPhones.size > 0 || openedPhones.size > 0,
-      apiSources: {
-        aimTransfers:    aimTransferPhones.size,
-        openedCount:     openedPhones.size,
-        salesCount:      salesRows.length,
-        listFilesLoaded: loadedFiles.length,
-        dateRange:       { from: fromDate, to: toDate },
-      },
-    });
-
-  } catch (err) {
-    console.error("[data/route]", err);
-    return NextResponse.json({ error: String(err), hasData: false }, { status: 500 });
+      ok: false,
+      error: "No AIM CSV file found in /data folder. Name your file with 'calls' or 'aim' in the filename."
+    }, { status: 400 });
   }
+
+  // AIM CSV columns:
+  // Agent Id | Agent Name | From | To | Direction | Duration | Duration (seconds) |
+  // Transfer Call Duration | Cost | Ended Reason | Outcomes | Started At | Call id |
+  // Campaign name | Transfer number
+  const COL = {
+    agentName:    1,
+    duration_sec: 6,
+    cost:         8,
+    outcomes:     10,
+    startedAt:    11,
+    callId:       12,
+    campaignName: 13,
+  };
+
+  type DailyAIM = Record<string, Record<string, { min: number; cost: number }>>;
+  const daily: DailyAIM = {};
+  let processed = 0, skipped = 0, matched = 0;
+
+  for (const csvFile of csvFiles) {
+    const text  = fs.readFileSync(path.join(dataDir, csvFile), "latin1");
+    const lines = text.split(/\r?\n/);
+
+    // Find header row
+    let headerIdx = 0;
+    for (let i = 0; i < Math.min(5, lines.length); i++) {
+      if (lines[i].toLowerCase().includes("campaign name") || lines[i].toLowerCase().includes("started at")) {
+        headerIdx = i;
+        break;
+      }
+    }
+
+    for (let i = headerIdx + 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      const c = parseCsvLine(line);
+      if (c.length < 14) continue;
+
+      processed++;
+
+      const outcomes     = (c[COL.outcomes]     ?? "").toLowerCase();
+      const isTransfer   = outcomes.includes("transferred");
+      if (!isTransfer) { skipped++; continue; }
+
+      const campaignName = c[COL.campaignName] ?? "";
+      const list         = detectListKey(campaignName);
+      if (!list || !Object.prototype.hasOwnProperty.call(KNOWN_LISTS, list)) { skipped++; continue; }
+
+      const startedAt    = c[COL.startedAt] ?? "";
+      const dateMatch    = startedAt.match(/(\d{4})-(\d{2})-(\d{2})/);
+      if (!dateMatch) { skipped++; continue; }
+      const date = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+      if (date < CAMPAIGN_START) { skipped++; continue; }
+
+      const durationSec  = parseFloat(c[COL.duration_sec] ?? "0") || 0;
+      const cost         = parseFloat(c[COL.cost]         ?? "0") || 0;
+      const min          = durationSec / 60;
+
+      if (!daily[date]) daily[date] = {};
+      if (!daily[date][list]) daily[date][list] = { min: 0, cost: 0 };
+      daily[date][list].min  += min;
+      daily[date][list].cost += cost;
+      matched++;
+    }
+  }
+
+  // Round values
+  for (const dayData of Object.values(daily)) {
+    for (const v of Object.values(dayData)) {
+      v.min  = Math.round(v.min);
+      v.cost = Math.round(v.cost * 100) / 100;
+    }
+  }
+
+  // Save to KV
+  await redis.set("aim:daily", daily);
+  await redis.set("aim:lastPulled", new Date().toISOString());
+
+  // Summary by list
+  const summary: Record<string, { min: number; cost: number }> = {};
+  for (const dayData of Object.values(daily)) {
+    for (const [li, stats] of Object.entries(dayData)) {
+      if (!summary[li]) summary[li] = { min: 0, cost: 0 };
+      summary[li].min  += stats.min;
+      summary[li].cost += stats.cost;
+    }
+  }
+
+  return NextResponse.json({
+    ok:        true,
+    message:   "AIM seed complete",
+    files:     csvFiles,
+    processed,
+    matched,
+    skipped,
+    daysStored: Object.keys(daily).length,
+    summary,
+  });
 }
