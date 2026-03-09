@@ -35,9 +35,7 @@ function isOpened(destName: string, status: string, queueId: string): boolean {
   return true;
 }
 
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const reset = searchParams.get("reset") === "true";
+export async function GET() {
 
   const url   = process.env.KV_REST_API_URL;
   const token = process.env.KV_REST_API_TOKEN;
@@ -75,14 +73,8 @@ export async function GET(request: Request) {
     }, { status: 400 });
   }
 
-  // Load existing opened set (skip if reset=true)
-  let openedSet: Record<string, { date: string }> = {};
-  if (!reset) {
-    try {
-      const existing = await redis.get<Record<string, { date: string }>>("3cx:opened");
-      if (existing) openedSet = existing;
-    } catch {}
-  }
+  // Always start fresh — full reset on every seed run
+  const openedSet: Record<string, { date: string }> = {};
 
   const existingCount = Object.keys(openedSet).length;
   let processed = 0, added = 0, skipped = 0;
@@ -123,43 +115,3 @@ export async function GET(request: Request) {
       if (c.length < 13) continue;
 
       processed++;
-
-      const phone       = normalizePhone(c[PHI] ?? '');
-      if (!phone || phone.length !== 10) { skipped++; continue; }
-
-      const destName    = (c[DNI] ?? '').trim();
-      const status      = (c[SSI] ?? '').trim().toLowerCase();
-      const queueId     = (c[QI]  ?? '').trim();
-      const startTime   = (c[STI] ?? '').trim();
-
-      if (!isOpened(destName, status, queueId)) { skipped++; continue; }
-
-      // Parse date
-      const dm = startTime.match(/(\d+)\/(\d+)\/(\d{4})/);
-      if (!dm) { skipped++; continue; }
-      const date = `${dm[3]}-${dm[1].padStart(2,'0')}-${dm[2].padStart(2,'0')}`;
-      if (date < CAMPAIGN_START) { skipped++; continue; }
-
-      // First appearance ITD wins — don't overwrite existing
-      if (!openedSet[phone]) {
-        openedSet[phone] = { date };
-        added++;
-      }
-    }
-  }
-
-  // Save to KV
-  await redis.set("3cx:opened", openedSet);
-  await redis.set("3cx:lastPulled", new Date().toISOString());
-
-  return NextResponse.json({
-    ok:            true,
-    message:       "3CX seed complete",
-    files:         csvFiles,
-    processed,
-    added,
-    skipped,
-    existingCount,
-    totalOpened:   Object.keys(openedSet).length,
-  });
-}
