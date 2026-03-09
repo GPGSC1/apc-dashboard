@@ -28,11 +28,10 @@ function normalizePhone(raw: string): string {
   return d.slice(-10);
 }
 
-function isOpened(destName: string, status: string, talkTimeSec: number, queueName: string): boolean {
+function isOpened(destName: string, status: string, queueId: string): boolean {
   if (status !== 'answered') return false;
-  if (!destName || destName.toUpperCase().startsWith('AI F')) return false;
-  if (talkTimeSec <= 0) return false;
-  if (!queueName.toLowerCase().includes('mail 4')) return false;
+  if (!destName || destName.trim() === '') return false;
+  if (queueId.trim() !== '8043') return false;
   return true;
 }
 
@@ -47,18 +46,29 @@ export async function GET() {
   const dataDir = path.join(process.cwd(), "data");
   const files   = fs.readdirSync(dataDir);
 
-  // Find 3CX CSV files — look for "call" or "summary" or "3cx" in filename
-  const csvFiles = files.filter(f =>
-    f.toLowerCase().endsWith('.csv') &&
-    (f.toLowerCase().includes('call_summary') ||
-     f.toLowerCase().includes('3cx') ||
-     f.toLowerCase().includes('summary'))
-  );
+  // Known list file names to exclude
+  const LIST_FILES = new Set(['rt','bl021926bo','dg021726sc','jh022326mn','jl021926cr','jl021926lp','jl022526rs']);
+  const AIM_KEYWORDS = ['acalls','bcalls','xfrcalls','aim'];
+
+  // Find 3CX CSV files by content — any CSV that isn't a list file or AIM file
+  // and contains 'callid' in its first 5 lines
+  const csvFiles = files.filter(f => {
+    if (!f.toLowerCase().endsWith('.csv')) return false;
+    const base = f.replace(/\.csv$/i,'').toLowerCase();
+    if (LIST_FILES.has(base)) return false;
+    if (AIM_KEYWORDS.some(k => base.includes(k))) return false;
+    if (base === 'opened' || base === 'sales') return false;
+    // Peek at file to confirm it's a 3CX report
+    try {
+      const preview = fs.readFileSync(path.join(dataDir, f), 'latin1').slice(0, 2000);
+      return preview.toLowerCase().includes('callid') && preview.toLowerCase().includes('originated by');
+    } catch { return false; }
+  });
 
   if (csvFiles.length === 0) {
     return NextResponse.json({
       ok: false,
-      error: "No 3CX CSV file found in /data folder. Name your file with 'call_summary' or '3cx' in the filename."
+      error: "No 3CX CSV file found in /data folder. Make sure the file contains 'callid' and 'originated by' columns."
     }, { status: 400 });
   }
 
@@ -99,8 +109,7 @@ export async function GET() {
     const PHI = find('originated by')    >= 0 ? find('originated by')    : 8;
     const DNI = find('destination name') >= 0 ? find('destination name') : 11;
     const SSI = find('status')           >= 0 ? find('status')           : 12;
-    const TTI = find('talk time (sec)')  >= 0 ? find('talk time (sec)')  : 14;
-    const QI  = find('queue name')       >= 0 ? find('queue name')       : 19;
+    const QI  = find('queue')            >= 0 ? find('queue')            : 18;
 
     for (let i = headerIdx + 1; i < lines.length; i++) {
       const line = lines[i].trim();
@@ -115,11 +124,10 @@ export async function GET() {
 
       const destName    = (c[DNI] ?? '').trim();
       const status      = (c[SSI] ?? '').trim().toLowerCase();
-      const talkTimeSec = parseFloat(c[TTI] ?? '0') || 0;
-      const queueName   = (c[QI]  ?? '').trim();
+      const queueId     = (c[QI]  ?? '').trim();
       const startTime   = (c[STI] ?? '').trim();
 
-      if (!isOpened(destName, status, talkTimeSec, queueName)) { skipped++; continue; }
+      if (!isOpened(destName, status, queueId)) { skipped++; continue; }
 
       // Parse date
       const dm = startTime.match(/(\d+)\/(\d+)\/(\d{4})/);
