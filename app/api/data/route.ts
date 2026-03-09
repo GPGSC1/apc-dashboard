@@ -223,7 +223,7 @@ export async function GET(request: Request) {
     }
 
     // SALES — phone must be in openedSet AND in data list files, not Fishbein
-    const nonListSales: (SaleRow & { matchedPhone?: string })[] = [];
+    // If not on a list file it's a mail sale — ignore completely
     const seenSales = new Set<string>();
 
     for (const s of salesRows) {
@@ -231,18 +231,11 @@ export async function GET(request: Request) {
       if (seenSales.has(key)) continue;
       seenSales.add(key);
 
-      const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
-      if (!notFishbein) continue;
+      if (s.salesperson?.toLowerCase().includes("fishbein")) continue;
 
       const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
-
-      // Phone must be in opened set AND in a data list
       const matchedPhone = phones.find(p => openedSet[p] && phoneToList.has(p));
-
-      if (!matchedPhone) {
-        nonListSales.push({ ...s });
-        continue;
-      }
+      if (!matchedPhone) continue;
 
       const li = phoneToList.get(matchedPhone)!;
       ensure(li);
@@ -260,7 +253,6 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       byList,
-      nonListSales,
       totalSales,
       listCosts,
       allLists,
