@@ -359,8 +359,8 @@ export default function Home() {
                 <div key={li} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "3px 0", borderBottom: `1px solid ${C.dim}` }}>
                   <span style={{ fontSize: 11, color: C.accent }}>{li}</span>
                   <span style={{ display: "flex", gap: 6 }}>
-                    <span style={{ fontFamily: "monospace", fontSize: 11, color: C.muted }}>{r.o} O</span>
-                    <span style={{ fontFamily: "monospace", fontSize: 11, color: r.s > 0 ? C.green : C.dim }}>{r.s} S</span>
+                    <span style={{ fontFamily: "monospace", fontSize: 11, color: C.muted }}>{r.o} op</span>
+                    <span style={{ fontFamily: "monospace", fontSize: 11, color: r.s > 0 ? C.green : C.dim }}>{r.s} sl</span>
                   </span>
                 </div>
               );
