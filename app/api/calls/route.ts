@@ -92,16 +92,14 @@ function parseCsvLine(line: string): string[] {
   return cols;
 }
 
-// ── OPENED RULES ──────────────────────────────────────────────────────────────
+// ── OPENED RULES (matches manual exactly) ────────────────────────────────────
 // 1. Status = "answered"
-// 2. Destination Name non-empty AND does NOT start with "AI F"
-// 3. Talk Time > 0 seconds
-// 4. Queue Name contains "mail 4"
-function isOpened(destName: string, status: string, talkTimeSec: number, queueName: string): boolean {
+// 2. Destination Name non-empty
+// 3. Queue (col 18) = "8043"  ← exact queue ID match, not name
+function isOpened(destName: string, status: string, queueId: string): boolean {
   if (status !== 'answered') return false;
-  if (!destName || destName.toUpperCase().startsWith('AI F')) return false;
-  if (talkTimeSec <= 0) return false;
-  if (!queueName.toLowerCase().includes('mail 4')) return false;
+  if (!destName || destName.trim() === '') return false;
+  if (queueId.trim() !== '8043') return false;
   return true;
 }
 
@@ -131,8 +129,7 @@ function parseCSV(csv: string): { phone: string; date: string }[] {
   const PHI = find('originated by')    >= 0 ? find('originated by')    : 8;
   const DNI = find('destination name') >= 0 ? find('destination name') : 11;
   const SSI = find('status')           >= 0 ? find('status')           : 12;
-  const TTI = find('talk time (sec)')  >= 0 ? find('talk time (sec)')  : 14;
-  const QI  = find('queue name')       >= 0 ? find('queue name')       : 19;
+  const QI  = find('queue')            >= 0 ? find('queue')            : 18;  // col 18 = Queue ID "8043"
 
   const results: { phone: string; date: string }[] = [];
   for (let i = headerRowIdx + 1; i < lines.length; i++) {
@@ -146,11 +143,10 @@ function parseCSV(csv: string): { phone: string; date: string }[] {
 
     const destName    = (c[DNI] ?? '').trim();
     const status      = (c[SSI] ?? '').trim().toLowerCase();
-    const talkTimeSec = parseFloat(c[TTI] ?? '0') || 0;
-    const queueName   = (c[QI]  ?? '').trim();
+    const queueId     = (c[QI]  ?? '').trim();
     const startTime   = (c[STI] ?? '').trim();
 
-    if (!isOpened(destName, status, talkTimeSec, queueName)) continue;
+    if (!isOpened(destName, status, queueId)) continue;
 
     // Parse date from startTime (format: M/D/YYYY H:MM:SS AM/PM)
     const dateMatch = startTime.match(/(\d+)\/(\d+)\/(\d{4})/);
