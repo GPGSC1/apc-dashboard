@@ -227,13 +227,14 @@ export async function GET(request: Request) {
     const seenSales = new Set<string>();
 
     for (const s of salesRows) {
-      const key = `${s.homePhone}|${s.mobilePhone}`;
+      const key = s.homePhone || `${s.lastName}|${s.firstName}`;
       if (seenSales.has(key)) continue;
       seenSales.add(key);
 
       if (s.salesperson?.toLowerCase().includes("fishbein")) continue;
 
-      const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
+      // Only use homePhone for attribution — cellPhone data in Moxy is unreliable
+      const phones = [s.homePhone].filter(p => p && p.length === 10);
       const matchedPhone = phones.find(p => openedSet[p] && phoneToList.has(p));
       if (!matchedPhone) continue;
 
