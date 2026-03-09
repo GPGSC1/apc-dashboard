@@ -35,7 +35,10 @@ function isOpened(destName: string, status: string, queueId: string): boolean {
   return true;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const reset = searchParams.get("reset") === "true";
+
   const url   = process.env.KV_REST_API_URL;
   const token = process.env.KV_REST_API_TOKEN;
   if (!url || !token) {
@@ -72,12 +75,14 @@ export async function GET() {
     }, { status: 400 });
   }
 
-  // Load existing opened set from KV (so we don't overwrite existing data)
+  // Load existing opened set (skip if reset=true)
   let openedSet: Record<string, { date: string }> = {};
-  try {
-    const existing = await redis.get<Record<string, { date: string }>>("3cx:opened");
-    if (existing) openedSet = existing;
-  } catch {}
+  if (!reset) {
+    try {
+      const existing = await redis.get<Record<string, { date: string }>>("3cx:opened");
+      if (existing) openedSet = existing;
+    } catch {}
+  }
 
   const existingCount = Object.keys(openedSet).length;
   let processed = 0, added = 0, skipped = 0;
