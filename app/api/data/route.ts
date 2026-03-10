@@ -167,37 +167,38 @@ export async function GET(request: Request) {
       console.error("[data] AIM fetch failed:", e);
     }
 
-    // ── 4. FETCH MOXY SALES ──────────────────────────────────────────────────
+    // ── 4. FETCH MOXY SALES FROM KV ──────────────────────────────────────────
     type SaleRow = {
       soldDate: string | null; lastName: string; firstName: string;
-      promoCode: string; homePhone: string; mobilePhone: string;
-      dealStatus: string; salesperson: string;
+      promoCode: string; homePhone: string; contractNo: string;
+      customerID: string; dealStatus: string; salesperson: string;
     };
     let salesRows: SaleRow[] = [];
     try {
-      const moxyResp = await fetch(`${origin}/api/moxy`);
-      if (moxyResp.ok) {
-        const moxyData = await moxyResp.json();
-        salesRows = (moxyData.sales ?? [])
-          .filter((s: { status: string }) => (s.status ?? "").trim() === "Sold")
-          .map((s: {
-            soldDate: string; lastName: string; firstName: string;
-            promoCode: string; homePhone: string; cellPhone: string;
-            status: string; salesRep: string;
-          }) => ({
-            soldDate:    toISO(s.soldDate ?? ""),
-            lastName:    s.lastName  ?? "",
-            firstName:   s.firstName ?? "",
-            promoCode:   s.promoCode ?? "",
+      const kvSales = await redis.get<Record<string, {
+        soldDate: string; lastName: string; firstName: string;
+        promoCode: string; homePhone: string; contractNo: string;
+        customerID: string; dealStatus: string; salesperson: string;
+      }>>("moxy:sales");
+
+      if (kvSales) {
+        salesRows = Object.values(kvSales)
+          .filter(s => s.dealStatus === "Sold")
+          .map(s => ({
+            soldDate:    s.soldDate    ?? null,
+            lastName:    s.lastName    ?? "",
+            firstName:   s.firstName   ?? "",
+            promoCode:   s.promoCode   ?? "",
             homePhone:   cleanPhone(s.homePhone ?? ""),
-            mobilePhone: cleanPhone(s.cellPhone ?? ""),
-            dealStatus:  s.status    ?? "",
-            salesperson: s.salesRep  ?? "",
+            contractNo:  s.contractNo  ?? "",
+            customerID:  s.customerID  ?? "",
+            dealStatus:  s.dealStatus  ?? "",
+            salesperson: s.salesperson ?? "",
           }))
-          .filter((s: SaleRow) => s.soldDate && s.soldDate >= CAMPAIGN_START && s.soldDate >= fromDate && s.soldDate <= toDate);
+          .filter(s => s.soldDate && s.soldDate >= CAMPAIGN_START && s.soldDate >= fromDate && s.soldDate <= toDate);
       }
     } catch (e) {
-      console.error("[data] Moxy fetch failed:", e);
+      console.error("[data] Moxy KV fetch failed:", e);
     }
 
     // ── 5. COMPUTE METRICS ───────────────────────────────────────────────────
@@ -227,7 +228,7 @@ export async function GET(request: Request) {
     const seenSales = new Set<string>();
 
     for (const s of salesRows) {
-      const key = s.homePhone || `${s.lastName}|${s.firstName}`;
+      const key = s.customerID || s.contractNo || s.homePhone;
       if (seenSales.has(key)) continue;
       seenSales.add(key);
 
