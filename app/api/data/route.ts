@@ -55,13 +55,11 @@ function loadListFiles(): { phoneToList: Map<string, string>; loadedFiles: strin
     if (lower === ".gitkeep") continue;
     if (!lower.endsWith(".csv")) continue;
 
-    // Skip non-list files (AIM exports, sales, opened)
     if (lower.includes("call") || lower.includes("aim") ||
         lower.includes("sale") || lower.includes("open") ||
         lower.includes("xfr"))  continue;
 
-    // Determine list key from filename
-    const base = file.replace(/\.csv$/i, "").toUpperCase();
+    const base    = file.replace(/\.csv$/i, "").toUpperCase();
     const listKey = DEFAULT_LISTS[base] !== undefined ? base : null;
     if (!listKey) continue;
 
@@ -70,7 +68,7 @@ function loadListFiles(): { phoneToList: Map<string, string>; loadedFiles: strin
       const lines   = text.split(/\r?\n/);
       if (lines.length < 2) continue;
 
-      const headers = parseCsvLine(lines[0]).map(h => h.trim().toLowerCase());
+      const headers  = parseCsvLine(lines[0]).map(h => h.trim().toLowerCase());
       const phoneIdxs = headers
         .map((h, i) => ({ h, i }))
         .filter(({ h }) => h.includes("phone") || h.includes("number") || h.includes("cell") || h.includes("mobile"))
@@ -104,6 +102,30 @@ function loadListCosts(): Record<string, number> {
   return DEFAULT_LISTS;
 }
 
+// ── STALENESS CHECK ───────────────────────────────────────────────────────────
+// Returns ISO string or null for each source's last-pulled timestamp
+async function getStaleness(redis: Redis | null): Promise<{
+  cx:   string | null;
+  aim:  string | null;
+  moxy: string | null;
+}> {
+  if (!redis) return { cx: null, aim: null, moxy: null };
+  try {
+    const [cx, aim, moxy] = await Promise.all([
+      redis.get<string>("3cx:lastPulled"),
+      redis.get<string>("aim:lastPulled"),
+      redis.get<string>("moxy:lastSeeded"),
+    ]);
+    return {
+      cx:   cx   ?? null,
+      aim:  aim  ?? null,
+      moxy: moxy ?? null,
+    };
+  } catch {
+    return { cx: null, aim: null, moxy: null };
+  }
+}
+
 // ── MAIN HANDLER ──────────────────────────────────────────────────────────────
 export async function GET(request: Request) {
   try {
@@ -120,15 +142,12 @@ export async function GET(request: Request) {
     // ── 1. LOAD DATA LIST FILES ───────────────────────────────────────────────
     const { phoneToList, loadedFiles } = loadListFiles();
 
-    // ── 2. LOAD OPENED FROM KV (ITD dedup, filter by date range) ─────────────
-    // opened = phones that first appeared in 3CX opened set within date range
-    // Trigger 3CX refresh to update KV
+    // ── 2. LOAD OPENED FROM 3CX KV (filter by date range) ────────────────────
     let openedSet: Record<string, { date: string }> = {};
     try {
       const callsResp = await fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`);
       if (callsResp.ok) {
         const callsData = await callsResp.json();
-        // calls route returns opened phones filtered to date range
         for (const { phone, date } of (callsData.opened ?? [])) {
           if (date >= fromDate && date <= toDate) {
             openedSet[phone] = { date };
@@ -137,7 +156,7 @@ export async function GET(request: Request) {
       }
     } catch (e) {
       console.error("[data] 3CX fetch failed:", e);
-      // Fallback: load directly from KV
+      // Fallback: read directly from KV
       if (redis) {
         try {
           const raw = await redis.get<Record<string, { date: string }>>("3cx:opened");
@@ -151,7 +170,6 @@ export async function GET(request: Request) {
     }
 
     // ── 3. LOAD AIM MINUTES/COST FROM KV ────────────────────────────────────
-    type DailyAIM = Record<string, Record<string, { min: number; cost: number }>>;
     let aimByList: Record<string, { min: number; cost: number }> = {};
     try {
       const aimResp = await fetch(`${origin}/api/aim?start=${fromDate}&end=${toDate}`);
@@ -167,38 +185,72 @@ export async function GET(request: Request) {
       console.error("[data] AIM fetch failed:", e);
     }
 
-    // ── 4. FETCH MOXY SALES FROM KV ──────────────────────────────────────────
-    type SaleRow = {
-      soldDate: string | null; lastName: string; firstName: string;
-      promoCode: string; homePhone: string; contractNo: string;
-      customerID: string; dealStatus: string; salesperson: string;
-    };
-    let salesRows: SaleRow[] = [];
+    // ── 4. REFRESH MOXY THEN READ FROM KV ────────────────────────────────────
+    // Trigger incremental moxy refresh (writes to moxy:sales KV)
     try {
-      const kvSales = await redis.get<Record<string, {
-        soldDate: string; lastName: string; firstName: string;
-        promoCode: string; homePhone: string; contractNo: string;
-        customerID: string; dealStatus: string; salesperson: string;
-      }>>("moxy:sales");
-
-      if (kvSales) {
-        salesRows = Object.values(kvSales)
-          .filter(s => s.dealStatus === "Sold")
-          .map(s => ({
-            soldDate:    s.soldDate    ?? null,
-            lastName:    s.lastName    ?? "",
-            firstName:   s.firstName   ?? "",
-            promoCode:   s.promoCode   ?? "",
-            homePhone:   cleanPhone(s.homePhone ?? ""),
-            contractNo:  s.contractNo  ?? "",
-            customerID:  s.customerID  ?? "",
-            dealStatus:  s.dealStatus  ?? "",
-            salesperson: s.salesperson ?? "",
-          }))
-          .filter(s => s.soldDate && s.soldDate >= CAMPAIGN_START && s.soldDate >= fromDate && s.soldDate <= toDate);
-      }
+      await fetch(`${origin}/api/moxy`);
     } catch (e) {
-      console.error("[data] Moxy KV fetch failed:", e);
+      console.error("[data] Moxy refresh failed:", e);
+    }
+
+    type SaleRow = {
+      soldDate:    string | null;
+      lastName:    string;
+      firstName:   string;
+      promoCode:   string;
+      homePhone:   string;
+      cellPhone:   string;
+      contractNo:  string;
+      customerID:  string;
+      dealStatus:  string;
+      salesperson: string;
+    };
+
+    let salesRows: SaleRow[] = [];
+
+    if (redis) {
+      try {
+        const kvSales = await redis.get<Record<string, {
+          soldDate:   string;
+          lastName:   string;
+          firstName:  string;
+          promoCode:  string;
+          homePhone:  string;
+          cellPhone:  string;
+          contractNo: string;
+          customerID: string;
+          dealStatus: string;
+          salesRep:   string;
+          salesperson?: string;
+        }>>("moxy:sales");
+
+        if (kvSales) {
+          salesRows = Object.values(kvSales)
+            .filter(s => s.dealStatus === "Sold")
+            .map(s => ({
+              soldDate:    toISO(s.soldDate ?? ""),
+              lastName:    s.lastName    ?? "",
+              firstName:   s.firstName   ?? "",
+              promoCode:   s.promoCode   ?? "",
+              homePhone:   cleanPhone(s.homePhone  ?? ""),
+              cellPhone:   cleanPhone(s.cellPhone  ?? ""),
+              contractNo:  s.contractNo  ?? "",
+              customerID:  s.customerID  ?? "",
+              dealStatus:  s.dealStatus  ?? "",
+              salesperson: s.salesperson ?? s.salesRep ?? "",
+            }))
+            .filter(s =>
+              s.soldDate &&
+              s.soldDate >= CAMPAIGN_START &&
+              s.soldDate >= fromDate &&
+              s.soldDate <= toDate
+            );
+        }
+      } catch (e) {
+        console.error("[data] Moxy KV read failed:", e);
+      }
+    } else {
+      console.warn("[data] Redis not available — skipping Moxy KV read");
     }
 
     // ── 5. COMPUTE METRICS ───────────────────────────────────────────────────
@@ -210,33 +262,33 @@ export async function GET(request: Request) {
     };
     for (const li of allListKeys) ensure(li);
 
-    // OPENED — count phones in openedSet that belong to each list
+    // OPENED
     for (const phone of Object.keys(openedSet)) {
       const li = phoneToList.get(phone);
       if (li) { ensure(li); byList[li].o++; }
     }
 
-    // MINUTES & COST — from AIM KV aggregates
+    // MINUTES & COST
     for (const [li, stats] of Object.entries(aimByList)) {
       ensure(li);
       byList[li].min  += stats.min;
       byList[li].cost += stats.cost;
     }
 
-    // SALES — phone must be in openedSet AND in data list files, not Fishbein
-    // If not on a list file it's a mail sale — ignore completely
+    // SALES — phone must be in openedSet AND in a list file; not Fishbein
+    // New REST API has clean phone data: try homePhone first, then cellPhone
     const seenSales = new Set<string>();
 
     for (const s of salesRows) {
-      const key = s.customerID || s.contractNo || s.homePhone;
+      const key = s.customerID || s.contractNo || s.homePhone || s.cellPhone;
       if (seenSales.has(key)) continue;
       seenSales.add(key);
 
       if (s.salesperson?.toLowerCase().includes("fishbein")) continue;
 
-      // Only use homePhone for attribution — cellPhone data in Moxy is unreliable
-      const phones = [s.homePhone].filter(p => p && p.length === 10);
-      const matchedPhone = phones.find(p => openedSet[p] && phoneToList.has(p));
+      // Try homePhone first, then cellPhone (REST API has reliable data for both)
+      const candidates = [s.homePhone, s.cellPhone].filter(p => p && p.length === 10);
+      const matchedPhone = candidates.find(p => openedSet[p] && phoneToList.has(p));
       if (!matchedPhone) continue;
 
       const li = phoneToList.get(matchedPhone)!;
@@ -244,13 +296,16 @@ export async function GET(request: Request) {
       byList[li].s++;
     }
 
-    // Round minutes and cost
+    // Round
     for (const v of Object.values(byList)) {
       v.min  = Math.round(v.min);
       v.cost = Math.round(v.cost * 100) / 100;
     }
 
-    const allLists  = Array.from(allListKeys);
+    // ── 6. STALENESS ─────────────────────────────────────────────────────────
+    const staleness = await getStaleness(redis);
+
+    const allLists   = Array.from(allListKeys);
     const totalSales = Object.values(byList).reduce((a, r) => a + r.s, 0);
 
     return NextResponse.json({
@@ -261,6 +316,7 @@ export async function GET(request: Request) {
       loadedFiles,
       lastUpdated: new Date().toISOString(),
       hasData:     loadedFiles.length > 0,
+      staleness,
       apiSources: {
         openedCount:     Object.keys(openedSet).length,
         salesCount:      salesRows.length,
