@@ -10,6 +10,7 @@ interface DashData {
   loadedFiles:  string[];
   lastUpdated:  string;
   hasData:      boolean;
+  staleness?:   { cx: string | null; aim: string | null; moxy: string | null };
   apiSources?:  { openedCount: number; salesCount: number; listFilesLoaded: number; dateRange: { from: string; to: string } };
   error?:       string;
 }
@@ -54,6 +55,73 @@ const C = {
   accent: "#00D4B8", amber: "#F59E0B", red: "#EF4444", green: "#22C55E",
   text: "#C8D6E8", muted: "#3D5275", dim: "#1E2D45",
 };
+
+// ── STALE BANNER ──────────────────────────────────────────────────────────────
+const STALE_HOURS = 2;
+
+function StaleBanner({ staleness, onRefresh }: {
+  staleness: DashData["staleness"];
+  onRefresh: () => void;
+}) {
+  if (!staleness) return null;
+
+  const now = Date.now();
+  const threshold = STALE_HOURS * 60 * 60 * 1000;
+
+  const sources = [
+    { label: "3CX",  ts: staleness.cx   },
+    { label: "AIM",  ts: staleness.aim  },
+    { label: "Moxy", ts: staleness.moxy },
+  ];
+
+  const stale = sources.filter(s => {
+    if (!s.ts) return true; // never pulled = stale
+    return now - new Date(s.ts).getTime() > threshold;
+  });
+
+  if (stale.length === 0) return null;
+
+  const labels = stale.map(s => {
+    if (!s.ts) return `${s.label} (never)`;
+    const mins = Math.round((now - new Date(s.ts).getTime()) / 60000);
+    const hrs  = Math.floor(mins / 60);
+    const rem  = mins % 60;
+    const age  = hrs > 0 ? `${hrs}h ${rem}m ago` : `${mins}m ago`;
+    return `${s.label} (${age})`;
+  });
+
+  return (
+    <div style={{
+      background: "rgba(245,158,11,.1)",
+      border: `1px solid rgba(245,158,11,.4)`,
+      borderLeft: `3px solid ${C.amber}`,
+      padding: "8px 16px",
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      flexWrap: "wrap",
+    }}>
+      <span style={{ fontSize: 14 }}>⚠️</span>
+      <span style={{ fontSize: 12, color: C.amber, fontWeight: 600 }}>Stale data:</span>
+      <span style={{ fontSize: 12, color: C.text }}>
+        {labels.join(" · ")} {stale.length > 1 ? "are" : "is"} more than {STALE_HOURS}h old.
+      </span>
+      <button onClick={onRefresh} style={{
+        marginLeft: "auto",
+        padding: "3px 12px",
+        borderRadius: 4,
+        border: `1px solid ${C.amber}`,
+        background: "transparent",
+        color: C.amber,
+        cursor: "pointer",
+        fontSize: 12,
+        fontWeight: 600,
+      }}>
+        ↻ Refresh Now
+      </button>
+    </div>
+  );
+}
 
 function ClosePct({ n, d }: { n: number; d: number }) {
   const v = d > 0 ? (n / d) * 100 : 0;
@@ -185,14 +253,14 @@ function ByListView({ data, showListCost }: { data: DashData; showListCost: bool
 
 
 export default function Home() {
-  const [data, setData]             = useState<DashData>(DEMO);
-  const [isLive, setIsLive]         = useState(false);
-  const [loading, setLoading]       = useState(true);
+  const [data, setData]               = useState<DashData>(DEMO);
+  const [isLive, setIsLive]           = useState(false);
+  const [loading, setLoading]         = useState(true);
   const [lastRefresh, setLastRefresh] = useState<string>("");
-  const [tab, setTab]               = useState("bylist");
-  const [preset, setPreset]         = useState<DatePreset>("today");
+  const [tab, setTab]                 = useState("bylist");
+  const [preset, setPreset]           = useState<DatePreset>("today");
   const [customStart, setCustomStart] = useState("");
-  const [customEnd, setCustomEnd]   = useState("");
+  const [customEnd, setCustomEnd]     = useState("");
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadData = useCallback(async (start: string | null, end: string | null) => {
@@ -252,8 +320,8 @@ export default function Home() {
   const sideTotal = Object.values(data.byList).reduce((a, r) => a + (r.s || 0), 0);
 
   const sources = [
-    { label: "3CX Opened (KV)",  live: isLive },
-    { label: "AIM Cost (KV)",    live: isLive },
+    { label: "3CX Opened (KV)",   live: isLive },
+    { label: "AIM Cost (KV)",     live: isLive },
     { label: "Moxy Sales (Live)", live: isLive },
   ];
 
@@ -279,6 +347,9 @@ export default function Home() {
           </span>
         </div>
       </div>
+
+      {/* Stale Data Banner */}
+      {isLive && <StaleBanner staleness={data.staleness} onRefresh={handleApply} />}
 
       <DateFilterBar
         preset={preset} setPreset={setPreset}
