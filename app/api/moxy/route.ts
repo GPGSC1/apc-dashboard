@@ -95,25 +95,25 @@ export async function GET() {
     const salesMap: Record<string, MoxySale> = {};
 
     for (const r of records) {
-      const hp    = normalizePhone(r.HomePhone);
-      const cp    = normalizePhone(r.Cellphone ?? r.CellPhone);
+      const hp    = normalizePhone(r.homePhone ?? r.HomePhone);
+      const cp    = normalizePhone(r.cellphone ?? r.Cellphone ?? r.CellPhone);
       const phone = hp || cp;
 
       const sale: MoxySale = {
-        customerID: String(r.VchCampaignId ?? r.CustomerID ?? ''),
-        contractNo: String(r.ContractNo   ?? r.contractNo  ?? ''),
+        customerID: String(r.vchCampaignId ?? r.VchCampaignId ?? ''),
+        contractNo: String(r.contractNo    ?? r.ContractNo    ?? ''),
         homePhone:  hp,
         cellPhone:  cp,
         phone,
-        firstName:  String(r.FirstName  ?? r.First ?? ''),
-        lastName:   String(r.LastName   ?? r.Last  ?? ''),
-        salesRep:   String(r.SalesRep   ?? r.Salesperson ?? ''),
-        soldDate:   toISODate(r.DateSold ?? r.SoldDate ?? r.soldDate ?? ''),
-        dealStatus: String(r.DealStatus ?? r.Status ?? ''),
-        promoCode:  String(r.PromoCode  ?? ''),
-        make:       String(r.Make  ?? ''),
-        model:      String(r.Model ?? ''),
-        state:      String(r.State ?? ''),
+        firstName:  String(r.firstName  ?? r.FirstName  ?? ''),
+        lastName:   String(r.lastName   ?? r.LastName   ?? ''),
+        salesRep:   String(r.owner      ?? r.salesRep   ?? r.SalesRep ?? ''),
+        soldDate:   toISODate(r.soldDate ?? r.DateSold  ?? r.SoldDate ?? ''),
+        dealStatus: String(r.dealStatus ?? r.DealStatus ?? r.Status   ?? ''),
+        promoCode:  String(r.promoCode  ?? r.PromoCode  ?? ''),
+        make:       String(r.make  ?? r.Make  ?? ''),
+        model:      String(r.model ?? r.Model ?? ''),
+        state:      String(r.state ?? r.State ?? ''),
       };
 
       // Use VchCampaignId as primary key; fall back to contractNo or phone
