@@ -1,176 +1,144 @@
 import { NextResponse } from 'next/server';
-import https from 'https';
-import zlib from 'zlib';
-import { promisify } from 'util';
+import { Redis } from '@upstash/redis';
 
-const inflateRaw = promisify(zlib.inflateRaw);
-const inflate    = promisify(zlib.inflate);
-const unzip      = promisify(zlib.unzip);
+const CAMPAIGN_START = '2026-02-25';
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 export interface MoxySale {
-  contractNo:   string;
-  phone:        string;   // best available 10-digit normalised
-  cellPhone:    string;
-  homePhone:    string;
-  firstName:    string;
-  lastName:     string;
-  salesRep:     string;
-  soldDate:     string;   // raw string from Moxy (MM/DD/YYYY or serial)
-  status:       string;   // e.g. "Sold", "Cancelled"
-  promoCode:    string;
-  cancelReason: string;
-  make:         string;
-  model:        string;
-  state:        string;
-  admin:        string;
+  customerID:  string;   // VchCampaignId — primary dedup key
+  contractNo:  string;
+  homePhone:   string;   // normalised 10-digit
+  cellPhone:   string;   // normalised 10-digit
+  phone:       string;   // best available (home → cell)
+  firstName:   string;
+  lastName:    string;
+  salesRep:    string;
+  soldDate:    string;   // YYYY-MM-DD when parseable, raw otherwise
+  dealStatus:  string;
+  promoCode:   string;
+  make:        string;
+  model:       string;
+  state:       string;
 }
 
-// ─── Moxy Auto Deal Log credentials ──────────────────────────────────────────
-const AUTO_KEY    = '5ae589ba-27e4-41bc-9824-a9110cdfc35f';
-const AUTO_ACTION = 'JEBMPFp0eVVJWB9uCnhtAxkXTnRWdHIDBRQUaF58I1NOFh5sCQEAAAD/////AQAAAAQmQjULAgAAABREAmhAfnAFHFUca1V8cA0YRQ0YIhZEH3ZcfW8FGEcUeV59egcYTx1pTxwNEDU0QTIwN0RCMEM0Nzg4QzgDRxhtFEQCa1djcgcaQw1qVXh1DRlCDQkiBBJJNV0=';
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-function normalizePhone(raw: string): string {
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function normalizePhone(raw: string | undefined | null): string {
   if (!raw) return '';
   const d = raw.replace(/\D/g, '');
   if (d.length === 11 && d.startsWith('1')) return d.slice(1);
   return d.length === 10 ? d : '';
 }
 
-function extractAll(xml: string, field: string): string[] {
-  const re = new RegExp(`<${field}[^>]*>([^<]*)<\\/${field}>`, 'gi');
-  const vals: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml)) !== null) vals.push(m[1] ?? '');
-  return vals;
+function toISODate(raw: string | undefined | null): string {
+  if (!raw) return '';
+  const d = new Date(raw);
+  if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  return raw; // return raw if unparseable — data route will filter it out
 }
 
-function extractField(xml: string, ...names: string[]): string[] {
-  for (const name of names) {
-    const vals = extractAll(xml, name);
-    if (vals.length > 0) return vals;
-  }
-  return [];
-}
-
-async function decompress(buf: Buffer): Promise<string> {
-  for (const fn of [unzip, inflate, inflateRaw]) {
-    try { return (await fn(buf)).toString('utf8'); } catch { /* try next */ }
-  }
-  throw new Error('Could not decompress Moxy response');
-}
-
-function soapRequest(aKey: string, action: string): Promise<string> {
-  const body = `<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
-               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-               xmlns:xsd="http://www.w3.org/2001/XMLSchema">
-  <soap:Body>
-    <getDsB2 xmlns="http://tempuri.org/">
-      <aKey>${aKey}</aKey>
-      <action>${action}</action>
-      <dlrId>-99</dlrId>
-    </getDsB2>
-  </soap:Body>
-</soap:Envelope>`;
-
-  return new Promise((resolve, reject) => {
-    const req = https.request(
-      {
-        hostname: 'ep149b.moxyws.com',
-        port: 443,
-        path: '/wsmenu52/service.asmx',
-        method: 'POST',
-        headers: {
-          'Content-Type':   'text/xml; charset=utf-8',
-          'Content-Length': Buffer.byteLength(body),
-          'SOAPAction':     'http://tempuri.org/getDsB2',
-        },
-      },
-      (res) => {
-        let d = '';
-        res.on('data', c => (d += c));
-        res.on('end', () => resolve(d));
-      }
-    );
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
+function getRedis(): Redis | null {
+  const url   = process.env.KV_REST_API_URL;
+  const token = process.env.KV_REST_API_TOKEN;
+  if (!url || !token) return null;
+  return new Redis({ url, token });
 }
 
 // ─── Route handler ────────────────────────────────────────────────────────────
 export async function GET() {
+  const bearer = process.env.MOXY_BEARER_AUTO;
+  if (!bearer) {
+    return NextResponse.json(
+      { ok: false, error: 'MOXY_BEARER_AUTO env var not set' },
+      { status: 500 }
+    );
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+
   try {
-    const raw = await soapRequest(AUTO_KEY, AUTO_ACTION);
+    const apiUrl =
+      `https://MoxyAPI.moxyws.com/api/GetDealLog` +
+      `?fromDate=${CAMPAIGN_START}&toDate=${today}&dealType=Both`;
 
-    const resultMatch = raw.match(/<getDsB2Result>([\s\S]*?)<\/getDsB2Result>/);
-    if (!resultMatch) {
-      return NextResponse.json({ ok: false, error: 'No result in Moxy SOAP response', sales: [] }, { status: 500 });
+    const res = await fetch(apiUrl, {
+      headers: {
+        Authorization: `Bearer ${bearer}`,
+        Accept:        'application/json',
+      },
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.error('[moxy] API error', res.status, body);
+      return NextResponse.json(
+        { ok: false, error: `Moxy API returned ${res.status}`, detail: body },
+        { status: 502 }
+      );
     }
 
-    const b64 = resultMatch[1].trim();
-    if (b64.length < 100) {
-      return NextResponse.json({ ok: true, count: 0, sales: [] });
+    const json = await res.json();
+
+    // API may return a plain array or wrap it — handle both gracefully
+    const records: Record<string, any>[] = Array.isArray(json)
+      ? json
+      : (json.data ?? json.deals ?? json.records ?? []);
+
+    if (!Array.isArray(records)) {
+      console.error('[moxy] Unexpected response shape:', JSON.stringify(json).slice(0, 200));
+      return NextResponse.json(
+        { ok: false, error: 'Unexpected Moxy API response shape' },
+        { status: 502 }
+      );
     }
 
-    const xml = await decompress(Buffer.from(b64, 'base64'));
+    // Build sales map keyed by VchCampaignId (last-write wins for duplicates)
+    const salesMap: Record<string, MoxySale> = {};
 
-    const contractNos   = extractField(xml, 'ContractNo',   'contractNo',    'Contract_x0020_No');
-    const homePhones    = extractField(xml, 'HomePhone',    'homephone');
-    const cellPhones    = extractField(xml, 'CellPhone',    'cellphone',     'Cell_x0020_Phone');
-    const phones        = extractField(xml, 'Phone',        'phone');
-    const firstNames    = extractField(xml, 'First',        'FirstName');
-    const lastNames     = extractField(xml, 'Last',         'LastName');
-    const salesReps     = extractField(xml, 'SalesRep',     'Sales_x0020_Rep');
-    const soldDates     = extractField(xml, 'DateSold',     'Date_x0020_Sold', 'solddate');
-    const statuses      = extractField(xml, 'Status',       'DealStatus',    'Deal_x0020_Status', 'Stat', 'ContractStatus');
-    const promoCodes    = extractField(xml, 'PromoCode',    'Promo_x0020_Code');
-    const cancelReasons = extractField(xml, 'CancelReason', 'Cancel_x0020_Reason', 'CancellationReason');
-    const makes         = extractField(xml, 'Make');
-    const models        = extractField(xml, 'Model');
-    const states        = extractField(xml, 'State');
-    const admins        = extractField(xml, 'Admin');
+    for (const r of records) {
+      const hp    = normalizePhone(r.HomePhone);
+      const cp    = normalizePhone(r.Cellphone ?? r.CellPhone);
+      const phone = hp || cp;
 
-    const count = Math.max(contractNos.length, soldDates.length, phones.length);
-    const sales: MoxySale[] = [];
+      const sale: MoxySale = {
+        customerID: String(r.VchCampaignId ?? r.CustomerID ?? ''),
+        contractNo: String(r.ContractNo   ?? r.contractNo  ?? ''),
+        homePhone:  hp,
+        cellPhone:  cp,
+        phone,
+        firstName:  String(r.FirstName  ?? r.First ?? ''),
+        lastName:   String(r.LastName   ?? r.Last  ?? ''),
+        salesRep:   String(r.SalesRep   ?? r.Salesperson ?? ''),
+        soldDate:   toISODate(r.DateSold ?? r.SoldDate ?? r.soldDate ?? ''),
+        dealStatus: String(r.DealStatus ?? r.Status ?? ''),
+        promoCode:  String(r.PromoCode  ?? ''),
+        make:       String(r.Make  ?? ''),
+        model:      String(r.Model ?? ''),
+        state:      String(r.State ?? ''),
+      };
 
-    for (let i = 0; i < count; i++) {
-      const hp = normalizePhone(homePhones[i] ?? '');
-      const cp = normalizePhone(cellPhones[i] ?? '');
-      const pp = normalizePhone(phones[i] ?? '');
-      // Prefer home phone (consistent with existing sales.xls attribution logic)
-      const bestPhone = hp || cp || pp;
-
-      sales.push({
-        contractNo:   contractNos[i]   ?? '',
-        phone:        bestPhone,
-        cellPhone:    cp,
-        homePhone:    hp,
-        firstName:    firstNames[i]    ?? '',
-        lastName:     lastNames[i]     ?? '',
-        salesRep:     salesReps[i]     ?? '',
-        soldDate:     soldDates[i]     ?? '',
-        status:       statuses[i]      ?? '',
-        promoCode:    promoCodes[i]    ?? '',
-        cancelReason: cancelReasons[i] ?? '',
-        make:         makes[i]         ?? '',
-        model:        models[i]        ?? '',
-        state:        states[i]        ?? '',
-        admin:        admins[i]        ?? '',
-      });
+      // Use VchCampaignId as primary key; fall back to contractNo or phone
+      const key = sale.customerID || sale.contractNo || sale.phone;
+      if (key) salesMap[key] = sale;
     }
+
+    // Persist to KV
+    const redis = getRedis();
+    if (redis) {
+      await redis.set('moxy:sales',      salesMap);
+      await redis.set('moxy:lastSeeded', new Date().toISOString());
+    }
+
+    const soldCount = Object.values(salesMap).filter(s => s.dealStatus === 'Sold').length;
 
     return NextResponse.json({
       ok:          true,
-      count:       sales.length,
-      sales,
+      total:       Object.keys(salesMap).length,
+      soldCount,
       lastUpdated: new Date().toISOString(),
     });
 
   } catch (err: any) {
     console.error('[moxy/route.ts]', err);
-    return NextResponse.json({ ok: false, error: err.message, sales: [] }, { status: 500 });
+    return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
   }
 }
