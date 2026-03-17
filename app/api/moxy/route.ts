@@ -1,144 +1,104 @@
 import { NextResponse } from 'next/server';
-import { Redis } from '@upstash/redis';
 
-const CAMPAIGN_START = '2026-02-25';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────────────────────────
 export interface MoxySale {
-  customerID:  string;   // VchCampaignId — primary dedup key
-  contractNo:  string;
-  homePhone:   string;   // normalised 10-digit
-  cellPhone:   string;   // normalised 10-digit
-  phone:       string;   // best available (home → cell)
-  firstName:   string;
-  lastName:    string;
-  salesRep:    string;
-  soldDate:    string;   // YYYY-MM-DD when parseable, raw otherwise
-  dealStatus:  string;
-  promoCode:   string;
-  make:        string;
-  model:       string;
-  state:       string;
+  contractNo:   string;
+  phone:        string;   // best available 10-digit normalised
+  cellPhone:    string;
+  homePhone:    string;
+  firstName:    string;
+  lastName:     string;
+  salesRep:     string;
+  soldDate:     string;   // raw string from Moxy (MM/DD/YYYY)
+  status:       string;   // e.g. "Sold", "Cancelled"
+  promoCode:    string;
+  cancelReason: string;
+  make:         string;
+  model:        string;
+  state:        string;
+  admin:        string;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function normalizePhone(raw: string | undefined | null): string {
+// ─── Moxy REST API credentials ──────────────────────────────────────────────
+const MOXY_BASE    = 'https://MoxyAPI.moxyws.com';
+const MOXY_BEARER  = 'a242ccb0-738e-4e4f-a418-facf89297904';
+
+// Campaign start — used as default fromDate
+const CAMPAIGN_START = '2026-02-25';
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function normalizePhone(raw: string | null | undefined): string {
   if (!raw) return '';
   const d = raw.replace(/\D/g, '');
   if (d.length === 11 && d.startsWith('1')) return d.slice(1);
   return d.length === 10 ? d : '';
 }
 
-function toISODate(raw: string | undefined | null): string {
-  if (!raw) return '';
-  const d = new Date(raw);
-  if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
-  return raw; // return raw if unparseable — data route will filter it out
-}
-
-function getRedis(): Redis | null {
-  const url   = process.env.KV_REST_API_URL;
-  const token = process.env.KV_REST_API_TOKEN;
-  if (!url || !token) return null;
-  return new Redis({ url, token });
+function todayISO(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 // ─── Route handler ────────────────────────────────────────────────────────────
 export async function GET() {
-  const bearer = process.env.MOXY_BEARER_AUTO;
-  if (!bearer) {
-    return NextResponse.json(
-      { ok: false, error: 'MOXY_BEARER_AUTO env var not set' },
-      { status: 500 }
-    );
-  }
-
-  const today = new Date().toISOString().slice(0, 10);
-
   try {
-    const apiUrl =
-      `https://MoxyAPI.moxyws.com/api/GetDealLog` +
-      `?fromDate=${CAMPAIGN_START}&toDate=${today}&dealType=Both`;
+    const fromDate = CAMPAIGN_START;
+    const toDate   = todayISO();
 
-    const res = await fetch(apiUrl, {
+    const url = `${MOXY_BASE}/api/GetDealLog?fromDate=${fromDate}&toDate=${toDate}&dealType=Both`;
+
+    const resp = await fetch(url, {
+      method: 'GET',
       headers: {
-        Authorization: `Bearer ${bearer}`,
-        Accept:        'application/json',
+        'Authorization': `Bearer ${MOXY_BEARER}`,
       },
+      cache: 'no-store',
     });
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      console.error('[moxy] API error', res.status, body);
+    if (!resp.ok) {
+      const errText = await resp.text();
+      console.error(`[moxy/route.ts] REST API ${resp.status}: ${errText}`);
       return NextResponse.json(
-        { ok: false, error: `Moxy API returned ${res.status}`, detail: body },
+        { ok: false, error: `Moxy REST API returned ${resp.status}: ${errText}`, sales: [] },
         { status: 502 }
       );
     }
 
-    const json = await res.json();
+    const deals: Record<string, any>[] = await resp.json();
 
-    // API may return a plain array or wrap it — handle both gracefully
-    const records: Record<string, any>[] = Array.isArray(json)
-      ? json
-      : (json.data ?? json.deals ?? json.records ?? []);
+    // Map REST API fields → MoxySale interface (same shape data/route.ts expects)
+    const sales: MoxySale[] = deals.map((d) => {
+      const hp = normalizePhone(d.HomePhone);
+      const cp = normalizePhone(d.Cellphone);
+      const bestPhone = hp || cp;
 
-    if (!Array.isArray(records)) {
-      console.error('[moxy] Unexpected response shape:', JSON.stringify(json).slice(0, 200));
-      return NextResponse.json(
-        { ok: false, error: 'Unexpected Moxy API response shape' },
-        { status: 502 }
-      );
-    }
-
-    // Build sales map keyed by VchCampaignId (last-write wins for duplicates)
-    const salesMap: Record<string, MoxySale> = {};
-
-    for (const r of records) {
-      const hp    = normalizePhone(r.homePhone ?? r.HomePhone);
-      const cp    = normalizePhone(r.cellphone ?? r.Cellphone ?? r.CellPhone);
-      const phone = hp || cp;
-
-      const sale: MoxySale = {
-        customerID: String(r.vchCampaignId ?? r.VchCampaignId ?? ''),
-        contractNo: String(r.contractNo    ?? r.ContractNo    ?? ''),
-        homePhone:  hp,
-        cellPhone:  cp,
-        phone,
-        firstName:  String(r.firstName  ?? r.FirstName  ?? ''),
-        lastName:   String(r.lastName   ?? r.LastName   ?? ''),
-        salesRep:   String(r.owner      ?? r.salesRep   ?? r.SalesRep ?? ''),
-        soldDate:   toISODate(r.soldDate ?? r.DateSold  ?? r.SoldDate ?? ''),
-        dealStatus: String(r.dealStatus ?? r.DealStatus ?? r.Status   ?? ''),
-        promoCode:  String(r.promoCode  ?? r.PromoCode  ?? ''),
-        make:       String(r.make  ?? r.Make  ?? ''),
-        model:      String(r.model ?? r.Model ?? ''),
-        state:      String(r.state ?? r.State ?? ''),
+      return {
+        contractNo:   d.ContractNo   ?? '',
+        phone:        bestPhone,
+        cellPhone:    cp,
+        homePhone:    hp,
+        firstName:    d.FirstName    ?? '',
+        lastName:     d.LastName     ?? '',
+        salesRep:     d.Closer       ?? '',
+        soldDate:     d.SoldDate     ?? '',
+        status:       d.DealStatus   ?? '',
+        promoCode:    d.PromoCode    ?? '',
+        cancelReason: d.CancelReason ?? '',
+        make:         d.Make         ?? '',
+        model:        d.Model        ?? '',
+        state:        d.State        ?? '',
+        admin:        d.Admin        ?? '',
       };
-
-      // Use VchCampaignId as primary key; fall back to contractNo or phone
-      const key = sale.customerID || sale.contractNo || sale.phone;
-      if (key) salesMap[key] = sale;
-    }
-
-    // Persist to KV
-    const redis = getRedis();
-    if (redis) {
-      await redis.set('moxy:sales',      salesMap);
-      await redis.set('moxy:lastSeeded', new Date().toISOString());
-    }
-
-    const soldCount = Object.values(salesMap).filter(s => s.dealStatus === 'Sold').length;
+    });
 
     return NextResponse.json({
       ok:          true,
-      total:       Object.keys(salesMap).length,
-      soldCount,
+      count:       sales.length,
+      sales,
       lastUpdated: new Date().toISOString(),
     });
 
   } catch (err: any) {
     console.error('[moxy/route.ts]', err);
-    return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
+    return NextResponse.json({ ok: false, error: err.message, sales: [] }, { status: 500 });
   }
 }
