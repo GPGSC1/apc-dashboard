@@ -218,7 +218,7 @@ function ByListView({ data }: { data: DashData }) {
           <thead>
             <tr>
               <Th left>List Name</Th>
-              <Th>XFR Count</Th><Th>Queue Count</Th><Th>Sales</Th>
+              <Th>Calls</Th><Th>Sales</Th>
               <Th>Closing %</Th><Th>Minutes</Th><Th>Dial Cost</Th><Th>Cost / Sale</Th>
             </tr>
           </thead>
@@ -229,7 +229,6 @@ function ByListView({ data }: { data: DashData }) {
               return (
                 <tr key={li} onMouseEnter={e=>(e.currentTarget.style.background="rgba(0,212,184,.04)")} onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
                   <Td style={{ textAlign:"left" }}><span style={{ color:C.accent, fontWeight:600, fontSize:13 }}>{li}</span></Td>
-                  <Td><span style={{ fontFamily:"monospace", color:C.text }}>{f(r.t)}</span></Td>
                   <Td><span style={{ fontFamily:"monospace", color:C.accent }}>{f(r.o)}</span></Td>
                   <Td><span style={{ fontFamily:"monospace", color:r.s>0?C.green:C.muted, fontWeight:r.s>0?700:400 }}>{r.s}</span></Td>
                   <Td><ClosePct n={r.s} d={r.o} /></Td>
@@ -241,7 +240,6 @@ function ByListView({ data }: { data: DashData }) {
             })}
             <tr style={{ background:C.surface, borderTop:`2px solid ${C.border}` }}>
               <Td style={{ textAlign:"left", fontWeight:700, color:C.text, fontSize:13 }}>TOTAL</Td>
-              <Td><span style={{ fontFamily:"monospace", fontWeight:600 }}>{f(totals.t)}</span></Td>
               <Td><span style={{ fontFamily:"monospace", color:C.accent, fontWeight:600 }}>{f(totals.o)}</span></Td>
               <Td><span style={{ fontFamily:"monospace", color:C.green, fontWeight:700 }}>{totals.s}</span></Td>
               <Td><ClosePct n={totals.s} d={totals.o} /></Td>
@@ -292,7 +290,7 @@ function ByAgentView({ agents, lists, crossData }: {
           return (
             <div key={ag.name} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px" }}>
               <div style={{ fontSize:11, fontWeight:700, color:C.accent, marginBottom:3, lineHeight:1.3 }}>{ag.name}</div>
-              <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>{f(ag.o)} opened · {ag.s} deals</div>
+              <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>{f(ag.o)} calls · {ag.s} deals</div>
               <div style={{ fontFamily:"monospace", fontSize:12, color:C.muted }}>{fc(ag.cost)}</div>
               <div style={{ fontFamily:"monospace", fontSize:12, color:cps==null?C.dim:cps>500?C.red:cps>250?C.amber:C.green, marginTop:2 }}>
                 {cps!=null?fc(cps)+" / sale":"—"}
@@ -302,7 +300,7 @@ function ByAgentView({ agents, lists, crossData }: {
         })}
         <div style={{ background:C.surface, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px", marginTop:4 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.text, marginBottom:3 }}>TOTAL</div>
-          <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>{f(totals.o)} opened · {totals.s} deals</div>
+          <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>{f(totals.o)} calls · {totals.s} deals</div>
           <div style={{ fontFamily:"monospace", fontSize:12, color:C.text }}>{fc(totals.cost)}</div>
           <div style={{ fontFamily:"monospace", fontSize:12, color:C.amber, marginTop:2 }}>{totals.s>0?fc(totals.cost/totals.s)+" / sale":"—"}</div>
         </div>
@@ -336,7 +334,7 @@ function ByAgentView({ agents, lists, crossData }: {
                       {cell ? (
                         <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
                           <span style={{ fontFamily:"monospace", fontSize:11, color:C.text }}><span style={{ color:C.muted }}>Mins: </span>{f(cell.min)}</span>
-                          <span style={{ fontFamily:"monospace", fontSize:11, color:C.accent }}><span style={{ color:C.muted }}>Que: </span>{f(cell.t)}</span>
+                          <span style={{ fontFamily:"monospace", fontSize:11, color:C.accent }}><span style={{ color:C.muted }}>Calls: </span>{f(cell.t)}</span>
                           <span style={{ fontFamily:"monospace", fontSize:11, color:cell.s>0?C.green:C.dim, fontWeight:cell.s>0?700:400 }}><span style={{ color:C.muted, fontWeight:400 }}>Sales: </span>{cell.s}</span>
                           <span style={{ fontFamily:"monospace", fontSize:11, color:C.amber }}><span style={{ color:C.muted }}>Cls%: </span>{pct(cell.s, cell.t)}</span>
                         </div>
@@ -357,7 +355,7 @@ function ByAgentView({ agents, lists, crossData }: {
                   <td key={li} style={{ padding:"6px 10px", textAlign:"center", borderLeft:`1px solid ${C.border}` }}>
                     <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
                       <span style={{ fontFamily:"monospace", fontSize:11, color:C.text, fontWeight:600 }}><span style={{ color:C.muted, fontWeight:400 }}>Mins: </span>{f(lt.min)}</span>
-                      <span style={{ fontFamily:"monospace", fontSize:11, color:C.accent, fontWeight:600 }}><span style={{ color:C.muted, fontWeight:400 }}>Que: </span>{f(lt.t)}</span>
+                      <span style={{ fontFamily:"monospace", fontSize:11, color:C.accent, fontWeight:600 }}><span style={{ color:C.muted, fontWeight:400 }}>Calls: </span>{f(lt.t)}</span>
                       <span style={{ fontFamily:"monospace", fontSize:11, color:lt.s>0?C.green:C.dim, fontWeight:700 }}><span style={{ color:C.muted, fontWeight:400 }}>Sales: </span>{lt.s}</span>
                       <span style={{ fontFamily:"monospace", fontSize:11, color:C.amber, fontWeight:600 }}><span style={{ color:C.muted, fontWeight:400 }}>Cls%: </span>{pct(lt.s, lt.t)}</span>
                     </div>
