@@ -24,11 +24,17 @@ interface AgentAssignment { name: string; campaign: "transfer" | "outbound" | "i
 interface AgentStats      { name: string; t: number; o: number; s: number; min: number; cost: number; }
 
 function getPresetDates(preset: DatePreset): { start: string | null; end: string | null } {
-  const now = new Date(); const iso = (d: Date) => d.toISOString().slice(0, 10); const today = iso(now);
+  // Use Central Time (UTC-5 CDT / UTC-6 CST) for business day alignment
+  const now = new Date();
+  const centralOffset = -5 * 60; // CDT — change to -6 * 60 after daylight saving ends
+  const centralMs = now.getTime() + (centralOffset - now.getTimezoneOffset()) * 60000;
+  const central = new Date(centralMs);
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const today = iso(central);
   if (preset === "itd")       return { start: null, end: null };
   if (preset === "today")     return { start: today, end: today };
-  if (preset === "yesterday") { const y = new Date(now); y.setDate(y.getDate() - 1); return { start: iso(y), end: iso(y) }; }
-  if (preset === "week")      { const mon = new Date(now); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7)); return { start: iso(mon), end: today }; }
+  if (preset === "yesterday") { const y = new Date(centralMs); y.setDate(y.getDate() - 1); return { start: iso(y), end: iso(y) }; }
+  if (preset === "week")      { const mon = new Date(centralMs); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7)); return { start: iso(mon), end: today }; }
   return { start: null, end: null };
 }
 
