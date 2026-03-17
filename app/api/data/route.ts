@@ -98,15 +98,10 @@ async function loadPhoneToList(redis: Redis | null): Promise<Map<string, string>
   const map = new Map<string, string>();
   if (!redis) return map;
   try {
-    // Check if chunked
     const chunks = await redis.get<number>("list:phoneMapChunks");
     if (chunks && chunks > 1) {
-      const results = await Promise.all(
-        Array.from({ length: chunks }, (_, i) =>
-          redis.get<Record<string, string>>(`list:phoneMap:${i}`)
-        )
-      );
-      for (const chunk of results) {
+      for (let i = 0; i < chunks; i++) {
+        const chunk = await redis.get<Record<string, string>>(`list:phoneMap:${i}`);
         if (chunk) for (const [phone, list] of Object.entries(chunk)) map.set(phone, list);
       }
     } else {
