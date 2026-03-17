@@ -40,7 +40,6 @@ export async function GET(request: Request) {
   }
   const redis = new Redis({ url, token });
 
-  // ?reset=true wipes KV and reseeds clean
   const { searchParams } = new URL(request.url);
   const isReset = searchParams.get("reset") === "true";
 
@@ -63,28 +62,28 @@ export async function GET(request: Request) {
   });
 
   if (csvFiles.length === 0) {
-    return NextResponse.json({
-      ok: false,
-      error: "No 3CX CSV file found in /data folder."
-    }, { status: 400 });
+    return NextResponse.json({ ok: false, error: "No 3CX CSV file found in /data folder." }, { status: 400 });
   }
 
-  // Load existing KV data or start fresh
-  let openedSet: Record<string, { date: string; phone: string }> = {};
-  let seenIds: Set<string> = new Set();
+  // 3cx:calls  — Record<callId, { phone, date }> — every qualifying call, deduped by callId only
+  // 3cx:phones — string[] — unique phones ever seen on queue 8043 (sales attribution gate)
+  let calls:  Record<string, { phone: string; date: string }> = {};
+  let phones: Set<string> = new Set();
 
   if (isReset) {
-    await redis.del("3cx:opened");
-    await redis.del("3cx:seenIds");
+    await redis.del("3cx:calls");
+    await redis.del("3cx:phones");
+    await redis.del("3cx:opened");  // clean up old key
+    await redis.del("3cx:seenIds"); // clean up old key
   } else {
     try {
-      const [existingOpened, existingIds] = await Promise.all([
-redis.get<Record<string, { date: string; phone: string }>>("3cx:opened"),
-        redis.get<string[]>("3cx:seenIds"),
+      const [existingCalls, existingPhones] = await Promise.all([
+        redis.get<Record<string, { phone: string; date: string }>>("3cx:calls"),
+        redis.get<string[]>("3cx:phones"),
       ]);
-      if (existingOpened) openedSet = existingOpened;
-      if (existingIds)    seenIds   = new Set(existingIds);
-    } catch { /* start fresh if KV read fails */ }
+      if (existingCalls)  calls  = existingCalls;
+      if (existingPhones) phones = new Set(existingPhones);
+    } catch {}
   }
 
   let processed = 0, added = 0, skipped = 0, dupes = 0;
@@ -111,12 +110,12 @@ redis.get<Record<string, { date: string; phone: string }>>("3cx:opened"),
       return -1;
     };
 
-    const CID = find('callid')          >= 0 ? find('callid')          : 0;
-    const STI = find('start time')      >= 0 ? find('start time')      : 1;
-    const PHI = find('originated by')   >= 0 ? find('originated by')   : 8;
-    const DNI = find('destination name')>= 0 ? find('destination name'): 11;
-    const SSI = find('status')          >= 0 ? find('status')          : 12;
-    const QI  = find('queue')           >= 0 ? find('queue')           : 18;
+    const CID = find('callid')           >= 0 ? find('callid')           : 0;
+    const STI = find('start time')       >= 0 ? find('start time')       : 1;
+    const PHI = find('originated by')    >= 0 ? find('originated by')    : 8;
+    const DNI = find('destination name') >= 0 ? find('destination name') : 11;
+    const SSI = find('status')           >= 0 ? find('status')           : 12;
+    const QI  = find('queue')            >= 0 ? find('queue')            : 18;
 
     for (let i = headerIdx + 1; i < lines.length; i++) {
       const line = lines[i].trim();
@@ -126,9 +125,8 @@ redis.get<Record<string, { date: string; phone: string }>>("3cx:opened"),
 
       processed++;
 
-      // Dedup by Call ID
       const callId = (c[CID] ?? '').trim();
-      if (callId && seenIds.has(callId)) { dupes++; continue; }
+      if (callId && calls[callId]) { dupes++; continue; }
 
       const phone = normalizePhone(c[PHI] ?? '');
       if (!phone || phone.length !== 10) { skipped++; continue; }
@@ -145,34 +143,27 @@ redis.get<Record<string, { date: string; phone: string }>>("3cx:opened"),
       const date = `${dm[3]}-${dm[1].padStart(2,'0')}-${dm[2].padStart(2,'0')}`;
       if (date < CAMPAIGN_START) { skipped++; continue; }
 
-      // Dedup key = phone:YYYY-MM — same phone allowed once per month
-      const monthKey = `${phone}:${date.slice(0, 7)}`;
-      if (callId && seenIds.has(callId)) { dupes++; continue; }
-
-      // Mark call ID as seen
-      if (callId) seenIds.add(callId);
-
-      // First appearance per phone per month wins
-      if (!openedSet[monthKey]) {
-        openedSet[monthKey] = { date, phone };
+      if (callId) {
+        calls[callId] = { phone, date };
+        phones.add(phone);
         added++;
       }
     }
   }
 
-  await redis.set("3cx:opened",    openedSet);
-  await redis.set("3cx:seenIds",   [...seenIds]);
+  await redis.set("3cx:calls",      calls);
+  await redis.set("3cx:phones",     [...phones]);
   await redis.set("3cx:lastPulled", new Date().toISOString());
 
   return NextResponse.json({
-    ok:          true,
-    message:     isReset ? "3CX seed complete (full reset)" : "3CX seed complete (incremental)",
-    files:       csvFiles,
+    ok:           true,
+    message:      isReset ? "3CX seed complete (full reset)" : "3CX seed complete (incremental)",
+    files:        csvFiles,
     processed,
     added,
     dupes,
     skipped,
-    totalOpened: Object.keys(openedSet).length,
-    totalSeenIds: seenIds.size,
+    totalCalls:   Object.keys(calls).length,
+    uniquePhones: phones.size,
   });
 }
