@@ -3,7 +3,7 @@ import { Redis } from "@upstash/redis";
 import https from 'https';
 
 // ── KV ────────────────────────────────────────────────────────────────────────
-// Stores: 3cx:opened → Record<phone, { date: string (YYYY-MM-DD) }>
+// Stores: 3cx:opened → Record<"phone:YYYY-MM", { date: string, phone: string }>
 // Stores: 3cx:lastPulled → ISO string
 
 function getRedis(): Redis | null {
@@ -13,12 +13,28 @@ function getRedis(): Redis | null {
   return new Redis({ url, token });
 }
 
-type OpenedSet = Record<string, { date: string }>;
+type OpenedEntry = { date: string; phone: string };
+type OpenedSet   = Record<string, OpenedEntry>;
 
 async function loadOpened(redis: Redis): Promise<OpenedSet> {
   try {
-    const raw = await redis.get<OpenedSet>("3cx:opened");
-    return raw ?? {};
+    const raw = await redis.get<Record<string, any>>("3cx:opened");
+    if (!raw) return {};
+
+    // Migrate old format (phone → { date }) to new format (phone:YYYY-MM → { date, phone })
+    const result: OpenedSet = {};
+    for (const [key, v] of Object.entries(raw)) {
+      if (key.match(/^\d{10}:\d{4}-\d{2}$/)) {
+        // Already new format
+        result[key] = { date: v.date, phone: v.phone ?? key.split(':')[0] };
+      } else if (key.match(/^\d{10}$/)) {
+        // Old format — migrate to new
+        const month   = (v.date as string).slice(0, 7);
+        const newKey  = `${key}:${month}`;
+        result[newKey] = { date: v.date, phone: key };
+      }
+    }
+    return result;
   } catch { return {}; }
 }
 
@@ -92,10 +108,6 @@ function parseCsvLine(line: string): string[] {
   return cols;
 }
 
-// ── OPENED RULES (matches manual exactly) ────────────────────────────────────
-// 1. Status = "answered"
-// 2. Destination Name non-empty
-// 3. Queue (col 18) = "8043"  ← exact queue ID match, not name
 function isOpened(destName: string, status: string, queueId: string): boolean {
   if (status !== 'answered') return false;
   if (!destName || destName.trim() === '') return false;
@@ -129,7 +141,7 @@ function parseCSV(csv: string): { phone: string; date: string }[] {
   const PHI = find('originated by')    >= 0 ? find('originated by')    : 8;
   const DNI = find('destination name') >= 0 ? find('destination name') : 11;
   const SSI = find('status')           >= 0 ? find('status')           : 12;
-  const QI  = find('queue')            >= 0 ? find('queue')            : 18;  // col 18 = Queue ID "8043"
+  const QI  = find('queue')            >= 0 ? find('queue')            : 18;
 
   const results: { phone: string; date: string }[] = [];
   for (let i = headerRowIdx + 1; i < lines.length; i++) {
@@ -138,17 +150,16 @@ function parseCSV(csv: string): { phone: string; date: string }[] {
     const c = parseCsvLine(line);
     if (c.length < 13) continue;
 
-    const phone       = normalizePhone(c[PHI] ?? '');
+    const phone     = normalizePhone(c[PHI] ?? '');
     if (!phone || phone.length !== 10) continue;
 
-    const destName    = (c[DNI] ?? '').trim();
-    const status      = (c[SSI] ?? '').trim().toLowerCase();
-    const queueId     = (c[QI]  ?? '').trim();
-    const startTime   = (c[STI] ?? '').trim();
+    const destName  = (c[DNI] ?? '').trim();
+    const status    = (c[SSI] ?? '').trim().toLowerCase();
+    const queueId   = (c[QI]  ?? '').trim();
+    const startTime = (c[STI] ?? '').trim();
 
     if (!isOpened(destName, status, queueId)) continue;
 
-    // Parse date from startTime (format: M/D/YYYY H:MM:SS AM/PM)
     const dateMatch = startTime.match(/(\d+)\/(\d+)\/(\d{4})/);
     const date = dateMatch
       ? `${dateMatch[3]}-${dateMatch[1].padStart(2,'0')}-${dateMatch[2].padStart(2,'0')}`
@@ -196,14 +207,13 @@ export async function GET(request: Request) {
       return NextResponse.json({ ok: false, error: '3CX login failed' }, { status: 401 });
     }
 
-    // 2. Pull 3CX report — use lastPulled date to minimize data
+    // 2. Pull 3CX report — use lastPulled to minimize data fetched
     let pullFrom = from;
     if (redis) {
       try {
         const lastPulled = await redis.get<string>("3cx:lastPulled");
         if (lastPulled) {
           const lastDate = new Date(lastPulled).toISOString().slice(0, 10);
-          // Pull from the later of: lastPulled date or requested from date
           pullFrom = lastDate > from ? lastDate : from;
         }
       } catch {}
@@ -219,37 +229,39 @@ export async function GET(request: Request) {
       `PageNumber%3D1%7C%7C%7CPageCnt%3D2000%7C%7C%7C` +
       `SortColumn%3D%7C%7C%7CSortAorD%3D`;
 
-    const csv          = await httpsGet(reportUrl, { Cookie: loginResp.cookies });
-    const newOpened    = parseCSV(csv);
-    const nowISO       = new Date().toISOString();
+    const csv       = await httpsGet(reportUrl, { Cookie: loginResp.cookies });
+    const newOpened = parseCSV(csv);
+    const nowISO    = new Date().toISOString();
 
-    // 3. Merge into KV opened set (ITD dedup — first appearance wins)
+    // 3. Merge into KV — dedup by phone:YYYY-MM (one entry per phone per month)
     let openedSet: OpenedSet = {};
     if (redis) {
       openedSet = await loadOpened(redis);
       let changed = false;
       for (const { phone, date } of newOpened) {
-        if (!openedSet[phone]) {
-          openedSet[phone] = { date };
+        const monthKey = `${phone}:${date.slice(0, 7)}`;
+        if (!openedSet[monthKey]) {
+          openedSet[monthKey] = { date, phone };
           changed = true;
         }
       }
       if (changed) await saveOpened(redis, openedSet, nowISO);
     }
 
-    // 4. Return opened phones filtered to requested date range
-    const filteredOpened = Object.entries(openedSet)
-      .filter(([, v]) => v.date >= from && v.date <= to)
-      .map(([phone, v]) => ({ phone, date: v.date }));
+    // 4. Return phones filtered to requested date range
+    // Strip the :YYYY-MM suffix so downstream code gets plain phone numbers
+    const filteredOpened = Object.values(openedSet)
+      .filter(v => v.date >= from && v.date <= to)
+      .map(v => ({ phone: v.phone, date: v.date }));
 
     return NextResponse.json({
-      ok:           true,
+      ok:          true,
       from,
       to,
-      openedCount:  filteredOpened.length,
-      totalITD:     Object.keys(openedSet).length,
-      opened:       filteredOpened,
-      lastUpdated:  nowISO,
+      openedCount: filteredOpened.length,
+      totalITD:    Object.keys(openedSet).length,
+      opened:      filteredOpened,
+      lastUpdated: nowISO,
     });
 
   } catch (err: unknown) {
