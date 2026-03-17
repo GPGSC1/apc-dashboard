@@ -93,7 +93,31 @@ function loadListFiles(): { phoneToList: Map<string, string>; loadedFiles: strin
   return { phoneToList, loadedFiles };
 }
 
-// ── LOAD LIST COSTS ───────────────────────────────────────────────────────────
+// ── LOAD PHONE→LIST MAP FROM KV ───────────────────────────────────────────────
+async function loadPhoneToList(redis: Redis | null): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  if (!redis) return map;
+  try {
+    // Check if chunked
+    const chunks = await redis.get<number>("list:phoneMapChunks");
+    if (chunks && chunks > 1) {
+      const results = await Promise.all(
+        Array.from({ length: chunks }, (_, i) =>
+          redis.get<Record<string, string>>(`list:phoneMap:${i}`)
+        )
+      );
+      for (const chunk of results) {
+        if (chunk) for (const [phone, list] of Object.entries(chunk)) map.set(phone, list);
+      }
+    } else {
+      const raw = await redis.get<Record<string, string>>("list:phoneMap");
+      if (raw) for (const [phone, list] of Object.entries(raw)) map.set(phone, list);
+    }
+  } catch (e) {
+    console.error("[data] list:phoneMap read failed:", e);
+  }
+  return map;
+}
 function loadListCosts(): Record<string, number> {
   const costFile = path.join(DATA_DIR, "list_costs.json");
   if (fs.existsSync(costFile)) {
@@ -139,8 +163,17 @@ export async function GET(request: Request) {
     const listCosts = loadListCosts();
     const redis     = getRedis();
 
-    // ── 1. LOAD DATA LIST FILES ───────────────────────────────────────────────
-    const { phoneToList, loadedFiles } = loadListFiles();
+    // ── 1. LOAD PHONE→LIST MAP FROM KV ───────────────────────────────────────
+    const phoneToList = await loadPhoneToList(redis);
+    // Fall back to filesystem if KV map not seeded yet
+    let loadedFiles: string[] = [];
+    if (phoneToList.size === 0) {
+      const { phoneToList: fsMap, loadedFiles: fsFiles } = loadListFiles();
+      for (const [phone, list] of fsMap) phoneToList.set(phone, list);
+      loadedFiles = fsFiles;
+    } else {
+      loadedFiles = Object.keys(DEFAULT_LISTS); // all lists loaded from KV
+    }
 
     // ── 2. LOAD OPENED FROM 3CX KV (filter by date range) ────────────────────
     // openedSet is keyed by phone:YYYY-MM — strip suffix to get phone for matching
