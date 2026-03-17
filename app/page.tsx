@@ -185,7 +185,6 @@ function ByListView({ data }: { data: DashData }) {
   const lists  = data.allLists?.length ? data.allLists : Object.keys(data.byList);
   const totals = lists.reduce((a, li) => {
     const r = data.byList[li] || { o:0, s:0, t:0, min:0, cost:0, listCost:0 };
-    if (r.listCost === 0) return a;
     return { t:a.t+r.t, o:a.o+r.o, s:a.s+r.s, min:a.min+r.min, cost:a.cost+r.cost, listCost:a.listCost+r.listCost };
   }, { t:0, o:0, s:0, min:0, cost:0, listCost:0 });
 
