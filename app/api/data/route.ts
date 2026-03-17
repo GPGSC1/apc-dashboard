@@ -313,11 +313,19 @@ export async function GET(request: Request) {
       if (li) { ensure(li); byList[li].o++; }
     }
 
-    // MINUTES & COST
+    // MINUTES, COST & TRANSFERS from AIM
     for (const [li, stats] of Object.entries(aimByList)) {
       ensure(li);
       byList[li].min  += stats.min;
       byList[li].cost += stats.cost;
+    }
+
+    // TRANSFERS — sum from aimByAgent across all agents for each list
+    for (const agentData of Object.values(aimByAgent)) {
+      for (const [li, stats] of Object.entries(agentData)) {
+        ensure(li);
+        byList[li].t += (stats as any).transfers ?? 0;
+      }
     }
 
     // SALES — phone must be in openedSet AND in a list file; not Fishbein
