@@ -49,12 +49,6 @@ function soapRequest(): Promise<string> {
   });
 }
 
-function getTag(xml: string, tag: string): string {
-  const re = new RegExp('<' + tag + '[^>]*>([^<]*)</' + tag + '>', 'i');
-  const m = xml.match(re);
-  return m ? m[1].trim() : '';
-}
-
 export async function GET() {
   try {
     const raw = await soapRequest();
@@ -69,80 +63,86 @@ export async function GET() {
     }
 
     const buf = await decompress(Buffer.from(b64, 'base64'));
-    const xmlContent = buf.toString('utf8');
+    const xml = buf.toString('utf8');
+    const xmlLen = xml.length;
 
-    const dealRe = /<DealLog>([\s\S]*?)<\/DealLog>/gi;
-    let match;
-    const allRecords: any[] = [];
-    const soldRecords: any[] = [];
+    // LIGHTWEIGHT: fast string counts instead of full XML parse
+    const totalRecords = (xml.match(/<DealLog>/gi) || []).length;
+    const soldCount    = (xml.match(/<dealstatus>Sold<\/dealstatus>/gi) || []).length;
+
+    // Today in Central Time
+    const now = new Date();
+    const ct  = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+    const mm  = String(ct.getMonth() + 1).padStart(2, '0');
+    const dd  = String(ct.getDate()).padStart(2, '0');
+    const yyyy = ct.getFullYear();
+    const todayPadded = mm + '/' + dd + '/' + yyyy;
+    const todayShort  = (ct.getMonth() + 1) + '/' + ct.getDate() + '/' + yyyy;
+
+    // Yesterday
+    const yd = new Date(ct); yd.setDate(yd.getDate() - 1);
+    const ymm = String(yd.getMonth() + 1).padStart(2, '0');
+    const ydd = String(yd.getDate()).padStart(2, '0');
+    const yesterdayPadded = ymm + '/' + ydd + '/' + yyyy;
+    const yesterdayShort  = (yd.getMonth() + 1) + '/' + yd.getDate() + '/' + yyyy;
+
+    // Count solddate for today & yesterday
+    const re1 = new RegExp('<solddate>' + todayPadded + '</solddate>', 'gi');
+    const re2 = new RegExp('<solddate>' + todayShort + '</solddate>', 'gi');
+    const re3 = new RegExp('<solddate>' + yesterdayPadded + '</solddate>', 'gi');
+    const re4 = new RegExp('<solddate>' + yesterdayShort + '</solddate>', 'gi');
+    const soldToday     = (xml.match(re1) || []).length + (xml.match(re2) || []).length;
+    const soldYesterday = (xml.match(re3) || []).length + (xml.match(re4) || []).length;
+
+    // Count lastSaved for today
+    const re5 = new RegExp('<lastSaved>' + todayPadded + '</lastSaved>', 'gi');
+    const re6 = new RegExp('<lastSaved>' + todayShort + '</lastSaved>', 'gi');
+    const savedToday = (xml.match(re5) || []).length + (xml.match(re6) || []).length;
+
+    // Collect all unique solddate values with counts
     const dateCounts: Record<string, number> = {};
+    const sdRe = /<solddate>(\d{1,2}\/\d{1,2}\/\d{4})<\/solddate>/gi;
+    let m;
+    while ((m = sdRe.exec(xml)) !== null) {
+      dateCounts[m[1]] = (dateCounts[m[1]] || 0) + 1;
+    }
+    const sorted = Object.entries(dateCounts)
+      .sort((a, b) => new Date(a[0]).getTime() - new Date(b[0]).getTime())
+      .slice(-15);
 
-    while ((match = dealRe.exec(xmlContent)) !== null) {
-      const block = match[1];
-      const record = {
-        lastName:      getTag(block, 'lastname'),
-        firstName:     getTag(block, 'firstName'),
-        dealStatus:    getTag(block, 'dealstatus'),
-        soldDate:      getTag(block, 'solddate'),
-        lastSaved:     getTag(block, 'lastSaved'),
-        homePhone:     getTag(block, 'HomePhone'),
-        cellphone:     getTag(block, 'cellphone'),
-        contractNo:    getTag(block, 'contractNo'),
-        promoCode:     getTag(block, 'promoCode'),
-        owner:         getTag(block, 'owner'),
-        listCode:      getTag(block, 'ListCode'),
-        state:         getTag(block, 'state'),
-        make:          getTag(block, 'Make'),
-        model:         getTag(block, 'model'),
-        admin:         getTag(block, 'Admin'),
-        cancelReason:  getTag(block, 'CancelReason'),
-        vchCampaignId: getTag(block, 'vchCampaignId'),
-      };
-      allRecords.push(record);
-
-      if (record.dealStatus.toLowerCase() === 'sold') {
-        soldRecords.push(record);
-        const sd = record.soldDate || 'no-date';
-        dateCounts[sd] = (dateCounts[sd] || 0) + 1;
+    // Extract a few of today's sold records for review
+    const todaySample: any[] = [];
+    if (soldToday > 0) {
+      const blockRe = new RegExp('<DealLog>([\\s\\S]*?(?:' + todayPadded + '|' + todayShort + ')[\\s\\S]*?)</DealLog>', 'gi');
+      let bm;
+      let count = 0;
+      while ((bm = blockRe.exec(xml)) !== null && count < 5) {
+        const bl = bm[1];
+        const gt = (t: string) => { const r = bl.match(new RegExp('<' + t + '>([^<]*)</' + t + '>', 'i')); return r ? r[1] : ''; };
+        if (gt('dealstatus').toLowerCase() === 'sold') {
+          todaySample.push({
+            name: gt('firstName') + ' ' + gt('lastname'),
+            soldDate: gt('solddate'),
+            homePhone: gt('HomePhone'),
+            promoCode: gt('promoCode'),
+            owner: gt('owner'),
+          });
+          count++;
+        }
       }
     }
 
-    const now = new Date();
-    const ct = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
-    const todayMMDD = String(ct.getMonth() + 1).padStart(2, '0') + '/' +
-                      String(ct.getDate()).padStart(2, '0') + '/' +
-                      ct.getFullYear();
-    const todayShort = (ct.getMonth() + 1) + '/' + ct.getDate() + '/' + ct.getFullYear();
-
-    const todaySold = soldRecords.filter(r => {
-      const sd = r.soldDate;
-      return sd === todayMMDD || sd === todayShort ||
-             sd.startsWith(todayMMDD) || sd.startsWith(todayShort);
-    });
-
-    const todayLastSaved = allRecords.filter(r => {
-      const ls = r.lastSaved;
-      return ls === todayMMDD || ls === todayShort ||
-             ls.startsWith(todayMMDD) || ls.startsWith(todayShort);
-    });
-
-    const sortedDates = Object.entries(dateCounts)
-      .sort((a, b) => {
-        try { return new Date(a[0]).getTime() - new Date(b[0]).getTime(); }
-        catch { return 0; }
-      });
-
     return NextResponse.json({
       ok: true,
-      totalRecords: allRecords.length,
-      soldCount: soldRecords.length,
-      todayDate: todayMMDD,
-      todaySoldCount: todaySold.length,
-      todaySold: todaySold.slice(0, 20),
-      todayLastSavedCount: todayLastSaved.length,
-      todayLastSaved: todayLastSaved.slice(0, 10),
-      recentSoldDates: sortedDates.slice(-15),
-      sampleSold: soldRecords.slice(-5),
+      xmlSize: xmlLen,
+      totalRecords,
+      soldCount,
+      todayDate: todayPadded,
+      soldToday,
+      soldYesterday,
+      savedToday,
+      recentSoldDates: sorted,
+      todaySample,
     });
 
   } catch (err: any) {
