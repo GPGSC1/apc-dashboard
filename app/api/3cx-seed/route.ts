@@ -70,7 +70,7 @@ export async function GET(request: Request) {
   }
 
   // Load existing KV data or start fresh
-  let openedSet: Record<string, { date: string }> = {};
+  let openedSet: Record<string, { date: string; phone: string }> = {};
   let seenIds: Set<string> = new Set();
 
   if (isReset) {
