@@ -439,6 +439,44 @@ function AgentMappingView() {
   );
 }
 
+// ── SOURCE HEALTH BAR ─────────────────────────────────────────────────────────
+function SourceHealthBar({ staleness }: { staleness: DashData["staleness"] }) {
+  const now = Date.now();
+  const sources = [
+    { label: "AIM",  ts: staleness?.aim  },
+    { label: "3CX",  ts: staleness?.cx   },
+    { label: "Moxy", ts: staleness?.moxy },
+  ];
+  const getColor = (ts: string | null | undefined) => {
+    if (!ts) return C.muted;
+    const mins = Math.round((now - new Date(ts).getTime()) / 60000);
+    if (mins <= 60)  return C.green;
+    if (mins <= 120) return C.amber;
+    return C.red;
+  };
+  const getAge = (ts: string | null | undefined) => {
+    if (!ts) return "never";
+    const mins = Math.round((now - new Date(ts).getTime()) / 60000);
+    if (mins < 60) return `${mins}m`;
+    return `${Math.floor(mins/60)}h ${mins%60}m`;
+  };
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:3 }}>
+      {sources.map(s => (
+        <div key={s.label} style={{ display:"flex", alignItems:"center", gap:3 }}>
+          <div style={{ width:6, height:6, borderRadius:"50%", background:getColor(s.ts), boxShadow:`0 0 4px ${getColor(s.ts)}` }} />
+          <span style={{ fontSize:10, color:getColor(s.ts), fontFamily:"monospace" }}>
+            {s.label}
+          </span>
+          <span style={{ fontSize:9, color:C.muted, fontFamily:"monospace" }}>
+            ({getAge(s.ts)})
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── MAIN PAGE ─────────────────────────────────────────────────────────────────
 export default function Home() {
   const [data, setData]               = useState<DashData>(DEMO);
@@ -506,7 +544,7 @@ export default function Home() {
           <div style={{ width:8, height:8, borderRadius:"50%", background:C.accent, boxShadow:`0 0 10px ${C.accent}`, animation:"pulse 2s infinite" }} />
           <div>
             <div style={{ fontSize:16, fontWeight:700, color:C.text, letterSpacing:".06em", textTransform:"uppercase" }}>GPG — AI Voice Agent Dashboard</div>
-            <div style={{ fontSize:10, color:C.muted, marginTop:1 }}>Auto Protection Center · AIM Now / Moxy · AI-Attributed Sales Only</div>
+            <SourceHealthBar staleness={data.staleness} />
           </div>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
