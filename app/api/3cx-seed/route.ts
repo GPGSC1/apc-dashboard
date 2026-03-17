@@ -79,7 +79,7 @@ export async function GET(request: Request) {
   } else {
     try {
       const [existingOpened, existingIds] = await Promise.all([
-        redis.get<Record<string, { date: string }>>("3cx:opened"),
+       redis.get<Record<string, { date: string; phone: string }>>>("3cx:opened"), 
         redis.get<string[]>("3cx:seenIds"),
       ]);
       if (existingOpened) openedSet = existingOpened;
