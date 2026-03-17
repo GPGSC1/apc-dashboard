@@ -2,10 +2,6 @@ import { NextResponse } from 'next/server';
 import { Redis } from "@upstash/redis";
 import https from 'https';
 
-// ── KV ────────────────────────────────────────────────────────────────────────
-// Stores: 3cx:opened → Record<"phone:YYYY-MM", { date: string, phone: string }>
-// Stores: 3cx:lastPulled → ISO string
-
 function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL;
   const token = process.env.KV_REST_API_TOKEN;
@@ -13,39 +9,24 @@ function getRedis(): Redis | null {
   return new Redis({ url, token });
 }
 
-type OpenedEntry = { date: string; phone: string };
-type OpenedSet   = Record<string, OpenedEntry>;
+type CallRecord = { phone: string; date: string };
+type CallsSet   = Record<string, CallRecord>; // callId → { phone, date }
 
-async function loadOpened(redis: Redis): Promise<OpenedSet> {
+async function loadCalls(redis: Redis): Promise<CallsSet> {
   try {
-    const raw = await redis.get<Record<string, any>>("3cx:opened");
-    if (!raw) return {};
-
-    // Migrate old format (phone → { date }) to new format (phone:YYYY-MM → { date, phone })
-    const result: OpenedSet = {};
-    for (const [key, v] of Object.entries(raw)) {
-      if (key.match(/^\d{10}:\d{4}-\d{2}$/)) {
-        // Already new format
-        result[key] = { date: v.date, phone: v.phone ?? key.split(':')[0] };
-      } else if (key.match(/^\d{10}$/)) {
-        // Old format — migrate to new
-        const month   = (v.date as string).slice(0, 7);
-        const newKey  = `${key}:${month}`;
-        result[newKey] = { date: v.date, phone: key };
-      }
-    }
-    return result;
+    const raw = await redis.get<CallsSet>("3cx:calls");
+    return raw ?? {};
   } catch { return {}; }
 }
 
-async function saveOpened(redis: Redis, opened: OpenedSet, lastPulled: string) {
+async function saveCalls(redis: Redis, calls: CallsSet, phones: Set<string>, lastPulled: string) {
   try {
-    await redis.set("3cx:opened", opened);
+    await redis.set("3cx:calls",      calls);
+    await redis.set("3cx:phones",     [...phones]);
     await redis.set("3cx:lastPulled", lastPulled);
   } catch (e) { console.error("[3CX KV] save failed:", e); }
 }
 
-// ── HELPERS ───────────────────────────────────────────────────────────────────
 function normalizePhone(raw: string): string {
   const cleaned = raw.replace(/^=/, '').replace(/^"/, '').replace(/"$/, '');
   const digits  = cleaned.replace(/\D/g, '');
@@ -115,7 +96,8 @@ function isOpened(destName: string, status: string, queueId: string): boolean {
   return true;
 }
 
-function parseCSV(csv: string): { phone: string; date: string }[] {
+// Parse CSV and return every qualifying call with its callId
+function parseCSV(csv: string): { callId: string; phone: string; date: string }[] {
   const lines = csv.split('\n');
   if (lines.length < 5) return [];
 
@@ -137,26 +119,28 @@ function parseCSV(csv: string): { phone: string; date: string }[] {
     return -1;
   };
 
+  const CID = find('callid')           >= 0 ? find('callid')           : 0;
   const STI = find('start time')       >= 0 ? find('start time')       : 1;
   const PHI = find('originated by')    >= 0 ? find('originated by')    : 8;
   const DNI = find('destination name') >= 0 ? find('destination name') : 11;
   const SSI = find('status')           >= 0 ? find('status')           : 12;
   const QI  = find('queue')            >= 0 ? find('queue')            : 18;
 
-  const results: { phone: string; date: string }[] = [];
+  const results: { callId: string; phone: string; date: string }[] = [];
   for (let i = headerRowIdx + 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
     const c = parseCsvLine(line);
     if (c.length < 13) continue;
 
-    const phone     = normalizePhone(c[PHI] ?? '');
+    const phone   = normalizePhone(c[PHI] ?? '');
     if (!phone || phone.length !== 10) continue;
 
     const destName  = (c[DNI] ?? '').trim();
     const status    = (c[SSI] ?? '').trim().toLowerCase();
     const queueId   = (c[QI]  ?? '').trim();
     const startTime = (c[STI] ?? '').trim();
+    const callId    = (c[CID] ?? '').trim();
 
     if (!isOpened(destName, status, queueId)) continue;
 
@@ -165,12 +149,11 @@ function parseCSV(csv: string): { phone: string; date: string }[] {
       ? `${dateMatch[3]}-${dateMatch[1].padStart(2,'0')}-${dateMatch[2].padStart(2,'0')}`
       : new Date().toISOString().slice(0, 10);
 
-    results.push({ phone, date });
+    if (callId) results.push({ callId, phone, date });
   }
   return results;
 }
 
-// ── MAIN HANDLER ──────────────────────────────────────────────────────────────
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const from = searchParams.get('from') ?? '2026-02-25';
@@ -207,7 +190,7 @@ export async function GET(request: Request) {
       return NextResponse.json({ ok: false, error: '3CX login failed' }, { status: 401 });
     }
 
-    // 2. Pull 3CX report — use lastPulled to minimize data fetched
+    // 2. Pull from lastPulled to minimize data
     let pullFrom = from;
     if (redis) {
       try {
@@ -230,37 +213,41 @@ export async function GET(request: Request) {
       `SortColumn%3D%7C%7C%7CSortAorD%3D`;
 
     const csv       = await httpsGet(reportUrl, { Cookie: loginResp.cookies });
-    const newOpened = parseCSV(csv);
+    const newCalls  = parseCSV(csv);
     const nowISO    = new Date().toISOString();
 
-    // 3. Merge into KV — dedup by phone:YYYY-MM (one entry per phone per month)
-    let openedSet: OpenedSet = {};
+    // 3. Merge into KV — dedup by callId only
+    let callsSet: CallsSet = {};
+    let phonesSet: Set<string> = new Set();
+
     if (redis) {
-      openedSet = await loadOpened(redis);
+      callsSet  = await loadCalls(redis);
+      // Rebuild phones from existing calls
+      for (const v of Object.values(callsSet)) phonesSet.add(v.phone);
+
       let changed = false;
-      for (const { phone, date } of newOpened) {
-        const monthKey = `${phone}:${date.slice(0, 7)}`;
-        if (!openedSet[monthKey]) {
-          openedSet[monthKey] = { date, phone };
+      for (const { callId, phone, date } of newCalls) {
+        if (!callsSet[callId]) {
+          callsSet[callId] = { phone, date };
+          phonesSet.add(phone);
           changed = true;
         }
       }
-      if (changed) await saveOpened(redis, openedSet, nowISO);
+      if (changed) await saveCalls(redis, callsSet, phonesSet, nowISO);
     }
 
-    // 4. Return phones filtered to requested date range
-    // Strip the :YYYY-MM suffix so downstream code gets plain phone numbers
-    const filteredOpened = Object.values(openedSet)
-      .filter(v => v.date >= from && v.date <= to)
-      .map(v => ({ phone: v.phone, date: v.date }));
+    // 4. Return calls filtered to requested date range
+    const filteredCalls = Object.values(callsSet)
+      .filter(v => v.date >= from && v.date <= to);
 
     return NextResponse.json({
       ok:          true,
       from,
       to,
-      openedCount: filteredOpened.length,
-      totalITD:    Object.keys(openedSet).length,
-      opened:      filteredOpened,
+      openedCount: filteredCalls.length,
+      totalITD:    Object.keys(callsSet).length,
+      uniquePhones: phonesSet.size,
+      opened:      filteredCalls,
       lastUpdated: nowISO,
     });
 
