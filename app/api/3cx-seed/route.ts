@@ -25,10 +25,6 @@ function normalizePhone(raw: string): string {
   return d.slice(-10);
 }
 
-// Opened rules — matches manual exactly:
-// 1. Status = "answered"
-// 2. Destination Name non-empty
-// 3. Queue (col 18) = "8043"
 function isOpened(destName: string, status: string, queueId: string): boolean {
   if (status !== 'answered') return false;
   if (!destName || destName.trim() === '') return false;
@@ -36,7 +32,7 @@ function isOpened(destName: string, status: string, queueId: string): boolean {
   return true;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const url   = process.env.KV_REST_API_URL;
   const token = process.env.KV_REST_API_TOKEN;
   if (!url || !token) {
@@ -44,10 +40,14 @@ export async function GET() {
   }
   const redis = new Redis({ url, token });
 
+  // ?reset=true wipes KV and reseeds clean
+  const { searchParams } = new URL(request.url);
+  const isReset = searchParams.get("reset") === "true";
+
   const dataDir = path.join(process.cwd(), "data");
   const files   = fs.readdirSync(dataDir);
 
-  const LIST_FILES  = new Set(['rt','bl021926bo','dg021726sc','jh022326mn','jl021926cr','jl021926lp','jl022526rs']);
+  const LIST_FILES   = new Set(['rt','bl021926bo','dg021726sc','jh022326mn','jl021926cr','jl021926lp','jl022526rs']);
   const AIM_KEYWORDS = ['acalls','bcalls','xfrcalls','aim'];
 
   const csvFiles = files.filter(f => {
@@ -69,9 +69,25 @@ export async function GET() {
     }, { status: 400 });
   }
 
-  // Always start fresh — full reset on every seed run
-  const openedSet: Record<string, { date: string }> = {};
-  let processed = 0, added = 0, skipped = 0;
+  // Load existing KV data or start fresh
+  let openedSet: Record<string, { date: string }> = {};
+  let seenIds: Set<string> = new Set();
+
+  if (isReset) {
+    await redis.del("3cx:opened");
+    await redis.del("3cx:seenIds");
+  } else {
+    try {
+      const [existingOpened, existingIds] = await Promise.all([
+        redis.get<Record<string, { date: string }>>("3cx:opened"),
+        redis.get<string[]>("3cx:seenIds"),
+      ]);
+      if (existingOpened) openedSet = existingOpened;
+      if (existingIds)    seenIds   = new Set(existingIds);
+    } catch { /* start fresh if KV read fails */ }
+  }
+
+  let processed = 0, added = 0, skipped = 0, dupes = 0;
 
   for (const csvFile of csvFiles) {
     const text  = fs.readFileSync(path.join(dataDir, csvFile), "latin1");
@@ -95,11 +111,12 @@ export async function GET() {
       return -1;
     };
 
-    const STI = find('start time')       >= 0 ? find('start time')       : 1;
-    const PHI = find('originated by')    >= 0 ? find('originated by')    : 8;
-    const DNI = find('destination name') >= 0 ? find('destination name') : 11;
-    const SSI = find('status')           >= 0 ? find('status')           : 12;
-    const QI  = find('queue')            >= 0 ? find('queue')            : 18;
+    const CID = find('callid')          >= 0 ? find('callid')          : 0;
+    const STI = find('start time')      >= 0 ? find('start time')      : 1;
+    const PHI = find('originated by')   >= 0 ? find('originated by')   : 8;
+    const DNI = find('destination name')>= 0 ? find('destination name'): 11;
+    const SSI = find('status')          >= 0 ? find('status')          : 12;
+    const QI  = find('queue')           >= 0 ? find('queue')           : 18;
 
     for (let i = headerIdx + 1; i < lines.length; i++) {
       const line = lines[i].trim();
@@ -109,12 +126,16 @@ export async function GET() {
 
       processed++;
 
-      const phone    = normalizePhone(c[PHI] ?? '');
+      // Dedup by Call ID
+      const callId = (c[CID] ?? '').trim();
+      if (callId && seenIds.has(callId)) { dupes++; continue; }
+
+      const phone = normalizePhone(c[PHI] ?? '');
       if (!phone || phone.length !== 10) { skipped++; continue; }
 
-      const destName = (c[DNI] ?? '').trim();
-      const status   = (c[SSI] ?? '').trim().toLowerCase();
-      const queueId  = (c[QI]  ?? '').trim();
+      const destName  = (c[DNI] ?? '').trim();
+      const status    = (c[SSI] ?? '').trim().toLowerCase();
+      const queueId   = (c[QI]  ?? '').trim();
       const startTime = (c[STI] ?? '').trim();
 
       if (!isOpened(destName, status, queueId)) { skipped++; continue; }
@@ -124,23 +145,34 @@ export async function GET() {
       const date = `${dm[3]}-${dm[1].padStart(2,'0')}-${dm[2].padStart(2,'0')}`;
       if (date < CAMPAIGN_START) { skipped++; continue; }
 
-      if (!openedSet[phone]) {
-        openedSet[phone] = { date };
+      // Dedup key = phone:YYYY-MM — same phone allowed once per month
+      const monthKey = `${phone}:${date.slice(0, 7)}`;
+      if (callId && seenIds.has(callId)) { dupes++; continue; }
+
+      // Mark call ID as seen
+      if (callId) seenIds.add(callId);
+
+      // First appearance per phone per month wins
+      if (!openedSet[monthKey]) {
+        openedSet[monthKey] = { date, phone };
         added++;
       }
     }
   }
 
-  await redis.set("3cx:opened", openedSet);
+  await redis.set("3cx:opened",    openedSet);
+  await redis.set("3cx:seenIds",   [...seenIds]);
   await redis.set("3cx:lastPulled", new Date().toISOString());
 
   return NextResponse.json({
     ok:          true,
-    message:     "3CX seed complete",
+    message:     isReset ? "3CX seed complete (full reset)" : "3CX seed complete (incremental)",
     files:       csvFiles,
     processed,
     added,
+    dupes,
     skipped,
     totalOpened: Object.keys(openedSet).length,
+    totalSeenIds: seenIds.size,
   });
 }
