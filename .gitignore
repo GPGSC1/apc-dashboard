@@ -36,6 +36,18 @@ yarn-error.log*
 # vercel
 .vercel
 
+# Large data files — do NOT commit (too big for Vercel)
+data/*.xls
+data/*.xlsx
+data/Acalls-*.csv
+data/Bcalls-*.csv
+data/aim_calls_itd.csv
+data/opened.csv
+data/sales.xls
+data/Call Summary Report*.csv
+
+# Seed scripts (run locally, not needed on Vercel)
+seed-*.js
 # typescript
 *.tsbuildinfo
 next-env.d.ts
