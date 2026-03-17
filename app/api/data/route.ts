@@ -170,36 +170,50 @@ export async function GET(request: Request) {
       loadedFiles = Object.keys(DEFAULT_LISTS); // all lists loaded from KV
     }
 
-    // ── 2. LOAD OPENED FROM 3CX KV (filter by date range) ────────────────────
-    // openedSet is keyed by phone:YYYY-MM — strip suffix to get phone for matching
-    let openedSet: Record<string, { date: string }> = {};
+    // ── 2. LOAD CALLS FROM 3CX KV (filter by date range) ─────────────────────
+    // openedSet: phone → true (for sales attribution gate — did this phone ever touch 8043?)
+    // callsList: array of { phone, date } for counting calls per list
+    let openedPhones: Set<string> = new Set();
+    let callsList: { phone: string; date: string }[] = [];
     try {
       const callsResp = await fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`);
       if (callsResp.ok) {
         const callsData = await callsResp.json();
         for (const { phone, date } of (callsData.opened ?? [])) {
           if (date >= fromDate && date <= toDate) {
-            openedSet[phone] = { date };
+            callsList.push({ phone, date });
+            openedPhones.add(phone);
           }
         }
       }
     } catch (e) {
       console.error("[data] 3CX fetch failed:", e);
-      // Fallback: read directly from KV and strip phone:YYYY-MM keys
+      // Fallback: read directly from KV
       if (redis) {
         try {
-          const raw = await redis.get<Record<string, { date: string; phone?: string }>>("3cx:opened");
-          if (raw) {
-            for (const [key, v] of Object.entries(raw)) {
-              // Support both old format (phone) and new format (phone:YYYY-MM)
-              const phone = v.phone ?? key.split(':')[0];
+          const [rawCalls, rawPhones] = await Promise.all([
+            redis.get<Record<string, { phone: string; date: string }>>("3cx:calls"),
+            redis.get<string[]>("3cx:phones"),
+          ]);
+          if (rawCalls) {
+            for (const v of Object.values(rawCalls)) {
               if (v.date >= fromDate && v.date <= toDate) {
-                openedSet[phone] = { date: v.date };
+                callsList.push({ phone: v.phone, date: v.date });
+                openedPhones.add(v.phone);
               }
             }
           }
+          if (rawPhones) for (const p of rawPhones) openedPhones.add(p);
         } catch {}
       }
+    }
+
+    // Also load ITD phones for sales attribution (phones seen outside date range still count)
+    if (redis) {
+      try {
+        const allPhones = await redis.get<string[]>("3cx:phones");
+        if (allPhones) for (const p of allPhones) openedPhones.add(p);
+      } catch {}
     }
 
     // ── 3. LOAD AIM MINUTES/COST FROM KV ────────────────────────────────────
@@ -307,8 +321,8 @@ export async function GET(request: Request) {
     };
     for (const li of allListKeys) ensure(li);
 
-    // OPENED
-    for (const phone of Object.keys(openedSet)) {
+    // CALLS — count every qualifying call per list
+    for (const { phone } of callsList) {
       const li = phoneToList.get(phone);
       if (li) { ensure(li); byList[li].o++; }
     }
@@ -339,9 +353,9 @@ export async function GET(request: Request) {
 
       if (s.salesperson?.toLowerCase().includes("fishbein")) continue;
 
-      // Try homePhone first, then cellPhone (REST API has reliable data for both)
+      // Try homePhone first, then cellPhone — check against ITD phone set for attribution
       const candidates = [s.homePhone, s.cellPhone].filter(p => p && p.length === 10);
-      const matchedPhone = candidates.find(p => openedSet[p] && phoneToList.has(p));
+      const matchedPhone = candidates.find(p => openedPhones.has(p) && phoneToList.has(p));
       if (!matchedPhone) continue;
 
       const li = phoneToList.get(matchedPhone)!;
@@ -372,7 +386,7 @@ export async function GET(request: Request) {
       staleness,
       aimByAgent,
       apiSources: {
-        openedCount:     Object.keys(openedSet).length,
+        openedCount:     callsList.length,
         salesCount:      salesRows.length,
         listFilesLoaded: loadedFiles.length,
         dateRange:       { from: fromDate, to: toDate },
