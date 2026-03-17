@@ -143,6 +143,7 @@ export async function GET(request: Request) {
     const { phoneToList, loadedFiles } = loadListFiles();
 
     // ── 2. LOAD OPENED FROM 3CX KV (filter by date range) ────────────────────
+    // openedSet is keyed by phone:YYYY-MM — strip suffix to get phone for matching
     let openedSet: Record<string, { date: string }> = {};
     try {
       const callsResp = await fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`);
@@ -156,13 +157,17 @@ export async function GET(request: Request) {
       }
     } catch (e) {
       console.error("[data] 3CX fetch failed:", e);
-      // Fallback: read directly from KV
+      // Fallback: read directly from KV and strip phone:YYYY-MM keys
       if (redis) {
         try {
-          const raw = await redis.get<Record<string, { date: string }>>("3cx:opened");
+          const raw = await redis.get<Record<string, { date: string; phone?: string }>>("3cx:opened");
           if (raw) {
-            for (const [phone, v] of Object.entries(raw)) {
-              if (v.date >= fromDate && v.date <= toDate) openedSet[phone] = v;
+            for (const [key, v] of Object.entries(raw)) {
+              // Support both old format (phone) and new format (phone:YYYY-MM)
+              const phone = v.phone ?? key.split(':')[0];
+              if (v.date >= fromDate && v.date <= toDate) {
+                openedSet[phone] = { date: v.date };
+              }
             }
           }
         } catch {}
@@ -183,6 +188,18 @@ export async function GET(request: Request) {
       }
     } catch (e) {
       console.error("[data] AIM fetch failed:", e);
+    }
+
+    // ── 3b. LOAD AIM BY AGENT FROM KV ────────────────────────────────────────
+    type AgentListStats = Record<string, { min: number; cost: number; transfers: number }>;
+    let aimByAgent: Record<string, AgentListStats> = {};
+    if (redis) {
+      try {
+        const raw = await redis.get<Record<string, AgentListStats>>("aim:byagent");
+        if (raw) aimByAgent = raw;
+      } catch (e) {
+        console.error("[data] aim:byagent read failed:", e);
+      }
     }
 
     // ── 4. REFRESH MOXY THEN READ FROM KV ────────────────────────────────────
@@ -317,6 +334,7 @@ export async function GET(request: Request) {
       lastUpdated: new Date().toISOString(),
       hasData:     loadedFiles.length > 0,
       staleness,
+      aimByAgent,
       apiSources: {
         openedCount:     Object.keys(openedSet).length,
         salesCount:      salesRows.length,
