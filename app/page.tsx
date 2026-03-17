@@ -256,7 +256,7 @@ function ByAgentView({ agents, lists, crossData }: {
   lists: string[];
   crossData: Record<string, Record<string, { min: number; cost: number; transfers: number }>> | null;
 }) {
-  const cross = crossData ?? DEMO_CROSS;
+  const cross = crossData ?? {};
 
   const totals = agents.reduce((a, ag) => ({
     t:a.t+ag.t, o:a.o+ag.o, s:a.s+ag.s, min:a.min+ag.min, cost:a.cost+ag.cost,
