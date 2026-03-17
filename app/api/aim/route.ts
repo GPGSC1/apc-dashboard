@@ -30,10 +30,6 @@ const AGENT_SHORT: Record<string, string> = {
 };
 const shortAgent = (n: string) => AGENT_SHORT[n] || n;
 
-// ── KV ────────────────────────────────────────────────────────────────────────
-// Stores: aim:daily → Record<date, Record<list, {min, cost}>>
-// Stores: aim:lastPulled → ISO string
-
 function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL;
   const token = process.env.KV_REST_API_TOKEN;
@@ -41,18 +37,69 @@ function getRedis(): Redis | null {
   return new Redis({ url, token });
 }
 
-type DailyAIM = Record<string, Record<string, { min: number; cost: number }>>;
+type DayStats = Record<string, { min: number; cost: number }>;
+type DailyAIM = Record<string, DayStats>;
 
-async function loadDaily(redis: Redis): Promise<DailyAIM> {
+// Load only the days needed for the requested date range
+async function loadDailyRange(redis: Redis, fromDate: string, toDate: string): Promise<DailyAIM> {
   try {
-    const raw = await redis.get<DailyAIM>("aim:daily");
-    return raw ?? {};
+    const dayIndex = await redis.get<string[]>("aim:dayindex");
+    if (!dayIndex) return {};
+
+    const daysInRange = dayIndex.filter(d => d >= fromDate && d <= toDate);
+    if (daysInRange.length === 0) return {};
+
+    const results = await Promise.all(
+      daysInRange.map(d => redis.get<DayStats>(`aim:day:${d}`))
+    );
+
+    const daily: DailyAIM = {};
+    daysInRange.forEach((d, i) => {
+      if (results[i]) daily[d] = results[i]!;
+    });
+    return daily;
   } catch { return {}; }
 }
 
-async function saveDaily(redis: Redis, daily: DailyAIM, lastPulled: string) {
+// Load all days (for incremental merge)
+async function loadAllDaily(redis: Redis): Promise<DailyAIM> {
   try {
-    await redis.set("aim:daily", daily);
+    const dayIndex = await redis.get<string[]>("aim:dayindex");
+    if (!dayIndex || dayIndex.length === 0) return {};
+
+    const results = await Promise.all(
+      dayIndex.map(d => redis.get<DayStats>(`aim:day:${d}`))
+    );
+
+    const daily: DailyAIM = {};
+    dayIndex.forEach((d, i) => {
+      if (results[i]) daily[d] = results[i]!;
+    });
+    return daily;
+  } catch { return {}; }
+}
+
+// Save only the days that were modified
+async function saveChangedDays(redis: Redis, changedDays: DailyAIM, lastPulled: string) {
+  try {
+    // Get existing day index
+    const existing = await redis.get<string[]>("aim:dayindex") ?? [];
+    const existingSet = new Set(existing);
+    const newDays = Object.keys(changedDays).filter(d => !existingSet.has(d));
+
+    // Write each changed day as its own key
+    await Promise.all(
+      Object.entries(changedDays).map(([date, stats]) =>
+        redis.set(`aim:day:${date}`, stats)
+      )
+    );
+
+    // Update day index if new days were added
+    if (newDays.length > 0) {
+      const allDays = [...existing, ...newDays].sort();
+      await redis.set("aim:dayindex", allDays);
+    }
+
     await redis.set("aim:lastPulled", lastPulled);
   } catch (e) { console.error("[AIM KV] save failed:", e); }
 }
@@ -86,12 +133,17 @@ async function fetchPage(cookie: string, startISO: string, endISO: string, page:
 }
 
 // ── MERGE NEW CALLS INTO DAILY ────────────────────────────────────────────────
-function mergeCalls(daily: DailyAIM, calls: { campaignName: string; date: string; min: number; cost: number }[]) {
+function mergeCalls(
+  daily: DailyAIM,
+  changedDays: DailyAIM,
+  calls: { campaignName: string; date: string; min: number; cost: number }[]
+) {
   for (const call of calls) {
     const list = detectListKey(call.campaignName);
     if (!list || !Object.prototype.hasOwnProperty.call(KNOWN_LISTS, list)) continue;
-    if (!daily[call.date]) daily[call.date] = {};
-    if (!daily[call.date][list]) daily[call.date][list] = { min: 0, cost: 0 };
+    if (!daily[call.date])          daily[call.date]          = {};
+    if (!daily[call.date][list])    daily[call.date][list]    = { min: 0, cost: 0 };
+    if (!changedDays[call.date])    changedDays[call.date]    = daily[call.date];
     daily[call.date][list].min  += call.min;
     daily[call.date][list].cost += call.cost;
   }
@@ -111,7 +163,6 @@ function aggregateRange(daily: DailyAIM, fromDate: string, toDate: string) {
       byList[li].cost += stats.cost;
     }
   }
-  // Round
   for (const v of Object.values(byList)) {
     v.min  = Math.round(v.min);
     v.cost = Math.round(v.cost * 100) / 100;
@@ -131,23 +182,20 @@ export async function GET(request: Request) {
       return NextResponse.json({ ok: false, error: "KV not configured" }, { status: 500 });
     }
 
-    // Load cached daily aggregates
-    const daily = await loadDaily(redis);
-
     // Determine pull window
     let lastPulled: string | null = null;
     try { lastPulled = await redis.get<string>("aim:lastPulled"); } catch {}
     const sinceDate = lastPulled
       ? new Date(lastPulled).toISOString().slice(0, 10)
       : CAMPAIGN_START;
-    const nowISO    = new Date().toISOString();
-    const sinceISO  = new Date(sinceDate + "T06:00:00.000Z").toISOString();
+    const nowISO   = new Date().toISOString();
+    const sinceISO = new Date(sinceDate + "T06:00:00.000Z").toISOString();
 
-    // Incremental pull from AIM
+    // Incremental pull from AIM — only load all days if we have new data to merge
     try {
       const cookie    = await getSessionCookie();
       const firstPage = await fetchPage(cookie, sinceISO, nowISO, 1);
-      if (firstPage) {
+      if (firstPage && (firstPage.count ?? 0) > 0) {
         const totalPages = Math.ceil((firstPage.count ?? 0) / 100);
         const allRaw = [...(firstPage.data ?? [])];
         const pagePromises = [];
@@ -165,21 +213,32 @@ export async function GET(request: Request) {
           agent:        shortAgent((call.agent as { name?: string })?.name ?? "Unknown"),
         }));
 
-        mergeCalls(daily, newCalls);
-        await saveDaily(redis, daily, nowISO);
+        // Load all existing days for merge, track which ones change
+        const daily       = await loadAllDaily(redis);
+        const changedDays: DailyAIM = {};
+        mergeCalls(daily, changedDays, newCalls);
+        if (Object.keys(changedDays).length > 0) {
+          await saveChangedDays(redis, changedDays, nowISO);
+        }
+
+        // Aggregate from merged data
+        const byList = aggregateRange(daily, fromDate, toDate);
+        return NextResponse.json({
+          ok: true, source: "kv+live", dateRange: { start: fromDate, end: toDate },
+          byList, lastUpdated: nowISO,
+        });
       }
     } catch (e) {
       console.error("[AIM] incremental pull failed:", e);
     }
 
+    // No new data — read only the days needed for the date range
+    const daily  = await loadDailyRange(redis, fromDate, toDate);
     const byList = aggregateRange(daily, fromDate, toDate);
 
     return NextResponse.json({
-      ok:          true,
-      source:      "kv",
-      dateRange:   { start: fromDate, end: toDate },
-      byList,
-      lastUpdated: new Date().toISOString(),
+      ok: true, source: "kv", dateRange: { start: fromDate, end: toDate },
+      byList, lastUpdated: new Date().toISOString(),
     });
 
   } catch (err) {
