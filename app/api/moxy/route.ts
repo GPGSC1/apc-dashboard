@@ -1,9 +1,32 @@
 import { NextResponse } from 'next/server';
 
+// ─── Types ───────────────────────────────────────────────────────────────────
+export interface MoxySale {
+  contractNo:   string;
+  phone:        string;   // best available 10-digit normalised
+  cellPhone:    string;
+  homePhone:    string;
+  firstName:    string;
+  lastName:     string;
+  salesRep:     string;
+  soldDate:     string;   // raw string from Moxy (MM/DD/YYYY)
+  status:       string;   // e.g. "Sold", "Cancelled"
+  promoCode:    string;
+  cancelReason: string;
+  make:         string;
+  model:        string;
+  state:        string;
+  admin:        string;
+}
+
+// ─── Moxy REST API credentials ──────────────────────────────────────────────
 const MOXY_BASE    = 'https://MoxyAPI.moxyws.com';
 const MOXY_BEARER  = 'a242ccb0-738e-4e4f-a418-facf89297904';
+
+// Campaign start — used as default fromDate
 const CAMPAIGN_START = '2026-02-25';
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 function normalizePhone(raw: string | null | undefined): string {
   if (!raw) return '';
   const d = raw.replace(/\D/g, '');
@@ -15,20 +38,12 @@ function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export interface MoxySale {
-  contractNo: string; phone: string; cellPhone: string; homePhone: string;
-  firstName: string; lastName: string; salesRep: string; soldDate: string;
-  status: string; promoCode: string; cancelReason: string;
-  make: string; model: string; state: string; admin: string;
-}
-
-export async function GET(request: Request) {
+// ─── Route handler ────────────────────────────────────────────────────────────
+export async function GET() {
   try {
-    const { searchParams } = new URL(request.url);
-    const debug = searchParams.get('debug') === '1';
-
     const fromDate = CAMPAIGN_START;
     const toDate   = todayISO();
+
     const url = `${MOXY_BASE}/api/GetDealLog?fromDate=${fromDate}&toDate=${toDate}&dealType=Both`;
 
     const resp = await fetch(url, {
@@ -39,52 +54,46 @@ export async function GET(request: Request) {
 
     if (!resp.ok) {
       const errText = await resp.text();
-      return NextResponse.json({ ok: false, error: `Moxy REST ${resp.status}: ${errText}`, sales: [] }, { status: 502 });
+      console.error(`[moxy/route.ts] REST API ${resp.status}: ${errText}`);
+      return NextResponse.json(
+        { ok: false, error: `Moxy REST API returned ${resp.status}: ${errText}`, sales: [] },
+        { status: 502 }
+      );
     }
 
     const deals: Record<string, any>[] = await resp.json();
 
-    if (debug) {
-      // Return raw field names and a sample record
-      const sampleWithData = deals.find((d: Record<string, any>) => {
-        return Object.values(d).some((v: any) => v !== null && v !== '' && v !== 0);
-      });
-      return NextResponse.json({
-        totalRecords: deals.length,
-        sampleKeys: deals[0] ? Object.keys(deals[0]) : [],
-        sampleRecord: sampleWithData || deals[0],
-        first3: deals.slice(0, 3),
-      });
-    }
-
-    // Map REST API fields to MoxySale
-    const sales: MoxySale[] = deals.map((d: Record<string, any>) => {
-      const hp = normalizePhone(d.HomePhone ?? d.homePhone ?? d.homephone);
-      const cp = normalizePhone(d.Cellphone ?? d.cellPhone ?? d.cellphone ?? d.CellPhone);
+    // REST API returns camelCase keys:
+    //   lastName, firstName, homePhone, cellphone (all lowercase!),
+    //   dealStatus, soldDate, closer, contractNo, promoCode,
+    //   cancelReason, make, model, state, admin
+    const sales: MoxySale[] = deals.map((d) => {
+      const hp = normalizePhone(d.homePhone);
+      const cp = normalizePhone(d.cellphone);   // note: all lowercase
       const bestPhone = hp || cp;
 
       return {
-        contractNo:   d.ContractNo   ?? d.contractNo   ?? '',
+        contractNo:   d.contractNo   ?? '',
         phone:        bestPhone,
         cellPhone:    cp,
         homePhone:    hp,
-        firstName:    d.FirstName    ?? d.firstName     ?? d.First     ?? '',
-        lastName:     d.LastName     ?? d.lastName      ?? d.Last      ?? '',
-        salesRep:     d.Closer       ?? d.SalesRep      ?? d.salesRep  ?? '',
-        soldDate:     d.SoldDate     ?? d.soldDate      ?? '',
-        status:       d.DealStatus   ?? d.dealStatus    ?? d.Status    ?? '',
-        promoCode:    d.PromoCode    ?? d.promoCode     ?? '',
-        cancelReason: d.CancelReason ?? d.cancelReason  ?? '',
-        make:         d.Make         ?? d.make          ?? '',
-        model:        d.Model        ?? d.model         ?? '',
-        state:        d.State        ?? d.state         ?? '',
-        admin:        d.Admin        ?? d.admin         ?? '',
+        firstName:    d.firstName    ?? '',
+        lastName:     d.lastName     ?? '',
+        salesRep:     d.closer       ?? '',
+        soldDate:     d.soldDate     ?? '',
+        status:       d.dealStatus   ?? '',
+        promoCode:    d.promoCode    ?? '',
+        cancelReason: d.cancelReason ?? '',
+        make:         d.make         ?? '',
+        model:        d.model        ?? '',
+        state:        d.state        ?? '',
+        admin:        d.admin        ?? '',
       };
     });
 
     return NextResponse.json({
-      ok: true,
-      count: sales.length,
+      ok:          true,
+      count:       sales.length,
       sales,
       lastUpdated: new Date().toISOString(),
     });
