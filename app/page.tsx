@@ -48,17 +48,16 @@ interface MetaResponse {
 }
 
 function getPresetDates(preset: DatePreset): { start: string | null; end: string | null } {
-  // Use Central Time (UTC-5 CDT / UTC-6 CST) for business day alignment
+  // Use Central Time for business day alignment (auto-detect CDT vs CST)
   const now = new Date();
-  const centralOffset = -5 * 60; // CDT — change to -6 * 60 after daylight saving ends
-  const centralMs = now.getTime() + (centralOffset - now.getTimezoneOffset()) * 60000;
-  const central = new Date(centralMs);
+  const centralStr = now.toLocaleString("en-US", { timeZone: "America/Chicago" });
+  const central = new Date(centralStr);
   const iso = (d: Date) => d.toISOString().slice(0, 10);
   const today = iso(central);
   if (preset === "itd")       return { start: null, end: null };
   if (preset === "today")     return { start: today, end: today };
-  if (preset === "yesterday") { const y = new Date(centralMs); y.setDate(y.getDate() - 1); return { start: iso(y), end: iso(y) }; }
-  if (preset === "week")      { const mon = new Date(centralMs); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7)); return { start: iso(mon), end: today }; }
+  if (preset === "yesterday") { const y = new Date(central.getTime()); y.setDate(y.getDate() - 1); return { start: iso(y), end: iso(y) }; }
+  if (preset === "week")      { const mon = new Date(central.getTime()); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7)); return { start: iso(mon), end: today }; }
   if (preset === "m2d")       { const m1 = new Date(central.getFullYear(), central.getMonth(), 1); return { start: iso(m1), end: today }; }
   return { start: null, end: null };
 }
@@ -236,19 +235,21 @@ function ByListView({ data, salesLoading, callsLoading, costsLoading }: { data: 
         <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginBottom:4 }}>Active Lists</div>
         {lists.map(li => {
           const r = data.byList[li] || { s:0, listCost:0 };
-          const cps = r.s > 0 ? r.listCost / r.s : null;
+          const costPerSale = r.s > 0 ? r.listCost / r.s : null;
           return (
             <div key={li} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px" }}>
               <div style={{ fontSize:12, fontWeight:700, color:C.accent, marginBottom:4 }}>{li}</div>
-              <div style={{ fontFamily:"monospace", fontSize:12, color:r.listCost>0?C.text:C.muted }}>{r.listCost>0?fc(r.listCost):"free"}</div>
-              <div style={{ fontFamily:"monospace", fontSize:12, color:cps==null?C.dim:cps>1000?C.red:cps>500?C.amber:C.green, marginTop:2 }}>{cps!=null?fc(cps):"—"}</div>
+              <div style={{ fontFamily:"monospace", fontSize:12, color:r.listCost>0?C.text:C.muted, marginBottom:4 }}>{r.listCost>0?fc(r.listCost):"free"}</div>
+              <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>Cost/Sale</div>
+              <div style={{ fontFamily:"monospace", fontSize:12, color:costPerSale==null?C.dim:costPerSale>1000?C.red:costPerSale>500?C.amber:C.green }}>{costPerSale!=null?fc(costPerSale):"—"}</div>
             </div>
           );
         })}
         <div style={{ background:C.surface, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px", marginTop:4 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.text, marginBottom:4 }}>TOTAL</div>
-          <div style={{ fontFamily:"monospace", fontSize:12, color:C.text }}>{fc(totals.listCost)}</div>
-          <div style={{ fontFamily:"monospace", fontSize:12, color:C.amber, marginTop:2 }}>{totals.s>0?fc(totals.listCost/totals.s):"—"}</div>
+          <div style={{ fontFamily:"monospace", fontSize:12, color:C.text, marginBottom:4 }}>{fc(totals.listCost)}</div>
+          <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>Cost/Sale</div>
+          <div style={{ fontFamily:"monospace", fontSize:12, color:C.amber }}>{totals.s>0?fc(totals.listCost/totals.s):"—"}</div>
         </div>
       </div>
 
@@ -328,131 +329,158 @@ function ByAgentView({ agents, lists, crossData, salesLoading, callsLoading, cos
   }
 
   return (
-    <div style={{ padding:"12px" }}>
-      {/* AGENT STAT CARDS - BY LIST */}
-      {activeAgents.length > 0 && (
-        <div style={{ marginBottom:20 }}>
-          {/* Grid header row with list names */}
-          <div style={{ display:"grid", gridTemplateColumns:`180px repeat(${lists.length}, 1fr)`, gap:6, marginBottom:6 }}>
-            <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", fontWeight:600, paddingLeft:4 }}>Agent</div>
-            {lists.map(li => (
-              <div key={li} style={{ fontSize:10, color:C.accent, letterSpacing:".12em", textTransform:"uppercase", fontWeight:700, textAlign:"center" }}>
-                {li}
+    <div style={{ display:"flex" }}>
+      {/* LEFT PANEL - AGENT CARDS */}
+      <div style={{ width:180, flexShrink:0, borderRight:`1px solid ${C.border}`, padding:"10px", display:"flex", flexDirection:"column", gap:6, background:C.surface }}>
+        <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginBottom:4 }}>Active Agents</div>
+        {activeAgents.map(ag => {
+          const totalCost = ag.cost;
+          const openedCount = ag.o || 0;
+          const salesCount = ag.s || 0;
+          const costPerCall = openedCount > 0 ? totalCost / openedCount : null;
+          const costPerSale = salesCount > 0 ? totalCost / salesCount : null;
+          return (
+            <div key={ag.name} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px" }}>
+              <div style={{ fontSize:11, fontWeight:700, color:C.accent, marginBottom:4, wordBreak:"break-word" }}>{ag.name}</div>
+              <div style={{ fontFamily:"monospace", fontSize:12, color:C.text, marginBottom:4 }}>{fc(totalCost)}</div>
+              <div style={{ fontSize:9, color:C.muted, marginBottom:1 }}>Cost/Call · Cost/Sale</div>
+              <div style={{ fontFamily:"monospace", fontSize:11, color:C.text, display:"flex", gap:2, justifyContent:"space-between" }}>
+                <span style={{ color:costPerCall==null?C.dim:costPerCall>100?C.red:costPerCall>50?C.amber:C.green }}>{costPerCall!=null?fc(costPerCall):"—"}</span>
+                <span style={{ color:costPerSale==null?C.dim:costPerSale>500?C.red:costPerSale>250?C.amber:C.green }}>{costPerSale!=null?fc(costPerSale):"—"}</span>
+              </div>
+            </div>
+          );
+        })}
+        <div style={{ background:C.surface, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px", marginTop:4 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.text, marginBottom:4 }}>TOTAL</div>
+          <div style={{ fontFamily:"monospace", fontSize:12, color:C.text, marginBottom:4 }}>{fc(totals.cost)}</div>
+          <div style={{ fontSize:9, color:C.muted, marginBottom:1 }}>Cost/Call · Cost/Sale</div>
+          <div style={{ fontFamily:"monospace", fontSize:11, color:C.text, display:"flex", gap:2, justifyContent:"space-between" }}>
+            <span style={{ color:totals.o>0?C.amber:C.dim }}>{totals.o>0?fc(totals.cost/totals.o):"—"}</span>
+            <span style={{ color:totals.s>0?C.green:C.dim }}>{totals.s>0?fc(totals.cost/totals.s):"—"}</span>
+          </div>
+        </div>
+
+        {/* UNUSED AGENTS */}
+        {unusedAgents.length > 0 && (
+          <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid ${C.border}` }}>
+            <div style={{ fontSize:9, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", fontWeight:600, marginBottom:6 }}>
+              Unused Agents
+            </div>
+            <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+              {unusedAgents.map(ag => (
+                <div key={ag.name} style={{ padding:"6px 8px", background:C.surface, border:`1px solid ${C.dim}`, borderRadius:4, fontSize:10, color:C.muted, opacity:0.5, wordBreak:"break-word" }}>
+                  {ag.name}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* MAIN CONTENT - AGENT STAT CARDS BY LIST */}
+      <div style={{ flex:1, overflowX:"auto", padding:"12px" }}>
+        {activeAgents.length > 0 && (
+          <div>
+            {/* Grid header row with list names */}
+            <div style={{ display:"grid", gridTemplateColumns:`repeat(${lists.length}, 1fr)`, gap:6, marginBottom:6 }}>
+              {lists.map(li => (
+                <div key={li} style={{ fontSize:10, color:C.accent, letterSpacing:".12em", textTransform:"uppercase", fontWeight:700, textAlign:"center" }}>
+                  {li}
+                </div>
+              ))}
+            </div>
+
+            {/* Agent rows with stat cards */}
+            {activeAgents.map(ag => (
+              <div key={ag.name} style={{ display:"grid", gridTemplateColumns:`repeat(${lists.length}, 1fr)`, gap:6, marginBottom:8 }}>
+                {/* Stat cards for each list */}
+                {lists.map(li => {
+                  const raw = cross[ag.name]?.[li];
+                  const cell = raw ? {
+                    min: raw.min,
+                    t:   (raw as any).t ?? (raw as any).transfers ?? 0,
+                    s:   (raw as any).s ?? 0,
+                  } : null;
+
+                  const hasMins = cell && cell.min > 0;
+                  const hasTransfers = cell && cell.t > 0;
+                  const hasSales = cell && cell.s > 0;
+
+                  return (
+                    <div
+                      key={li}
+                      style={{
+                        background: cell && (cell.min > 0 || cell.t > 0 || cell.s > 0) ? C.card : C.surface,
+                        border: `1px solid ${C.border}`,
+                        borderRadius: 4,
+                        padding: "8px",
+                        fontSize: 10,
+                        minHeight: 90,
+                      }}
+                    >
+                      {cell && (cell.min > 0 || cell.t > 0 || cell.s > 0) ? (
+                        <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                          <div style={{ fontFamily:"monospace", color: hasMins ? C.text : C.dim, fontWeight:500 }}>
+                            <span style={{ color:C.muted }}>Mins: </span>{f(Math.round(cell.min))}
+                          </div>
+                          <div style={{ fontFamily:"monospace", color: hasTransfers ? C.accent : C.dim, fontWeight:500 }}>
+                            <span style={{ color:C.muted }}>Calls: </span>{f(cell.t)}
+                          </div>
+                          <div style={{ fontFamily:"monospace", color: hasSales ? C.green : C.dim, fontWeight:hasSales?600:400 }}>
+                            <span style={{ color:C.muted }}>Sales: </span>{salesLoading ? <LoadingSpinner /> : cell.s}
+                          </div>
+                          <div style={{ fontFamily:"monospace", color: C.amber, fontWeight:500 }}>
+                            <span style={{ color:C.muted }}>Cls%: </span>{salesLoading ? <LoadingSpinner /> : pct(cell.s, cell.t)}
+                          </div>
+                        </div>
+                      ) : (
+                        <span style={{ color:C.dim, fontSize:10 }}>—</span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             ))}
-          </div>
 
-          {/* Agent rows with stat cards */}
-          {activeAgents.map(ag => (
-            <div key={ag.name} style={{ display:"grid", gridTemplateColumns:`180px repeat(${lists.length}, 1fr)`, gap:6, marginBottom:8 }}>
-              {/* Agent name column */}
-              <div style={{ fontSize:11, fontWeight:600, color:C.accent, paddingLeft:4, display:"flex", alignItems:"flex-start", paddingTop:4 }}>
-                {ag.name}
-              </div>
-
-              {/* Stat cards for each list */}
+            {/* TOTAL ROW */}
+            <div style={{ display:"grid", gridTemplateColumns:`repeat(${lists.length}, 1fr)`, gap:6, marginTop:12, paddingTop:12, borderTop:`2px solid ${C.border}` }}>
               {lists.map(li => {
-                const raw = cross[ag.name]?.[li];
-                const cell = raw ? {
-                  min: raw.min,
-                  t:   (raw as any).t ?? (raw as any).transfers ?? 0,
-                  s:   (raw as any).s ?? 0,
-                } : null;
-
-                const hasMins = cell && cell.min > 0;
-                const hasTransfers = cell && cell.t > 0;
-                const hasSales = cell && cell.s > 0;
-
+                const lt = listTotals[li] || { min:0, t:0, s:0 };
                 return (
                   <div
                     key={li}
                     style={{
-                      background: cell && (cell.min > 0 || cell.t > 0 || cell.s > 0) ? C.card : C.surface,
+                      background: C.surface,
                       border: `1px solid ${C.border}`,
                       borderRadius: 4,
                       padding: "8px",
                       fontSize: 10,
                       minHeight: 90,
+                      display:"flex",
+                      flexDirection:"column",
+                      gap:4,
                     }}
                   >
-                    {cell && (cell.min > 0 || cell.t > 0 || cell.s > 0) ? (
-                      <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
-                        <div style={{ fontFamily:"monospace", color: hasMins ? C.text : C.dim, fontWeight:500 }}>
-                          <span style={{ color:C.muted }}>Mins: </span>{f(Math.round(cell.min))}
-                        </div>
-                        <div style={{ fontFamily:"monospace", color: hasTransfers ? C.accent : C.dim, fontWeight:500 }}>
-                          <span style={{ color:C.muted }}>Calls: </span>{f(cell.t)}
-                        </div>
-                        <div style={{ fontFamily:"monospace", color: hasSales ? C.green : C.dim, fontWeight:hasSales?600:400 }}>
-                          <span style={{ color:C.muted }}>Sales: </span>{salesLoading ? <LoadingSpinner /> : cell.s}
-                        </div>
-                        <div style={{ fontFamily:"monospace", color: C.amber, fontWeight:500 }}>
-                          <span style={{ color:C.muted }}>Cls%: </span>{salesLoading ? <LoadingSpinner /> : pct(cell.s, cell.t)}
-                        </div>
-                      </div>
-                    ) : (
-                      <span style={{ color:C.dim, fontSize:10 }}>—</span>
-                    )}
+                    <div style={{ fontFamily:"monospace", color: C.text, fontWeight:600 }}>
+                      <span style={{ color:C.muted, fontWeight:400 }}>Mins: </span>{f(Math.round(lt.min))}
+                    </div>
+                    <div style={{ fontFamily:"monospace", color: C.accent, fontWeight:600 }}>
+                      <span style={{ color:C.muted, fontWeight:400 }}>Calls: </span>{f(lt.t)}
+                    </div>
+                    <div style={{ fontFamily:"monospace", color: lt.s>0?C.green:C.dim, fontWeight:700 }}>
+                      <span style={{ color:C.muted, fontWeight:400 }}>Sales: </span>{salesLoading ? <LoadingSpinner /> : lt.s}
+                    </div>
+                    <div style={{ fontFamily:"monospace", color: C.amber, fontWeight:600 }}>
+                      <span style={{ color:C.muted, fontWeight:400 }}>Cls%: </span>{salesLoading ? <LoadingSpinner /> : pct(lt.s, lt.t)}
+                    </div>
                   </div>
                 );
               })}
             </div>
-          ))}
-
-          {/* TOTAL ROW */}
-          <div style={{ display:"grid", gridTemplateColumns:`180px repeat(${lists.length}, 1fr)`, gap:6, marginTop:12, paddingTop:12, borderTop:`2px solid ${C.border}` }}>
-            <div style={{ fontSize:11, fontWeight:700, color:C.text, paddingLeft:4 }}>TOTAL</div>
-            {lists.map(li => {
-              const lt = listTotals[li] || { min:0, t:0, s:0 };
-              return (
-                <div
-                  key={li}
-                  style={{
-                    background: C.surface,
-                    border: `1px solid ${C.border}`,
-                    borderRadius: 4,
-                    padding: "8px",
-                    fontSize: 10,
-                    minHeight: 90,
-                    display:"flex",
-                    flexDirection:"column",
-                    gap:4,
-                  }}
-                >
-                  <div style={{ fontFamily:"monospace", color: C.text, fontWeight:600 }}>
-                    <span style={{ color:C.muted, fontWeight:400 }}>Mins: </span>{f(Math.round(lt.min))}
-                  </div>
-                  <div style={{ fontFamily:"monospace", color: C.accent, fontWeight:600 }}>
-                    <span style={{ color:C.muted, fontWeight:400 }}>Calls: </span>{f(lt.t)}
-                  </div>
-                  <div style={{ fontFamily:"monospace", color: lt.s>0?C.green:C.dim, fontWeight:700 }}>
-                    <span style={{ color:C.muted, fontWeight:400 }}>Sales: </span>{salesLoading ? <LoadingSpinner /> : lt.s}
-                  </div>
-                  <div style={{ fontFamily:"monospace", color: C.amber, fontWeight:600 }}>
-                    <span style={{ color:C.muted, fontWeight:400 }}>Cls%: </span>{salesLoading ? <LoadingSpinner /> : pct(lt.s, lt.t)}
-                  </div>
-                </div>
-              );
-            })}
           </div>
-        </div>
-      )}
-
-      {/* UNUSED AGENTS SECTION */}
-      {unusedAgents.length > 0 && (
-        <div style={{ marginTop:24, paddingTop:16, borderTop:`1px solid ${C.border}` }}>
-          <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", fontWeight:600, marginBottom:8 }}>
-            UNUSED AGENTS ({unusedAgents.length})
-          </div>
-          <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
-            {unusedAgents.map(ag => (
-              <div key={ag.name} style={{ padding:"6px 10px", background:C.surface, border:`1px solid ${C.dim}`, borderRadius:4, fontSize:11, color:C.muted, opacity:0.6 }}>
-                {ag.name}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -751,9 +779,11 @@ export default function Home() {
   const loadData = useCallback(async (start: string | null, end: string | null) => {
     setLoading(true);
     setSalesLoading(true);
-    setCallsLoading(false);
-    setCostsLoading(false);
+    setCallsLoading(true);
+    setCostsLoading(true);
     setMetaLoading(true);
+    // Clear previous data so spinners show (no stale numbers from cache)
+    setData(DEMO);
     try {
       // Stage 1: Sales (Moxy + seed files for triple gate)
       const qs1 = new URLSearchParams();
