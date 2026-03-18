@@ -767,16 +767,20 @@ function SourceHealthBar({ staleness }: { staleness: DashData["staleness"] }) {
   ];
   const getColor = (ts: string | null | undefined) => {
     if (!ts) return C.muted;
-    const mins = Math.round((now - new Date(ts).getTime()) / 60000);
-    if (mins <= 60)  return C.green;
-    if (mins <= 120) return C.amber;
+    // Handle both ISO timestamps and date strings (YYYY-MM-DD)
+    const tsDate = ts.length === 10 ? ts + "T23:59:59Z" : ts;
+    const hrs = (now - new Date(tsDate).getTime()) / 3600000;
+    if (hrs <= 24)  return C.green;
+    if (hrs <= 48) return C.amber;
     return C.red;
   };
   const getAge = (ts: string | null | undefined) => {
     if (!ts) return "never";
-    const mins = Math.round((now - new Date(ts).getTime()) / 60000);
-    if (mins < 60) return `${mins}m`;
-    return `${Math.floor(mins/60)}h ${mins%60}m`;
+    // For date strings, show the date; for timestamps, show relative time
+    if (ts.length === 10) return ts.slice(5); // "03-17"
+    const hrs = (now - new Date(ts).getTime()) / 3600000;
+    if (hrs < 1) return `${Math.round(hrs * 60)}m`;
+    return `${Math.round(hrs)}h`;
   };
   return (
     <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:3 }}>
@@ -854,7 +858,12 @@ export default function Home() {
               t: json2.byList[li]?.t ?? stats.t,
             }])
           ),
-          // Don't override totalSales — stage 2 doesn't compute sales
+          // Merge staleness from stage 2 (3CX date)
+          staleness: {
+            cx: json2.staleness?.cx ?? prev.staleness?.cx ?? null,
+            aim: prev.staleness?.aim ?? null,
+            moxy: prev.staleness?.moxy ?? null,
+          },
         }));
         setIsLive(true);
       }
@@ -880,6 +889,12 @@ export default function Home() {
               cost: json3.byList[li]?.cost ?? stats.cost,
             }])
           ),
+          // Merge staleness from stage 3 (AIM date)
+          staleness: {
+            cx: prev.staleness?.cx ?? null,
+            aim: json3.staleness?.aim ?? prev.staleness?.aim ?? null,
+            moxy: prev.staleness?.moxy ?? null,
+          },
         }));
         setIsLive(true);
       }
