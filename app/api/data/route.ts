@@ -238,7 +238,7 @@ export async function GET(request: Request) {
     let salesRows: {
       soldDate: string | null; lastName: string; firstName: string;
       promoCode: string; homePhone: string; mobilePhone: string;
-      dealStatus: string; salesperson: string;
+      dealStatus: string; salesperson: string; campaign: string;
     }[] = [];
 
     try {
@@ -250,7 +250,7 @@ export async function GET(request: Request) {
           .map((s: {
             soldDate: string; lastName: string; firstName: string;
             promoCode: string; homePhone: string; cellPhone: string;
-            status: string; salesRep: string;
+            status: string; salesRep: string; campaign: string;
           }) => ({
             soldDate:    toISO(s.soldDate ?? ""),
             lastName:    s.lastName  ?? "",
@@ -260,6 +260,7 @@ export async function GET(request: Request) {
             mobilePhone: cleanPhone(s.cellPhone ?? ""),
             dealStatus:  s.status    ?? "",
             salesperson: s.salesRep  ?? "",
+            campaign:    s.campaign  ?? "",
           }))
           .filter((s: { soldDate: string | null }) =>
             s.soldDate && s.soldDate >= CAMPAIGN_START && inRange(s.soldDate)
@@ -268,6 +269,60 @@ export async function GET(request: Request) {
     } catch (e) {
       console.error("[data/route] Moxy fetch failed:", e);
     }
+
+    // ── 4b. LOAD QUEUE RULES (guardrail for non-same-day sales) ──────────────
+    // If a sale passes the ITD triple gate but was NOT transferred on the same
+    // day, verify via queue rules that the sale actually belongs to Mail 4 (AI).
+    interface QueueRule {
+      product: string; field: string; match: string; pattern: string;
+      queue: string; priority: number; midStart?: number; midLen?: number;
+    }
+    let queueRules: QueueRule[] = [];
+    try {
+      const rulesPath = path.join(DATA_DIR, "queue_rules.json");
+      if (fs.existsSync(rulesPath)) {
+        const rulesData = JSON.parse(fs.readFileSync(rulesPath, "utf8"));
+        queueRules = (rulesData.rules ?? [])
+          .filter((r: QueueRule) => r.product === "AUTO" || r.product === "BOTH")
+          .sort((a: QueueRule, b: QueueRule) => a.priority - b.priority);
+      }
+    } catch { /* rules file missing = no guardrail, allow all */ }
+
+    function assignQueue(sale: { promoCode: string; campaign: string }, callQueueName: string): string | null {
+      for (const rule of queueRules) {
+        const fieldVal = rule.field === "queueName" ? callQueueName
+                       : rule.field === "promoCode" ? sale.promoCode
+                       : rule.field === "campaign"  ? sale.campaign
+                       : "";
+        let matched = false;
+        switch (rule.match) {
+          case "EXACT":       matched = fieldVal === rule.pattern; break;
+          case "STARTS_WITH": matched = fieldVal.startsWith(rule.pattern); break;
+          case "CONTAINS":    matched = fieldVal.includes(rule.pattern); break;
+          case "REGEX":       try { matched = new RegExp(rule.pattern).test(fieldVal); } catch { } break;
+          case "MID_EXACT": {
+            const sub = fieldVal.substring(rule.midStart ?? 0, (rule.midStart ?? 0) + (rule.midLen ?? 0));
+            matched = sub === rule.pattern;
+            break;
+          }
+        }
+        if (matched) return rule.queue;
+      }
+      return null; // no rule matched
+    }
+
+    // Build ITD AIM transfer date lookup: phone → Set of dates transferred
+    const aimPhoneDates = new Map<string, Set<string>>();
+    try {
+      const aimSeedPath = path.join(DATA_DIR, "aim_transfers_seed.json");
+      if (fs.existsSync(aimSeedPath)) {
+        const aimSeed = JSON.parse(fs.readFileSync(aimSeedPath, "utf8"));
+        for (const t of (aimSeed.transfers ?? [])) {
+          if (!aimPhoneDates.has(t.phone)) aimPhoneDates.set(t.phone, new Set());
+          aimPhoneDates.get(t.phone)!.add(t.date);
+        }
+      }
+    } catch { /* no seed = skip same-day check */ }
 
     // ── 5. COMPUTE METRICS ───────────────────────────────────────────────────
     const allListKeys = new Set([...Object.keys(DEFAULT_LISTS), ...Object.keys(listPhones)]);
@@ -299,7 +354,7 @@ export async function GET(request: Request) {
       if (byList[li]) byList[li].o += count;
     }
 
-    // SALES — homePhone OR cellPhone must be in data list + AIM transfers + opened
+    // SALES — homePhone OR cellPhone must pass triple gate + queue rules guardrail
     const nonListSales: (typeof salesRows[0] & { onOpened: boolean })[] = [];
     const seenSales = new Set<string>();
 
@@ -322,6 +377,28 @@ export async function GET(request: Request) {
       if (!matchedPhone) {
         nonListSales.push({ ...s, onOpened });
         continue;
+      }
+
+      // ── GUARDRAIL: non-same-day sales must pass queue rules ──────────────
+      // If the sale's phone was transferred on the SAME day as the sale, trust
+      // the triple gate (97% of cases). If NOT same-day, apply queue rules to
+      // verify the sale actually belongs to Mail 4 (AI campaign).
+      const soldDate = s.soldDate ?? "";
+      const transferDates = aimPhoneDates.get(matchedPhone);
+      const isSameDay = transferDates?.has(soldDate) ?? false;
+
+      if (!isSameDay && queueRules.length > 0) {
+        // Not same-day: apply queue rules using Moxy promoCode + campaign
+        const assignedQueue = assignQueue(
+          { promoCode: s.promoCode, campaign: s.campaign },
+          "" // no 3CX queue name available here; promoCode/campaign rules take precedence
+        );
+        if (assignedQueue && assignedQueue !== "Mail 4") {
+          // Rules say this sale belongs to a different campaign — don't count as AI
+          nonListSales.push({ ...s, onOpened });
+          continue;
+        }
+        // If no rule matched OR rule says Mail 4 → count it
       }
 
       const li = phoneToList.get(matchedPhone)!;

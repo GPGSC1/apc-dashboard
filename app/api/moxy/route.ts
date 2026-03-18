@@ -17,6 +17,8 @@ export interface MoxySale {
   model:        string;
   state:        string;
   admin:        string;
+  campaign:     string;   // Moxy "campaign" field — used by queue rules for attribution
+  source:       string;   // Moxy "source" field
 }
 
 // ─── Moxy REST API credentials ───────────────────────────────────────────────
@@ -98,6 +100,8 @@ export async function GET() {
         model:        String(d.model        ?? ''),
         state:        String(d.state        ?? ''),
         admin:        String(d.admin        ?? ''),
+        campaign:     String(d.campaign ?? d.campaignName ?? ''),
+        source:       String(d.source   ?? ''),
       };
     });
 

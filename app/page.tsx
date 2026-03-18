@@ -16,7 +16,7 @@ interface DashData {
   error?:      string;
 }
 
-type DatePreset  = "today" | "yesterday" | "week" | "itd" | "custom";
+type DatePreset  = "today" | "yesterday" | "week" | "m2d" | "itd" | "custom";
 type CampaignTab = "transfer" | "outbound" | "inbound" | "meta" | "overview" | "agentmapping";
 type ViewMode    = "bylist" | "byagent";
 
@@ -35,6 +35,7 @@ function getPresetDates(preset: DatePreset): { start: string | null; end: string
   if (preset === "today")     return { start: today, end: today };
   if (preset === "yesterday") { const y = new Date(centralMs); y.setDate(y.getDate() - 1); return { start: iso(y), end: iso(y) }; }
   if (preset === "week")      { const mon = new Date(centralMs); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7)); return { start: iso(mon), end: today }; }
+  if (preset === "m2d")       { const m1 = new Date(central.getFullYear(), central.getMonth(), 1); return { start: iso(m1), end: today }; }
   return { start: null, end: null };
 }
 
@@ -140,7 +141,7 @@ function DateFilterBar({ preset, setPreset, customStart, setCustomStart, customE
 }) {
   const presets: { id: DatePreset; label: string }[] = [
     { id:"today", label:"Today" }, { id:"yesterday", label:"Yesterday" },
-    { id:"week", label:"This Week" }, { id:"itd", label:"ITD" }, { id:"custom", label:"Custom" },
+    { id:"week", label:"This Week" }, { id:"m2d", label:"M2D" }, { id:"itd", label:"ITD" }, { id:"custom", label:"Custom" },
   ];
   return (
     <div style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 20px", background:C.surface, borderBottom:`1px solid ${C.border}`, flexWrap:"wrap" }}>
