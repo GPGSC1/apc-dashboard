@@ -1,0 +1,366 @@
+{
+  "generatedAt": "2026-03-18T16:42:49.291Z",
+  "count": 45,
+  "calls": [
+    {
+      "phone": "2149850770",
+      "date": "2026-03-08",
+      "time": "11:42",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "3047411856",
+      "date": "2026-03-09",
+      "time": "18:15",
+      "talkTimeSec": 7,
+      "status": "answered",
+      "destName": "Trevor Chatman"
+    },
+    {
+      "phone": "9204195524",
+      "date": "2026-03-09",
+      "time": "20:48",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "9413211303",
+      "date": "2026-03-09",
+      "time": "21:25",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "2404247351",
+      "date": "2026-03-10",
+      "time": "12:54",
+      "talkTimeSec": 170,
+      "status": "answered",
+      "destName": "Daniel Andrews"
+    },
+    {
+      "phone": "3045753684",
+      "date": "2026-03-10",
+      "time": "13:25",
+      "talkTimeSec": 24,
+      "status": "answered",
+      "destName": "Dillon Drennen"
+    },
+    {
+      "phone": "7179197963",
+      "date": "2026-03-10",
+      "time": "13:25",
+      "talkTimeSec": 309,
+      "status": "answered",
+      "destName": "Robert Ball"
+    },
+    {
+      "phone": "2168602980",
+      "date": "2026-03-10",
+      "time": "17:24",
+      "talkTimeSec": 73,
+      "status": "answered",
+      "destName": "Roderick Baltimore"
+    },
+    {
+      "phone": "5129033895",
+      "date": "2026-03-10",
+      "time": "17:25",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "3045753684",
+      "date": "2026-03-10",
+      "time": "17:54",
+      "talkTimeSec": 594,
+      "status": "answered",
+      "destName": "Brian Thompson"
+    },
+    {
+      "phone": "5409959595",
+      "date": "2026-03-10",
+      "time": "17:56",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "3045753684",
+      "date": "2026-03-10",
+      "time": "18:55",
+      "talkTimeSec": 211,
+      "status": "answered",
+      "destName": "Trevor Chatman"
+    },
+    {
+      "phone": "5409959595",
+      "date": "2026-03-10",
+      "time": "18:55",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "3142493775",
+      "date": "2026-03-10",
+      "time": "18:56",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "7632347879",
+      "date": "2026-03-10",
+      "time": "21:54",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "7632347879",
+      "date": "2026-03-10",
+      "time": "23:26",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "3045753684",
+      "date": "2026-03-11",
+      "time": "07:25",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "7038322472",
+      "date": "2026-03-11",
+      "time": "07:31",
+      "talkTimeSec": 339,
+      "status": "answered",
+      "destName": "David Andrews"
+    },
+    {
+      "phone": "7274928743",
+      "date": "2026-03-11",
+      "time": "08:24",
+      "talkTimeSec": 1349,
+      "status": "answered",
+      "destName": "Tyler Jones"
+    },
+    {
+      "phone": "9316242363",
+      "date": "2026-03-11",
+      "time": "08:26",
+      "talkTimeSec": 634,
+      "status": "answered",
+      "destName": "Jovan Moore"
+    },
+    {
+      "phone": "7038322472",
+      "date": "2026-03-11",
+      "time": "12:01",
+      "talkTimeSec": 261,
+      "status": "answered",
+      "destName": "Dillon Drennen"
+    },
+    {
+      "phone": "8632449998",
+      "date": "2026-03-11",
+      "time": "14:26",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "6092243288",
+      "date": "2026-03-11",
+      "time": "16:25",
+      "talkTimeSec": 34,
+      "status": "answered",
+      "destName": "Jermail Mack"
+    },
+    {
+      "phone": "8708307187",
+      "date": "2026-03-11",
+      "time": "19:46",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "3348248374",
+      "date": "2026-03-11",
+      "time": "20:59",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "7632347879",
+      "date": "2026-03-11",
+      "time": "21:55",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "8632449998",
+      "date": "2026-03-12",
+      "time": "03:55",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "3348248374",
+      "date": "2026-03-12",
+      "time": "10:58",
+      "talkTimeSec": 170,
+      "status": "answered",
+      "destName": "Brian Thompson"
+    },
+    {
+      "phone": "7632347879",
+      "date": "2026-03-12",
+      "time": "14:25",
+      "talkTimeSec": 240,
+      "status": "answered",
+      "destName": "Jovan Moore"
+    },
+    {
+      "phone": "3023332854",
+      "date": "2026-03-12",
+      "time": "17:13",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "3526310142",
+      "date": "2026-03-12",
+      "time": "18:24",
+      "talkTimeSec": 101,
+      "status": "answered",
+      "destName": "Brian Thompson"
+    },
+    {
+      "phone": "8103888866",
+      "date": "2026-03-12",
+      "time": "19:21",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "3526310142",
+      "date": "2026-03-13",
+      "time": "07:55",
+      "talkTimeSec": 289,
+      "status": "answered",
+      "destName": "Michael Melton"
+    },
+    {
+      "phone": "3526310142",
+      "date": "2026-03-13",
+      "time": "11:25",
+      "talkTimeSec": 364,
+      "status": "answered",
+      "destName": "Tyler Jones"
+    },
+    {
+      "phone": "3526310142",
+      "date": "2026-03-13",
+      "time": "21:25",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "8103888866",
+      "date": "2026-03-14",
+      "time": "07:52",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "3526310142",
+      "date": "2026-03-14",
+      "time": "18:55",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "2254600975",
+      "date": "2026-03-15",
+      "time": "22:17",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "2254600975",
+      "date": "2026-03-15",
+      "time": "22:47",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "8642382315",
+      "date": "2026-03-16",
+      "time": "07:33",
+      "talkTimeSec": 3214,
+      "status": "answered",
+      "destName": "Dillon Drennen"
+    },
+    {
+      "phone": "2679183622",
+      "date": "2026-03-16",
+      "time": "10:33",
+      "talkTimeSec": 59,
+      "status": "answered",
+      "destName": "Shakar Butler"
+    },
+    {
+      "phone": "7865091187",
+      "date": "2026-03-16",
+      "time": "16:02",
+      "talkTimeSec": 1193,
+      "status": "answered",
+      "destName": "Carly Schwerdt"
+    },
+    {
+      "phone": "2679183622",
+      "date": "2026-03-16",
+      "time": "16:39",
+      "talkTimeSec": 42,
+      "status": "answered",
+      "destName": "Brian Thompson"
+    },
+    {
+      "phone": "2254600975",
+      "date": "2026-03-16",
+      "time": "22:16",
+      "talkTimeSec": 0,
+      "status": "unanswered",
+      "destName": ""
+    },
+    {
+      "phone": "8327048861",
+      "date": "2026-03-17",
+      "time": "10:44",
+      "talkTimeSec": 578,
+      "status": "answered",
+      "destName": "Jovan Moore"
+    }
+  ]
+}

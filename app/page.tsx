@@ -13,6 +13,7 @@ interface DashData {
   staleness?:  { cx: string | null; aim: string | null; moxy: string | null };
   apiSources?: { openedCount: number; salesCount: number; listFilesLoaded: number; dateRange: { from: string; to: string } };
   aimByAgent?: Record<string, Record<string, { min: number; cost: number; transfers: number }>>;
+  loading?:    { sales?: boolean };
   error?:      string;
 }
 
@@ -22,6 +23,27 @@ type ViewMode    = "bylist" | "byagent";
 
 interface AgentAssignment { name: string; campaign: "transfer" | "outbound" | "inbound" | "unassigned"; }
 interface AgentStats      { name: string; t: number; o: number; s: number; min: number; cost: number; }
+
+interface MetaCall {
+  date: string;
+  time: string;
+  status: "transferred" | "answered" | "unanswered";
+}
+
+interface MetaLead {
+  phone: string;
+  calls: MetaCall[];
+  mail6TalkTimeSec: number;
+  isSold: boolean;
+}
+
+interface MetaResponse {
+  ok: boolean;
+  leads: MetaLead[];
+  summary: { totalLeads: number; transferred: number; answered: number; unanswered: number; sold: number };
+  lastUpdated: string;
+  error?: string;
+}
 
 function getPresetDates(preset: DatePreset): { start: string | null; end: string | null } {
   // Use Central Time (UTC-5 CDT / UTC-6 CST) for business day alignment
@@ -132,6 +154,22 @@ function ClosePct({ n, d }: { n: number; d: number }) {
   return <span style={{ fontFamily:"monospace", fontSize:12, color, fontWeight:600 }}>{pct(n, d)}</span>;
 }
 
+function LoadingSpinner() {
+  return (
+    <div style={{
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      width: 14,
+      height: 14,
+      borderRadius: "50%",
+      border: `2px solid ${C.dim}`,
+      borderTopColor: C.accent,
+      animation: "spin 0.8s linear infinite"
+    }} />
+  );
+}
+
 // ── DATE FILTER BAR ───────────────────────────────────────────────────────────
 function DateFilterBar({ preset, setPreset, customStart, setCustomStart, customEnd, setCustomEnd, onApply, onApplyWithPreset }: {
   preset: DatePreset; setPreset: (p: DatePreset) => void;
@@ -182,7 +220,7 @@ function ViewToggle({ viewMode, setViewMode }: { viewMode: ViewMode; setViewMode
 }
 
 // ── BY LIST VIEW ──────────────────────────────────────────────────────────────
-function ByListView({ data }: { data: DashData }) {
+function ByListView({ data, salesLoading }: { data: DashData; salesLoading: boolean }) {
   const lists  = data.allLists?.length ? data.allLists : Object.keys(data.byList);
   const totals = lists.reduce((a, li) => {
     const r = data.byList[li] || { o:0, s:0, t:0, min:0, cost:0, listCost:0 };
@@ -230,22 +268,22 @@ function ByListView({ data }: { data: DashData }) {
                 <tr key={li} onMouseEnter={e=>(e.currentTarget.style.background="rgba(0,212,184,.04)")} onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
                   <Td style={{ textAlign:"left" }}><span style={{ color:C.accent, fontWeight:600, fontSize:13 }}>{li}</span></Td>
                   <Td><span style={{ fontFamily:"monospace", color:C.accent }}>{f(r.o)}</span></Td>
-                  <Td><span style={{ fontFamily:"monospace", color:r.s>0?C.green:C.muted, fontWeight:r.s>0?700:400 }}>{r.s}</span></Td>
-                  <Td><ClosePct n={r.s} d={r.o} /></Td>
+                  <Td>{salesLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:r.s>0?C.green:C.muted, fontWeight:r.s>0?700:400 }}>{r.s}</span>}</Td>
+                  <Td>{salesLoading ? <LoadingSpinner /> : <ClosePct n={r.s} d={r.o} />}</Td>
                   <Td><span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(r.min))}</span></Td>
                   <Td><span style={{ fontFamily:"monospace", color:C.muted }}>{fc(r.cost)}</span></Td>
-                  <Td>{dcps!=null?<span style={{ fontFamily:"monospace", color:dcps>500?C.red:dcps>250?C.amber:C.green }}>{fc(dcps)}</span>:<span style={{ color:C.dim }}>—</span>}</Td>
+                  <Td>{salesLoading ? <LoadingSpinner /> : (dcps!=null?<span style={{ fontFamily:"monospace", color:dcps>500?C.red:dcps>250?C.amber:C.green }}>{fc(dcps)}</span>:<span style={{ color:C.dim }}>—</span>)}</Td>
                 </tr>
               );
             })}
             <tr style={{ background:C.surface, borderTop:`2px solid ${C.border}` }}>
               <Td style={{ textAlign:"left", fontWeight:700, color:C.text, fontSize:13 }}>TOTAL</Td>
               <Td><span style={{ fontFamily:"monospace", color:C.accent, fontWeight:600 }}>{f(totals.o)}</span></Td>
-              <Td><span style={{ fontFamily:"monospace", color:C.green, fontWeight:700 }}>{totals.s}</span></Td>
-              <Td><ClosePct n={totals.s} d={totals.o} /></Td>
+              <Td>{salesLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.green, fontWeight:700 }}>{totals.s}</span>}</Td>
+              <Td>{salesLoading ? <LoadingSpinner /> : <ClosePct n={totals.s} d={totals.o} />}</Td>
               <Td><span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(totals.min))}</span></Td>
               <Td><span style={{ fontFamily:"monospace", color:C.muted }}>{fc(totals.cost)}</span></Td>
-              <Td>{totals.s>0?<span style={{ fontFamily:"monospace", color:C.amber, fontWeight:600 }}>{fc(totals.cost/totals.s)}</span>:<span style={{ color:C.dim }}>—</span>}</Td>
+              <Td>{salesLoading ? <LoadingSpinner /> : (totals.s>0?<span style={{ fontFamily:"monospace", color:C.amber, fontWeight:600 }}>{fc(totals.cost/totals.s)}</span>:<span style={{ color:C.dim }}>—</span>)}</Td>
             </tr>
           </tbody>
         </table>
@@ -254,11 +292,12 @@ function ByListView({ data }: { data: DashData }) {
   );
 }
 
-// ── BY AGENT VIEW (agent × list cross-tab) ───────────────────────────────────
-function ByAgentView({ agents, lists, crossData }: { 
-  agents: AgentStats[]; 
+// ── BY AGENT VIEW (agent stat cards) ──────────────────────────────────────
+function ByAgentView({ agents, lists, crossData, salesLoading }: {
+  agents: AgentStats[];
   lists: string[];
   crossData: Record<string, Record<string, { min: number; cost: number; transfers: number }>> | null;
+  salesLoading: boolean;
 }) {
   const cross = crossData ?? {};
 
@@ -266,11 +305,15 @@ function ByAgentView({ agents, lists, crossData }: {
     t:a.t+ag.t, o:a.o+ag.o, s:a.s+ag.s, min:a.min+ag.min, cost:a.cost+ag.cost,
   }), { t:0, o:0, s:0, min:0, cost:0 });
 
-  // Column totals per list
+  // Separate active and unused agents
+  const activeAgents = agents.filter(ag => ag.t > 0 || ag.o > 0 || ag.min > 0 || ag.cost > 0);
+  const unusedAgents = agents.filter(ag => ag.t === 0 && ag.o === 0 && ag.min === 0 && ag.cost === 0);
+
+  // Column totals per list (only for active agents for the table)
   const listTotals: Record<string, { min:number; t:number; s:number }> = {};
   for (const li of lists) {
     listTotals[li] = { min:0, t:0, s:0 };
-    for (const ag of agents) {
+    for (const ag of activeAgents) {
       const cell = cross[ag.name]?.[li];
       if (cell) {
         listTotals[li].min += cell.min;
@@ -281,105 +324,298 @@ function ByAgentView({ agents, lists, crossData }: {
   }
 
   return (
-    <div style={{ display:"flex" }}>
-      {/* LEFT PANEL */}
-      <div style={{ width:220, flexShrink:0, borderRight:`1px solid ${C.border}`, padding:"10px", display:"flex", flexDirection:"column", gap:6, background:C.surface }}>
-        <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginBottom:4 }}>Active Agents</div>
-        {agents.map(ag => {
-          const cps = ag.s > 0 ? ag.cost / ag.s : null;
-          return (
-            <div key={ag.name} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px" }}>
-              <div style={{ fontSize:11, fontWeight:700, color:C.accent, marginBottom:3, lineHeight:1.3 }}>{ag.name}</div>
-              <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>{f(ag.o)} calls · {ag.s} deals</div>
-              <div style={{ fontFamily:"monospace", fontSize:12, color:C.muted }}>{fc(ag.cost)}</div>
-              <div style={{ fontFamily:"monospace", fontSize:12, color:cps==null?C.dim:cps>500?C.red:cps>250?C.amber:C.green, marginTop:2 }}>
-                {cps!=null?fc(cps)+" / sale":"—"}
+    <div style={{ padding:"12px" }}>
+      {/* AGENT STAT CARDS - BY LIST */}
+      {activeAgents.length > 0 && (
+        <div style={{ marginBottom:20 }}>
+          {/* Grid header row with list names */}
+          <div style={{ display:"grid", gridTemplateColumns:`180px repeat(${lists.length}, 1fr)`, gap:6, marginBottom:6 }}>
+            <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", fontWeight:600, paddingLeft:4 }}>Agent</div>
+            {lists.map(li => (
+              <div key={li} style={{ fontSize:10, color:C.accent, letterSpacing:".12em", textTransform:"uppercase", fontWeight:700, textAlign:"center" }}>
+                {li}
               </div>
-            </div>
-          );
-        })}
-        <div style={{ background:C.surface, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px", marginTop:4 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:C.text, marginBottom:3 }}>TOTAL</div>
-          <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>{f(totals.o)} calls · {totals.s} deals</div>
-          <div style={{ fontFamily:"monospace", fontSize:12, color:C.text }}>{fc(totals.cost)}</div>
-          <div style={{ fontFamily:"monospace", fontSize:12, color:C.amber, marginTop:2 }}>{totals.s>0?fc(totals.cost/totals.s)+" / sale":"—"}</div>
-        </div>
-      </div>
-
-      {/* CROSS-TAB GRID */}
-      <div style={{ flex:1, overflowX:"auto" }}>
-        <table style={{ borderCollapse:"collapse", width:"100%" }}>
-          <thead>
-            <tr>
-              <th style={{ background:C.surface, color:C.muted, fontSize:10, letterSpacing:".12em", textTransform:"uppercase", padding:"9px 14px", textAlign:"left", borderBottom:`1px solid ${C.border}`, whiteSpace:"nowrap" }}>Agent</th>
-              {lists.map(li => (
-                <th key={li} style={{ background:C.surface, color:C.accent, fontSize:11, fontWeight:700, padding:"9px 14px", textAlign:"center", borderBottom:`1px solid ${C.border}`, whiteSpace:"nowrap", borderLeft:`1px solid ${C.border}` }}>{li}</th>
-              ))}
-            </tr>
-            {/* no sub-header row */}
-          </thead>
-          <tbody>
-            {agents.map(ag => (
-              <tr key={ag.name} onMouseEnter={e=>(e.currentTarget.style.background="rgba(0,212,184,.04)")} onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
-                <td style={{ padding:"8px 14px", fontSize:12, fontWeight:600, color:C.text, borderBottom:`1px solid ${C.dim}`, whiteSpace:"nowrap" }}>{ag.name}</td>
-                {lists.map(li => {
-                  const raw  = cross[ag.name]?.[li];
-                  const cell = raw ? {
-                    min: raw.min,
-                    t:   (raw as any).t ?? (raw as any).transfers ?? 0,
-                    s:   (raw as any).s ?? 0,
-                  } : null;
-                  return (
-                    <td key={li} style={{ padding:"6px 10px", textAlign:"center", borderBottom:`1px solid ${C.dim}`, borderLeft:`1px solid ${C.dim}`, minWidth:90 }}>
-                      {cell ? (
-                        <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
-                          <span style={{ fontFamily:"monospace", fontSize:11, color:C.text }}><span style={{ color:C.muted }}>Mins: </span>{f(cell.min)}</span>
-                          <span style={{ fontFamily:"monospace", fontSize:11, color:C.accent }}><span style={{ color:C.muted }}>Calls: </span>{f(cell.t)}</span>
-                          <span style={{ fontFamily:"monospace", fontSize:11, color:cell.s>0?C.green:C.dim, fontWeight:cell.s>0?700:400 }}><span style={{ color:C.muted, fontWeight:400 }}>Sales: </span>{cell.s}</span>
-                          <span style={{ fontFamily:"monospace", fontSize:11, color:C.amber }}><span style={{ color:C.muted }}>Cls%: </span>{pct(cell.s, cell.t)}</span>
-                        </div>
-                      ) : (
-                        <span style={{ color:C.dim, fontSize:12 }}>—</span>
-                      )}
-                    </td>
-                  );
-                })}
-              </tr>
             ))}
-            {/* totals row */}
-            <tr style={{ background:C.surface, borderTop:`2px solid ${C.border}` }}>
-              <td style={{ padding:"8px 14px", fontSize:12, fontWeight:700, color:C.text }}>TOTAL</td>
+          </div>
+
+          {/* Agent rows with stat cards */}
+          {activeAgents.map(ag => (
+            <div key={ag.name} style={{ display:"grid", gridTemplateColumns:`180px repeat(${lists.length}, 1fr)`, gap:6, marginBottom:8 }}>
+              {/* Agent name column */}
+              <div style={{ fontSize:11, fontWeight:600, color:C.accent, paddingLeft:4, display:"flex", alignItems:"flex-start", paddingTop:4 }}>
+                {ag.name}
+              </div>
+
+              {/* Stat cards for each list */}
               {lists.map(li => {
-                const lt = listTotals[li] || { min:0, t:0, s:0 };
+                const raw = cross[ag.name]?.[li];
+                const cell = raw ? {
+                  min: raw.min,
+                  t:   (raw as any).t ?? (raw as any).transfers ?? 0,
+                  s:   (raw as any).s ?? 0,
+                } : null;
+
+                const hasMins = cell && cell.min > 0;
+                const hasTransfers = cell && cell.t > 0;
+                const hasSales = cell && cell.s > 0;
+
                 return (
-                  <td key={li} style={{ padding:"6px 10px", textAlign:"center", borderLeft:`1px solid ${C.border}` }}>
-                    <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
-                      <span style={{ fontFamily:"monospace", fontSize:11, color:C.text, fontWeight:600 }}><span style={{ color:C.muted, fontWeight:400 }}>Mins: </span>{f(lt.min)}</span>
-                      <span style={{ fontFamily:"monospace", fontSize:11, color:C.accent, fontWeight:600 }}><span style={{ color:C.muted, fontWeight:400 }}>Calls: </span>{f(lt.t)}</span>
-                      <span style={{ fontFamily:"monospace", fontSize:11, color:lt.s>0?C.green:C.dim, fontWeight:700 }}><span style={{ color:C.muted, fontWeight:400 }}>Sales: </span>{lt.s}</span>
-                      <span style={{ fontFamily:"monospace", fontSize:11, color:C.amber, fontWeight:600 }}><span style={{ color:C.muted, fontWeight:400 }}>Cls%: </span>{pct(lt.s, lt.t)}</span>
-                    </div>
-                  </td>
+                  <div
+                    key={li}
+                    style={{
+                      background: cell && (cell.min > 0 || cell.t > 0 || cell.s > 0) ? C.card : C.surface,
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 4,
+                      padding: "8px",
+                      fontSize: 10,
+                      minHeight: 90,
+                    }}
+                  >
+                    {cell && (cell.min > 0 || cell.t > 0 || cell.s > 0) ? (
+                      <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                        <div style={{ fontFamily:"monospace", color: hasMins ? C.text : C.dim, fontWeight:500 }}>
+                          <span style={{ color:C.muted }}>Mins: </span>{f(Math.round(cell.min))}
+                        </div>
+                        <div style={{ fontFamily:"monospace", color: hasTransfers ? C.accent : C.dim, fontWeight:500 }}>
+                          <span style={{ color:C.muted }}>Calls: </span>{f(cell.t)}
+                        </div>
+                        <div style={{ fontFamily:"monospace", color: hasSales ? C.green : C.dim, fontWeight:hasSales?600:400 }}>
+                          <span style={{ color:C.muted }}>Sales: </span>{salesLoading ? <LoadingSpinner /> : cell.s}
+                        </div>
+                        <div style={{ fontFamily:"monospace", color: C.amber, fontWeight:500 }}>
+                          <span style={{ color:C.muted }}>Cls%: </span>{salesLoading ? <LoadingSpinner /> : pct(cell.s, cell.t)}
+                        </div>
+                      </div>
+                    ) : (
+                      <span style={{ color:C.dim, fontSize:10 }}>—</span>
+                    )}
+                  </div>
                 );
               })}
-            </tr>
-          </tbody>
-        </table>
-      </div>
+            </div>
+          ))}
+
+          {/* TOTAL ROW */}
+          <div style={{ display:"grid", gridTemplateColumns:`180px repeat(${lists.length}, 1fr)`, gap:6, marginTop:12, paddingTop:12, borderTop:`2px solid ${C.border}` }}>
+            <div style={{ fontSize:11, fontWeight:700, color:C.text, paddingLeft:4 }}>TOTAL</div>
+            {lists.map(li => {
+              const lt = listTotals[li] || { min:0, t:0, s:0 };
+              return (
+                <div
+                  key={li}
+                  style={{
+                    background: C.surface,
+                    border: `1px solid ${C.border}`,
+                    borderRadius: 4,
+                    padding: "8px",
+                    fontSize: 10,
+                    minHeight: 90,
+                    display:"flex",
+                    flexDirection:"column",
+                    gap:4,
+                  }}
+                >
+                  <div style={{ fontFamily:"monospace", color: C.text, fontWeight:600 }}>
+                    <span style={{ color:C.muted, fontWeight:400 }}>Mins: </span>{f(Math.round(lt.min))}
+                  </div>
+                  <div style={{ fontFamily:"monospace", color: C.accent, fontWeight:600 }}>
+                    <span style={{ color:C.muted, fontWeight:400 }}>Calls: </span>{f(lt.t)}
+                  </div>
+                  <div style={{ fontFamily:"monospace", color: lt.s>0?C.green:C.dim, fontWeight:700 }}>
+                    <span style={{ color:C.muted, fontWeight:400 }}>Sales: </span>{salesLoading ? <LoadingSpinner /> : lt.s}
+                  </div>
+                  <div style={{ fontFamily:"monospace", color: C.amber, fontWeight:600 }}>
+                    <span style={{ color:C.muted, fontWeight:400 }}>Cls%: </span>{salesLoading ? <LoadingSpinner /> : pct(lt.s, lt.t)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* UNUSED AGENTS SECTION */}
+      {unusedAgents.length > 0 && (
+        <div style={{ marginTop:24, paddingTop:16, borderTop:`1px solid ${C.border}` }}>
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", fontWeight:600, marginBottom:8 }}>
+            UNUSED AGENTS ({unusedAgents.length})
+          </div>
+          <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+            {unusedAgents.map(ag => (
+              <div key={ag.name} style={{ padding:"6px 10px", background:C.surface, border:`1px solid ${C.dim}`, borderRadius:4, fontSize:11, color:C.muted, opacity:0.6 }}>
+                {ag.name}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // ── TRANSFER VIEW (wrapper with toggle) ───────────────────────────────────────
-function TransferView({ data }: { data: DashData }) {
+function TransferView({ data, salesLoading }: { data: DashData; salesLoading: boolean }) {
   const [viewMode, setViewMode] = useState<ViewMode>("bylist");
   const lists     = data.allLists?.length ? data.allLists : Object.keys(data.byList);
   const crossData = data.aimByAgent ?? null;
   return (
     <div>
       <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
-      {viewMode === "bylist"  && <ByListView  data={data} />}
-      {viewMode === "byagent" && <ByAgentView agents={DEMO_AGENT_STATS} lists={lists} crossData={crossData} />}
+      {viewMode === "bylist"  && <ByListView  data={data} salesLoading={salesLoading} />}
+      {viewMode === "byagent" && <ByAgentView agents={DEMO_AGENT_STATS} lists={lists} crossData={crossData} salesLoading={salesLoading} />}
+    </div>
+  );
+}
+
+// ── META VIEW ─────────────────────────────────────────────────────────────────
+function MetaView({ metaData, loading }: { metaData: MetaResponse | null; loading: boolean }) {
+  if (loading) {
+    return (
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"center", padding:"40px 20px" }}>
+        <div style={{ width:24, height:24, borderRadius:"50%", border:`2px solid ${C.dim}`, borderTopColor:C.accent, animation:"spin 0.8s linear infinite" }} />
+      </div>
+    );
+  }
+
+  if (!metaData?.ok) {
+    return <div style={{ padding:"20px", color:C.red }}>Error loading Meta data: {metaData?.error}</div>;
+  }
+
+  const { leads, summary } = metaData;
+
+  const callStatusColor = (status: "transferred" | "answered" | "unanswered") => {
+    if (status === "transferred") return C.green;
+    if (status === "answered") return C.amber;
+    return C.red;
+  };
+
+  const callStatusBg = (status: "transferred" | "answered" | "unanswered") => {
+    if (status === "transferred") return "rgba(34,197,94,.15)";
+    if (status === "answered") return "rgba(245,158,11,.15)";
+    return "rgba(239,68,68,.15)";
+  };
+
+  const talkTimeColor = (secs: number) => {
+    if (secs <= 30) return C.red;
+    if (secs <= 420) return C.amber;
+    return C.green;
+  };
+
+  const formatCallTime = (date: string, time: string) => {
+    const [y, m, d] = date.split('-');
+    return `${m}/${d} ${time}`;
+  };
+
+  const formatTalkTime = (secs: number) => {
+    if (secs === 0) return "—";
+    const mins = Math.floor(secs / 60);
+    const sec = secs % 60;
+    return mins > 0 ? `${mins}m ${sec}s` : `${sec}s`;
+  };
+
+  return (
+    <div>
+      {/* Summary Bar */}
+      <div style={{ display:"flex", gap:12, padding:"12px 20px", borderBottom:`1px solid ${C.border}`, background:C.surface, flexWrap:"wrap" }}>
+        <div style={{ flex:"0 1 auto" }}>
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginBottom:4 }}>Total Leads</div>
+          <div style={{ fontSize:18, fontWeight:700, color:C.text, fontFamily:"monospace" }}>{f(summary.totalLeads)}</div>
+        </div>
+        <div style={{ flex:"0 1 auto" }}>
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginBottom:4 }}>Transferred</div>
+          <div style={{ fontSize:18, fontWeight:700, color:C.green, fontFamily:"monospace" }}>{f(summary.transferred)}</div>
+        </div>
+        <div style={{ flex:"0 1 auto" }}>
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginBottom:4 }}>Answered</div>
+          <div style={{ fontSize:18, fontWeight:700, color:C.amber, fontFamily:"monospace" }}>{f(summary.answered)}</div>
+        </div>
+        <div style={{ flex:"0 1 auto" }}>
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginBottom:4 }}>Unanswered</div>
+          <div style={{ fontSize:18, fontWeight:700, color:C.red, fontFamily:"monospace" }}>{f(summary.unanswered)}</div>
+        </div>
+        <div style={{ flex:"0 1 auto" }}>
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginBottom:4 }}>Sold</div>
+          <div style={{ fontSize:18, fontWeight:700, color:C.green, fontFamily:"monospace" }}>{f(summary.sold)}</div>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div style={{ overflowX:"auto" }}>
+        <table style={{ borderCollapse:"collapse", width:"100%" }}>
+          <thead>
+            <tr>
+              <Th left>Phone</Th>
+              <Th>Call 1</Th>
+              <Th>Call 2</Th>
+              <Th>Call 3</Th>
+              <Th>Call 4</Th>
+              <Th>Call 5</Th>
+              <Th>Call 6</Th>
+              <Th>Talk Time (Mail 6)</Th>
+              <Th>Sold</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {leads.map((lead, idx) => (
+              <tr key={lead.phone} onMouseEnter={e=>(e.currentTarget.style.background="rgba(0,212,184,.04)")} onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
+                <Td style={{ textAlign:"left" }}>
+                  <span style={{ color:lead.isSold?C.green:C.text, fontWeight:lead.isSold?700:500, fontFamily:"monospace" }}>
+                    {lead.phone}
+                  </span>
+                </Td>
+
+                {/* Call cells 1-6 */}
+                {[0, 1, 2, 3, 4, 5].map(i => {
+                  const call = lead.calls[i];
+                  return (
+                    <Td key={i} style={{ padding:"9px 8px" }}>
+                      {call ? (
+                        <div style={{
+                          padding:"4px 8px",
+                          borderRadius:3,
+                          background:callStatusBg(call.status),
+                          color:callStatusColor(call.status),
+                          fontSize:11,
+                          fontFamily:"monospace",
+                          fontWeight:600,
+                          textAlign:"center",
+                          whiteSpace:"nowrap",
+                        }}>
+                          {formatCallTime(call.date, call.time)}
+                        </div>
+                      ) : (
+                        <span style={{ color:C.dim, fontSize:11 }}>—</span>
+                      )}
+                    </Td>
+                  );
+                })}
+
+                {/* Talk time */}
+                <Td style={{ textAlign:"center" }}>
+                  <span style={{ fontFamily:"monospace", fontSize:11, color:talkTimeColor(lead.mail6TalkTimeSec), fontWeight:600 }}>
+                    {formatTalkTime(lead.mail6TalkTimeSec)}
+                  </span>
+                </Td>
+
+                {/* Sold indicator */}
+                <Td style={{ textAlign:"center" }}>
+                  {lead.isSold ? (
+                    <span style={{ color:C.green, fontWeight:700, fontSize:12 }}>✓ SOLD</span>
+                  ) : (
+                    <span style={{ color:C.dim, fontSize:11 }}>—</span>
+                  )}
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {leads.length === 0 && (
+        <div style={{ padding:"40px 20px", textAlign:"center", color:C.muted }}>
+          No leads found for the selected date range.
+        </div>
+      )}
     </div>
   );
 }
@@ -486,6 +722,9 @@ export default function Home() {
   const [data, setData]               = useState<DashData>(DEMO);
   const [isLive, setIsLive]           = useState(false);
   const [loading, setLoading]         = useState(true);
+  const [salesLoading, setSalesLoading] = useState(true);
+  const [metaLoading, setMetaLoading] = useState(false);
+  const [metaData, setMetaData]       = useState<MetaResponse | null>(null);
   const [lastRefresh, setLastRefresh] = useState<string>("");
   const [campaign, setCampaign]       = useState<CampaignTab>("transfer");
   const [preset, setPreset]           = useState<DatePreset>("today");
@@ -495,18 +734,47 @@ export default function Home() {
 
   const loadData = useCallback(async (start: string | null, end: string | null) => {
     setLoading(true);
+    setSalesLoading(true);
+    setMetaLoading(true);
     try {
-      const qs = new URLSearchParams();
-      if (start) qs.set("start", start);
-      if (end)   qs.set("end", end);
-      const q = qs.toString() ? "?" + qs.toString() : "";
-      const res  = await fetch(`/api/data${q}`);
-      const json = await res.json();
-      if (json?.hasData) { setData(json); setIsLive(true); }
-      else               { setData(DEMO); setIsLive(false); }
+      // Stage 1: Fast load with seed files only
+      const qs1 = new URLSearchParams();
+      if (start) qs1.set("start", start);
+      if (end)   qs1.set("end", end);
+      qs1.set("stage", "1");
+      const q1 = qs1.toString() ? "?" + qs1.toString() : "";
+      const res1 = await fetch(`/api/data${q1}`);
+      const json1 = await res1.json();
+      if (json1?.hasData) { setData(json1); setIsLive(true); }
+      else                { setData(DEMO); setIsLive(false); }
+      setLoading(false);
       setLastRefresh(new Date().toLocaleTimeString());
-    } catch { setIsLive(false); }
-    finally  { setLoading(false); }
+
+      // Stage 2: Full load with Moxy
+      const qs2 = new URLSearchParams();
+      if (start) qs2.set("start", start);
+      if (end)   qs2.set("end", end);
+      const q2 = qs2.toString() ? "?" + qs2.toString() : "";
+      const res2 = await fetch(`/api/data${q2}`);
+      const json2 = await res2.json();
+      if (json2?.hasData) { setData(json2); setIsLive(true); }
+      setSalesLoading(false);
+      setLastRefresh(new Date().toLocaleTimeString());
+
+      // Load Meta data
+      const qsMeta = new URLSearchParams();
+      if (start) qsMeta.set("start", start);
+      if (end)   qsMeta.set("end", end);
+      const qMeta = qsMeta.toString() ? "?" + qsMeta.toString() : "";
+      const resMeta = await fetch(`/api/meta${qMeta}`);
+      const metaJson = await resMeta.json();
+      setMetaData(metaJson);
+      setMetaLoading(false);
+    } catch (e) {
+      console.error('Data load error:', e);
+      setIsLive(false);
+    }
+    finally  { setLoading(false); setSalesLoading(false); setMetaLoading(false); }
   }, []);
 
   const handleApplyWithPreset = useCallback((p: DatePreset) => {
@@ -534,7 +802,7 @@ export default function Home() {
     { id:"transfer",     label:"Transfer",      active:true  },
     { id:"outbound",     label:"Outbound",      active:false },
     { id:"inbound",      label:"Inbound",       active:false },
-    { id:"meta",         label:"Meta",          active:false },
+    { id:"meta",         label:"Meta",          active:true  },
     { id:"overview",     label:"Overview",      active:false },
     { id:"agentmapping", label:"Agent Mapping", active:true  },
   ];
@@ -603,10 +871,10 @@ export default function Home() {
       {/* MAIN CONTENT */}
       <div style={{ padding:"20px" }}>
         <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
-          {campaign === "transfer"     && <TransferView data={data} />}
+          {campaign === "transfer"     && <TransferView data={data} salesLoading={salesLoading} />}
           {campaign === "outbound"     && <ComingSoon label="Outbound" />}
           {campaign === "inbound"      && <ComingSoon label="Inbound" />}
-          {campaign === "meta"         && <ComingSoon label="Meta" />}
+          {campaign === "meta"         && <MetaView metaData={metaData} loading={metaLoading} />}
           {campaign === "overview"     && <ComingSoon label="Overview" />}
           {campaign === "agentmapping" && <AgentMappingView />}
         </div>

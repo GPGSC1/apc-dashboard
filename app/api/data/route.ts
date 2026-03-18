@@ -95,6 +95,7 @@ export async function GET(request: Request) {
     const { searchParams, origin } = new URL(request.url);
     const dateStart = searchParams.get("start");
     const dateEnd   = searchParams.get("end");
+    const stage     = searchParams.get("stage");
     const today     = new Date().toISOString().slice(0, 10);
     const fromDate  = dateStart ?? CAMPAIGN_START;
     const toDate    = dateEnd   ?? today;
@@ -241,33 +242,35 @@ export async function GET(request: Request) {
       dealStatus: string; salesperson: string; campaign: string;
     }[] = [];
 
-    try {
-      const moxyResp = await fetch(`${origin}/api/moxy`);
-      if (moxyResp.ok) {
-        const moxyData = await moxyResp.json();
-        salesRows = (moxyData.sales ?? [])
-          .filter((s: { status: string }) => (s.status ?? "").trim() === "Sold")
-          .map((s: {
-            soldDate: string; lastName: string; firstName: string;
-            promoCode: string; homePhone: string; cellPhone: string;
-            status: string; salesRep: string; campaign: string;
-          }) => ({
-            soldDate:    toISO(s.soldDate ?? ""),
-            lastName:    s.lastName  ?? "",
-            firstName:   s.firstName ?? "",
-            promoCode:   s.promoCode ?? "",
-            homePhone:   cleanPhone(s.homePhone ?? ""),
-            mobilePhone: cleanPhone(s.cellPhone ?? ""),
-            dealStatus:  s.status    ?? "",
-            salesperson: s.salesRep  ?? "",
-            campaign:    s.campaign  ?? "",
-          }))
-          .filter((s: { soldDate: string | null }) =>
-            s.soldDate && s.soldDate >= CAMPAIGN_START && inRange(s.soldDate)
-          );
+    if (stage !== "1") {
+      try {
+        const moxyResp = await fetch(`${origin}/api/moxy`);
+        if (moxyResp.ok) {
+          const moxyData = await moxyResp.json();
+          salesRows = (moxyData.sales ?? [])
+            .filter((s: { status: string }) => (s.status ?? "").trim() === "Sold")
+            .map((s: {
+              soldDate: string; lastName: string; firstName: string;
+              promoCode: string; homePhone: string; cellPhone: string;
+              status: string; salesRep: string; campaign: string;
+            }) => ({
+              soldDate:    toISO(s.soldDate ?? ""),
+              lastName:    s.lastName  ?? "",
+              firstName:   s.firstName ?? "",
+              promoCode:   s.promoCode ?? "",
+              homePhone:   cleanPhone(s.homePhone ?? ""),
+              mobilePhone: cleanPhone(s.cellPhone ?? ""),
+              dealStatus:  s.status    ?? "",
+              salesperson: s.salesRep  ?? "",
+              campaign:    s.campaign  ?? "",
+            }))
+            .filter((s: { soldDate: string | null }) =>
+              s.soldDate && s.soldDate >= CAMPAIGN_START && inRange(s.soldDate)
+            );
+        }
+      } catch (e) {
+        console.error("[data/route] Moxy fetch failed:", e);
       }
-    } catch (e) {
-      console.error("[data/route] Moxy fetch failed:", e);
     }
 
     // ── 4b. LOAD QUEUE RULES (guardrail for non-same-day sales) ──────────────
@@ -358,51 +361,53 @@ export async function GET(request: Request) {
     const nonListSales: (typeof salesRows[0] & { onOpened: boolean })[] = [];
     const seenSales = new Set<string>();
 
-    for (const s of salesRows) {
-      const key = `${s.homePhone}|${s.mobilePhone}`;
-      if (seenSales.has(key)) continue;
-      seenSales.add(key);
+    if (stage !== "1") {
+      for (const s of salesRows) {
+        const key = `${s.homePhone}|${s.mobilePhone}`;
+        if (seenSales.has(key)) continue;
+        seenSales.add(key);
 
-      const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
-      if (!notFishbein) continue;
+        const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
+        if (!notFishbein) continue;
 
-      const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
+        const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
 
-      const matchedPhone = phones.find(p =>
-        phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
-      );
-
-      const onOpened = phones.some(p => openedPhones.has(p));
-
-      if (!matchedPhone) {
-        nonListSales.push({ ...s, onOpened });
-        continue;
-      }
-
-      // ── GUARDRAIL: non-same-day sales must pass queue rules ──────────────
-      // If the sale's phone was transferred on the SAME day as the sale, trust
-      // the triple gate (97% of cases). If NOT same-day, apply queue rules to
-      // verify the sale actually belongs to Mail 4 (AI campaign).
-      const soldDate = s.soldDate ?? "";
-      const transferDates = aimPhoneDates.get(matchedPhone);
-      const isSameDay = transferDates?.has(soldDate) ?? false;
-
-      if (!isSameDay && queueRules.length > 0) {
-        // Not same-day: apply queue rules using Moxy promoCode + campaign
-        const assignedQueue = assignQueue(
-          { promoCode: s.promoCode, campaign: s.campaign },
-          "" // no 3CX queue name available here; promoCode/campaign rules take precedence
+        const matchedPhone = phones.find(p =>
+          phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
         );
-        if (assignedQueue && assignedQueue !== "Mail 4") {
-          // Rules say this sale belongs to a different campaign — don't count as AI
+
+        const onOpened = phones.some(p => openedPhones.has(p));
+
+        if (!matchedPhone) {
           nonListSales.push({ ...s, onOpened });
           continue;
         }
-        // If no rule matched OR rule says Mail 4 → count it
-      }
 
-      const li = phoneToList.get(matchedPhone)!;
-      if (byList[li]) byList[li].s++;
+        // ── GUARDRAIL: non-same-day sales must pass queue rules ──────────────
+        // If the sale's phone was transferred on the SAME day as the sale, trust
+        // the triple gate (97% of cases). If NOT same-day, apply queue rules to
+        // verify the sale actually belongs to Mail 4 (AI campaign).
+        const soldDate = s.soldDate ?? "";
+        const transferDates = aimPhoneDates.get(matchedPhone);
+        const isSameDay = transferDates?.has(soldDate) ?? false;
+
+        if (!isSameDay && queueRules.length > 0) {
+          // Not same-day: apply queue rules using Moxy promoCode + campaign
+          const assignedQueue = assignQueue(
+            { promoCode: s.promoCode, campaign: s.campaign },
+            "" // no 3CX queue name available here; promoCode/campaign rules take precedence
+          );
+          if (assignedQueue && assignedQueue !== "Mail 4") {
+            // Rules say this sale belongs to a different campaign — don't count as AI
+            nonListSales.push({ ...s, onOpened });
+            continue;
+          }
+          // If no rule matched OR rule says Mail 4 → count it
+        }
+
+        const li = phoneToList.get(matchedPhone)!;
+        if (byList[li]) byList[li].s++;
+      }
     }
 
     // AGENT SUMMARY
@@ -412,18 +417,20 @@ export async function GET(request: Request) {
     }
 
     // Deals per agent
-    for (const s of salesRows) {
-      const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
-      if (!notFishbein) continue;
+    if (stage !== "1") {
+      for (const s of salesRows) {
+        const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
+        if (!notFishbein) continue;
 
-      const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
-      const matchedPhone = phones.find(p =>
-        phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
-      );
-      if (!matchedPhone) continue;
+        const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
+        const matchedPhone = phones.find(p =>
+          phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
+        );
+        if (!matchedPhone) continue;
 
-      const agent = phoneToAgent.get(matchedPhone);
-      if (agent && byAgent[agent]) byAgent[agent].deals++;
+        const agent = phoneToAgent.get(matchedPhone);
+        if (agent && byAgent[agent]) byAgent[agent].deals++;
+      }
     }
 
     // AGENT × LIST MATRIX
@@ -447,29 +454,55 @@ export async function GET(request: Request) {
       const agent = phoneToAgent.get(phone);
       if (li && agent && matrix[agent]?.[li] !== undefined) matrix[agent][li].o++;
     }
-    for (const s of salesRows) {
-      const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
-      if (!notFishbein) continue;
-      const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
-      const matchedPhone = phones.find(p =>
-        phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
-      );
-      if (!matchedPhone) continue;
-      const li    = phoneToList.get(matchedPhone);
-      const agent = phoneToAgent.get(matchedPhone);
-      if (li && agent && matrix[agent]?.[li] !== undefined) matrix[agent][li].d++;
+    if (stage !== "1") {
+      for (const s of salesRows) {
+        const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
+        if (!notFishbein) continue;
+        const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
+        const matchedPhone = phones.find(p =>
+          phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
+        );
+        if (!matchedPhone) continue;
+        const li    = phoneToList.get(matchedPhone);
+        const agent = phoneToAgent.get(matchedPhone);
+        if (li && agent && matrix[agent]?.[li] !== undefined) matrix[agent][li].d++;
+      }
     }
 
     // Build cross-tab for the campaign-tab UI (agent → list → stats)
+    // Allocate agent's total min/cost proportionally by transfer count across lists
     const aimByAgentGrid: Record<string, Record<string, { min: number; cost: number; transfers: number }>> = {};
     for (const agent of allAgents) {
       aimByAgentGrid[agent] = {};
+
+      const agentStats = byAgent[agent];
+      const totalMinForAgent = agentStats?.min ?? 0;
+      const totalCostForAgent = agentStats?.cost ?? 0;
+
+      // Sum total transfers for this agent across all lists
+      let totalTransfersForAgent = 0;
       for (const li of allLists) {
         const m = matrix[agent]?.[li];
+        totalTransfersForAgent += m?.t ?? 0;
+      }
+
+      // Allocate min/cost proportionally by transfer count
+      for (const li of allLists) {
+        const m = matrix[agent]?.[li];
+        const transfers = m?.t ?? 0;
+        let allocatedMin = 0;
+        let allocatedCost = 0;
+
+        if (transfers > 0 && totalTransfersForAgent > 0) {
+          const ratio = transfers / totalTransfersForAgent;
+          allocatedMin = totalMinForAgent * ratio;
+          allocatedCost = totalCostForAgent * ratio;
+        }
+
         aimByAgentGrid[agent][li] = {
-          min:       0,
-          cost:      0,
-          transfers: m?.t ?? 0,
+          min:       allocatedMin,
+          cost:      allocatedCost,
+          transfers: transfers,
         };
       }
     }
@@ -486,9 +519,14 @@ export async function GET(request: Request) {
       loadedFiles,
       lastUpdated: new Date().toISOString(),
       hasData:     aimTransferPhones.size > 0 || openedPhones.size > 0,
+      loading:     stage === "1" ? { sales: true } : undefined,
       // Fields expected by campaign-tab UI (page.tsx)
       aimByAgent: aimByAgentGrid,
-      staleness: { cx: null, aim: null, moxy: null },
+      staleness: {
+        cx:   new Date().toISOString(),
+        aim:  new Date().toISOString(),
+        moxy: stage === "1" ? null : new Date().toISOString(),
+      },
       apiSources: {
         aimTransfers:    aimTransferPhones.size,
         openedCount:     openedPhones.size,
