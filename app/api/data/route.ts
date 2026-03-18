@@ -183,14 +183,20 @@ export async function GET(request: Request) {
     // Reading seed JSON files is instant (~375KB + ~221KB) — no API call.
     const itdAimPhones    = new Set<string>();
     const itdOpenedPhones = new Set<string>();
+    const itdPhoneToAgent = new Map<string, string>(); // ITD phone→agent for agent attribution
 
     try {
       const aimSeedPath = path.join(DATA_DIR, "aim_transfers_seed.json");
       if (fs.existsSync(aimSeedPath)) {
         const aimSeed = JSON.parse(fs.readFileSync(aimSeedPath, "utf8"));
         for (const t of (aimSeed.transfers ?? [])) {
-          if (t.phone?.length === 10) itdAimPhones.add(t.phone);
-          // Track max date from AIM seed (for ITD and live date-filtered queries)
+          if (t.phone?.length === 10) {
+            itdAimPhones.add(t.phone);
+            // Build ITD phone→agent map (first agent wins, same as phoneToAgent)
+            if (t.agent && !itdPhoneToAgent.has(t.phone)) {
+              itdPhoneToAgent.set(t.phone, t.agent);
+            }
+          }
           if (t.date && (!aimMaxDate || t.date > aimMaxDate)) {
             aimMaxDate = t.date;
           }
@@ -536,7 +542,7 @@ export async function GET(request: Request) {
         );
         if (!matchedPhone) continue;
 
-        const agent = phoneToAgent.get(matchedPhone);
+        const agent = phoneToAgent.get(matchedPhone) || itdPhoneToAgent.get(matchedPhone);
         if (agent && byAgent[agent]) byAgent[agent].deals++;
       }
     }
@@ -572,7 +578,8 @@ export async function GET(request: Request) {
         );
         if (!matchedPhone) continue;
         const li    = phoneToList.get(matchedPhone);
-        const agent = phoneToAgent.get(matchedPhone);
+        // Use date-filtered agent first, fall back to ITD agent for cross-day sales
+        const agent = phoneToAgent.get(matchedPhone) || itdPhoneToAgent.get(matchedPhone);
         if (li && agent && matrix[agent]?.[li] !== undefined) matrix[agent][li].d++;
       }
     }
