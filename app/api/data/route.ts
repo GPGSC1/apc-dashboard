@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import * as fs from "fs";
 import * as path from "path";
 
-const DATA_DIR       = path.join(process.cwd(), "data");
-const CAMPAIGN_START = "2026-02-25";
+const DATA_DIR           = path.join(process.cwd(), "data");
+const CAMPAIGN_START     = "2026-02-25";
+const AIM_COST_PER_MIN   = 0.29; // $/min — update if rate changes. Used for real-time cost calculation via /calls/count endpoint.
 
 const DEFAULT_LISTS: Record<string, number> = {
   RT:         0,
@@ -143,10 +144,14 @@ export async function GET(request: Request) {
 
     // ── 2. FETCH AIM API (date-filtered for display) ────────────────────────
     // Returns phones[] per list — used for transfer counts, minutes, cost
+    // AIM API date range: startISO = fromDate + "T06:00:00.000Z" (Central Time offset)
+    //                      endISO   = toDate + 1 day - 1 second (captures full toDate in Central Time)
+    // This ensures we capture the complete day when filtering by Central Time (UTC-5/-6).
     const aimTransferPhones = new Set<string>();  // date-filtered (for display)
     const phoneToAgent      = new Map<string, string>();
     let aimByList:  Record<string, { t: number; phones: string[]; phoneToAgent: Record<string,string>; min: number; cost: number; listCost: number }> = {};
     let aimByAgent: Record<string, { t: number; min: number; cost: number }> = {};
+    let aimMaxDate: string | null = null;  // Track max date from AIM data
 
     // Skip AIM API for stage="calls" since we only need 3CX data; fetch seed files instead
     if (stage !== "calls") {
@@ -185,6 +190,10 @@ export async function GET(request: Request) {
         const aimSeed = JSON.parse(fs.readFileSync(aimSeedPath, "utf8"));
         for (const t of (aimSeed.transfers ?? [])) {
           if (t.phone?.length === 10) itdAimPhones.add(t.phone);
+          // Track max date from AIM seed (for ITD and live date-filtered queries)
+          if (t.date && (!aimMaxDate || t.date > aimMaxDate)) {
+            aimMaxDate = t.date;
+          }
         }
       }
     } catch (e) {
@@ -199,6 +208,10 @@ export async function GET(request: Request) {
           const aimSeed = JSON.parse(fs.readFileSync(aimSeedPath, "utf8"));
           for (const t of (aimSeed.transfers ?? [])) {
             if (t.phone?.length === 10) aimTransferPhones.add(t.phone);
+            // Track max date from AIM seed
+            if (t.date && inRange(t.date) && (!aimMaxDate || t.date > aimMaxDate)) {
+              aimMaxDate = t.date;
+            }
           }
         }
       } catch (e) {
@@ -222,6 +235,7 @@ export async function GET(request: Request) {
     for (const p of aimTransferPhones) itdAimPhones.add(p);
 
     // ── 3. FETCH 3CX CALLS + 3-GATE ATTRIBUTION ───────────────────────────
+    // 3CX API: from and to are formatted dates (YYYY-MM-DD). The report includes the full end date.
     // Gate 1: 3CX Mail 4 opened (answered + not AI + talk time > 0 + mail 4 queue)
     // Gate 2: Phone in AIM call history on SAME DAY (any outcome, not just transferred)
     //         If no same-day AIM match → fall back to queue rules
@@ -233,6 +247,7 @@ export async function GET(request: Request) {
     const openedByList: Record<string, number> = {}; // calls per list (3-gated)
     let totalOpenedCalls = 0;                         // total Mail 4 opened (all gates)
     let unattributedCalls = 0;                        // Gate 1+2 pass but no list match
+    let tcxMaxDate: string | null = null;            // Track max date from 3CX data
 
     // Load AIM daily phone sets for Gate 2 (phone in AIM on same day, any outcome)
     let aimDailyPhones: Record<string, Set<string>> = {};
@@ -270,6 +285,10 @@ export async function GET(request: Request) {
               callDate = rawTime.slice(0, 10);
             } else {
               try { const d = new Date(rawTime); if (!isNaN(d.getTime())) callDate = d.toISOString().slice(0, 10); } catch {}
+            }
+            // Track max 3CX date
+            if (callDate && (!tcxMaxDate || callDate > tcxMaxDate)) {
+              tcxMaxDate = callDate;
             }
             const aimPhonesForDay = aimDailyPhones[callDate];
             let gate2Pass = false;
@@ -310,11 +329,14 @@ export async function GET(request: Request) {
     }
 
     // ── 4. FETCH MOXY SALES ──────────────────────────────────────────────────
+    // Moxy REST API: toDate is exclusive upper bound (tomorrowISO).
+    // When we pass end=YYYY-MM-DD, the inRange() filter uses <= comparison to include that date.
     let salesRows: {
       soldDate: string | null; lastName: string; firstName: string;
       promoCode: string; homePhone: string; mobilePhone: string;
       dealStatus: string; salesperson: string; campaign: string;
     }[] = [];
+    let moxyMaxDate: string | null = null;  // Track max date from Moxy data
 
     if (stage !== "calls" && stage !== "costs") {
       try {
@@ -341,6 +363,12 @@ export async function GET(request: Request) {
             .filter((s: { soldDate: string | null }) =>
               s.soldDate && s.soldDate >= CAMPAIGN_START && inRange(s.soldDate)
             );
+          // Track max date from Moxy
+          for (const s of salesRows) {
+            if (s.soldDate && (!moxyMaxDate || s.soldDate > moxyMaxDate)) {
+              moxyMaxDate = s.soldDate;
+            }
+          }
         }
       } catch (e) {
         console.error("[data/route] Moxy fetch failed:", e);
@@ -603,9 +631,9 @@ export async function GET(request: Request) {
       // Fields expected by campaign-tab UI (page.tsx)
       aimByAgent: aimByAgentGrid,
       staleness: {
-        cx:   new Date().toISOString(),
-        aim:  new Date().toISOString(),
-        moxy: (stage !== "calls" && stage !== "costs") ? new Date().toISOString() : null,
+        cx:   tcxMaxDate,   // Max date from 3CX data (null if no data)
+        aim:  aimMaxDate,   // Max date from AIM data (null if no data)
+        moxy: moxyMaxDate,  // Max date from Moxy data (null if no data)
       },
       apiSources: {
         aimTransfers:      aimTransferPhones.size,

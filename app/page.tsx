@@ -122,21 +122,50 @@ const C = {
 // ── STALE BANNER ──────────────────────────────────────────────────────────────
 function StaleBanner({ staleness, onRefresh }: { staleness: DashData["staleness"]; onRefresh: () => void }) {
   if (!staleness) return null;
-  const now = Date.now(); const threshold = STALE_HOURS * 60 * 60 * 1000;
-  const sources = [{ label:"3CX", ts:staleness.cx }, { label:"AIM", ts:staleness.aim }, { label:"Moxy", ts:staleness.moxy }];
-  const stale = sources.filter(s => !s.ts || now - new Date(s.ts).getTime() > threshold);
-  if (stale.length === 0) return null;
-  const labels = stale.map(s => {
-    if (!s.ts) return `${s.label} (never)`;
-    const mins = Math.round((now - new Date(s.ts).getTime()) / 60000);
-    const hrs = Math.floor(mins / 60); const rem = mins % 60;
-    return `${s.label} (${hrs > 0 ? `${hrs}h ${rem}m` : `${mins}m`} ago)`;
-  });
+
+  // staleness now contains dates (YYYY-MM-DD) or null, not timestamps
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000).toISOString().slice(0, 10);
+
+  // Check if all sources have recent data (within last 5 minutes, approximated as today's date)
+  const sources = [
+    { label: "3CX", date: staleness.cx },
+    { label: "AIM", date: staleness.aim },
+    { label: "Moxy", date: staleness.moxy },
+  ];
+
+  const allDataFresh = sources.every(s => s.date && s.date >= fiveMinutesAgo);
+
+  if (allDataFresh) {
+    return (
+      <div style={{ background:"rgba(34,197,94,.08)", borderBottom:`1px solid rgba(34,197,94,.3)`, borderLeft:`3px solid ${C.green}`, padding:"7px 20px", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+        <span style={{ fontSize:11, color:C.green, fontWeight:700 }}>LIVE DATA</span>
+        <span style={{ fontSize:12, color:C.text }}>All sources updated {sources.map(s => `${s.label} thru ${s.date}`).filter(x => x.includes(today)).join(" · ")}</span>
+      </div>
+    );
+  }
+
+  // Show data source coverage with max dates
+  const labels = sources
+    .filter(s => s.date)
+    .map(s => `${s.label} seed thru ${s.date}`)
+    .join(" · ");
+
+  if (!labels) {
+    return (
+      <div style={{ background:"rgba(245,158,11,.08)", borderBottom:`1px solid rgba(245,158,11,.3)`, borderLeft:`3px solid ${C.amber}`, padding:"7px 20px", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+        <span>⚠️</span>
+        <span style={{ fontSize:12, color:C.amber, fontWeight:600 }}>No data loaded</span>
+        <button onClick={onRefresh} style={{ marginLeft:"auto", padding:"3px 12px", borderRadius:4, border:`1px solid ${C.amber}`, background:"transparent", color:C.amber, cursor:"pointer", fontSize:12, fontWeight:600 }}>↻ Refresh Now</button>
+      </div>
+    );
+  }
+
   return (
     <div style={{ background:"rgba(245,158,11,.08)", borderBottom:`1px solid rgba(245,158,11,.3)`, borderLeft:`3px solid ${C.amber}`, padding:"7px 20px", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
-      <span>⚠️</span>
-      <span style={{ fontSize:12, color:C.amber, fontWeight:600 }}>Stale data:</span>
-      <span style={{ fontSize:12, color:C.text }}>{labels.join(" · ")} {stale.length > 1 ? "are" : "is"} more than {STALE_HOURS}h old.</span>
+      <span style={{ fontSize:12, color:C.amber, fontWeight:600 }}>Data sources:</span>
+      <span style={{ fontSize:12, color:C.text }}>{labels}</span>
       <button onClick={onRefresh} style={{ marginLeft:"auto", padding:"3px 12px", borderRadius:4, border:`1px solid ${C.amber}`, background:"transparent", color:C.amber, cursor:"pointer", fontSize:12, fontWeight:600 }}>↻ Refresh Now</button>
     </div>
   );
@@ -382,8 +411,9 @@ function ByAgentView({ agents, lists, crossData, salesLoading, callsLoading, cos
       <div style={{ flex:1, overflowX:"auto", padding:"12px" }}>
         {activeAgents.length > 0 && (
           <div>
-            {/* Grid header row with list names */}
-            <div style={{ display:"grid", gridTemplateColumns:`repeat(${lists.length}, 1fr)`, gap:6, marginBottom:6 }}>
+            {/* Grid header row with list names (with agent name column) */}
+            <div style={{ display:"grid", gridTemplateColumns:`80px repeat(${lists.length}, 1fr)`, gap:6, marginBottom:6 }}>
+              <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", fontWeight:600 }}>Agent</div>
               {lists.map(li => (
                 <div key={li} style={{ fontSize:10, color:C.accent, letterSpacing:".12em", textTransform:"uppercase", fontWeight:700, textAlign:"center" }}>
                   {li}
@@ -393,7 +423,11 @@ function ByAgentView({ agents, lists, crossData, salesLoading, callsLoading, cos
 
             {/* Agent rows with stat cards */}
             {activeAgents.map(ag => (
-              <div key={ag.name} style={{ display:"grid", gridTemplateColumns:`repeat(${lists.length}, 1fr)`, gap:6, marginBottom:8 }}>
+              <div key={ag.name} style={{ display:"grid", gridTemplateColumns:`80px repeat(${lists.length}, 1fr)`, gap:6, marginBottom:8 }}>
+                {/* Agent name label */}
+                <div style={{ fontSize:9, color:C.muted, padding:"8px", alignSelf:"start", wordBreak:"break-word", maxHeight:90, overflow:"hidden" }}>
+                  {ag.name}
+                </div>
                 {/* Stat cards for each list */}
                 {lists.map(li => {
                   const raw = cross[ag.name]?.[li];
@@ -444,7 +478,9 @@ function ByAgentView({ agents, lists, crossData, salesLoading, callsLoading, cos
             ))}
 
             {/* TOTAL ROW */}
-            <div style={{ display:"grid", gridTemplateColumns:`repeat(${lists.length}, 1fr)`, gap:6, marginTop:12, paddingTop:12, borderTop:`2px solid ${C.border}` }}>
+            <div style={{ display:"grid", gridTemplateColumns:`80px repeat(${lists.length}, 1fr)`, gap:6, marginTop:12, paddingTop:12, borderTop:`2px solid ${C.border}` }}>
+              {/* TOTAL label */}
+              <div style={{ fontSize:9, color:C.text, fontWeight:700, padding:"8px", alignSelf:"start" }}>TOTAL</div>
               {lists.map(li => {
                 const lt = listTotals[li] || { min:0, t:0, s:0 };
                 return (
