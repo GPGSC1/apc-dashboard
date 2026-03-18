@@ -51,6 +51,7 @@ interface SeedFile {
   generatedAt: string;
   count:       number;
   transfers:   SeedTransfer[];
+  listCosts?:  Record<string, { min: number; cost: number; calls: number }>;
 }
 
 // ─── Aggregation structure ────────────────────────────────────────────────────
@@ -142,7 +143,7 @@ async function fetchCallsPage(
         query: {
           page, perPage,
           startedAt: [startISO, endISO],
-          outcomes: [89], // 89 = transferred
+          // No outcomes filter — fetch ALL calls for accurate cost/minutes
         },
       },
     }),
@@ -181,6 +182,17 @@ export async function GET(request: Request) {
         if (t.date < fromDate || t.date > effectiveEnd) continue;
         mergeTransfer(byList, byAgent, t.listKey, t.phone, t.agent, t.date, t.dSec, t.cost);
         seedCount++;
+      }
+
+      // Load aggregate cost/minutes from ALL calls (not just transfers)
+      // This overwrites the transfer-only costs with accurate totals
+      if (seed.listCosts && fromDate <= seedMaxDate) {
+        for (const [li, stats] of Object.entries(seed.listCosts)) {
+          if (byList[li]) {
+            byList[li].min  = stats.min;
+            byList[li].cost = stats.cost;
+          }
+        }
       }
     }
 
@@ -241,10 +253,20 @@ export async function GET(request: Request) {
                 : 0;
               const cost = call.price ?? 0;
 
-              if (!isTransfer || !phone || phone.length !== 10) continue;
+              // Count minutes + cost for ALL campaign calls (not just transfers)
+              if (!byList[list]) byList[list] = makeListData(list);
+              byList[list].min  += durationSec / 60;
+              byList[list].cost += cost;
+              if (!byAgent[agent]) byAgent[agent] = { t: 0, min: 0, cost: 0 };
+              byAgent[agent].min  += durationSec / 60;
+              byAgent[agent].cost += cost;
 
-              mergeTransfer(byList, byAgent, list, phone, agent, callDate, durationSec, cost);
-              liveCount++;
+              // Only track phone sets for transferred calls
+              if (isTransfer && phone && phone.length === 10) {
+                mergeTransfer(byList, byAgent, list, phone, agent, callDate, 0, 0);
+                byAgent[agent].t++;
+                liveCount++;
+              }
             }
           }
         } catch (e) {
