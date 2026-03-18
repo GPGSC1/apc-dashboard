@@ -39,7 +39,12 @@ interface CxCall {
 
 interface MoxySale {
   phone: string;
+  homePhone: string;
+  cellPhone: string;
   status: string;
+  contractNo: string;
+  campaign: string;
+  promoCode: string;
 }
 
 // ── Config ─────────────────────────────────────────────────────────────────
@@ -76,7 +81,7 @@ function filterByDateRange(
 // ── Main route ─────────────────────────────────────────────────────────────
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url);
+    const { searchParams, origin } = new URL(request.url);
     const startParam = searchParams.get('start');
     const endParam = searchParams.get('end');
 
@@ -105,20 +110,30 @@ export async function GET(request: Request) {
       cx3LookupMap.set(call.phone, Math.max(existing, call.talkTimeSec));
     }
 
-    // Get Moxy sold phones
-    let soldPhones = new Set<string>();
+    // Get Moxy sold phones + MET customer ID phones
+    const soldPhones = new Set<string>();       // all phones from Sold deals
+    const metCustIdPhones = new Set<string>();  // phones with MET-prefix customer ID
     try {
-      const moxyRes = await fetch('http://localhost:3000/api/moxy', {
-        cache: 'no-store',
-      });
+      const moxyRes = await fetch(`${origin}/api/moxy`, { cache: 'no-store' });
       if (moxyRes.ok) {
         const moxyData = await moxyRes.json();
         if (moxyData.sales && Array.isArray(moxyData.sales)) {
-          soldPhones = new Set(
-            moxyData.sales
-              .filter((s: MoxySale) => s.status === 'Sold' && s.phone)
-              .map((s: MoxySale) => normalizePhone(s.phone))
-          );
+          for (const s of moxyData.sales) {
+            if (s.status !== 'Sold') continue;
+            const hp = normalizePhone(s.homePhone || '');
+            const cp = normalizePhone(s.cellPhone || '');
+            const best = normalizePhone(s.phone || '');
+            for (const p of [best, hp, cp]) {
+              if (p) soldPhones.add(p);
+            }
+            // Track phones with MET customer ID (Meta leads loaded into GUARD)
+            const custId = s.customerId || s.contractNo || '';
+            if (custId.toUpperCase().startsWith('MET')) {
+              for (const p of [best, hp, cp]) {
+                if (p) metCustIdPhones.add(p);
+              }
+            }
+          }
         }
       }
     } catch (e) {
@@ -175,8 +190,10 @@ export async function GET(request: Request) {
       // Get mail6 talk time
       const mail6TalkTime = cx3LookupMap.get(phone) || 0;
 
-      // Check if sold: must be in Moxy AND have 3CX Mail 6 call AND have AIM Meta call
-      const isSold = soldPhones.has(phone) && mail6TalkTime > 0;
+      // Sold identification — two paths:
+      // Path A: phone in Moxy Sold + 3CX Mail 6 + AIM dash campaign (direct Meta path)
+      // Path B: phone in Moxy Sold with MET customer ID (Meta leads loaded into GUARD)
+      const isSold = (soldPhones.has(phone) && mail6TalkTime > 0) || metCustIdPhones.has(phone);
 
       leads.push({
         phone,

@@ -19,6 +19,7 @@ export interface MoxySale {
   admin:        string;
   campaign:     string;   // Moxy "campaign" field — used by queue rules for attribution
   source:       string;   // Moxy "source" field
+  customerId:   string;   // Moxy customer ID — MET prefix indicates Meta internet lead
 }
 
 // ─── Moxy REST API credentials ───────────────────────────────────────────────
@@ -102,6 +103,7 @@ export async function GET() {
         admin:        String(d.admin        ?? ''),
         campaign:     String(d.campaign ?? d.campaignName ?? ''),
         source:       String(d.source   ?? ''),
+        customerId:   String(d.customerId ?? d.customerID ?? d.customerNo ?? ''),
       };
     });
 
