@@ -263,22 +263,39 @@ export async function GET(request: Request) {
             itdOpenedPhones.add(phone);
 
             // Gate 2: phone in AIM call history on same day (any outcome)
-            const callDate = (call.startTime || "").slice(0, 10);
+            // Parse callDate to YYYY-MM-DD (handles "2026-03-18" from seed AND "3/18/2026 14:30" from live 3CX)
+            let callDate = "";
+            const rawTime = call.startTime || "";
+            if (rawTime.match(/^\d{4}-\d{2}-\d{2}/)) {
+              callDate = rawTime.slice(0, 10);
+            } else {
+              try { const d = new Date(rawTime); if (!isNaN(d.getTime())) callDate = d.toISOString().slice(0, 10); } catch {}
+            }
             const aimPhonesForDay = aimDailyPhones[callDate];
-            const gate2Pass = aimPhonesForDay ? aimPhonesForDay.has(phone) : false;
+            let gate2Pass = false;
 
-            // If Gate 2 fails, fall back to queue rules
-            // (for now, still count the call — Mail 4 is unpublished, all calls are from AIM)
+            if (aimPhonesForDay) {
+              // Seed has data for this day — check all AIM phones
+              gate2Pass = aimPhonesForDay.has(phone);
+            } else {
+              // Seed doesn't cover this day (e.g., today) — fallback options:
+              // 1. Check live AIM transfer phones (transfers only, not all calls)
+              // 2. If that's empty too, Mail 4 is unpublished so pass Gate 2
+              gate2Pass = aimTransferPhones.has(phone) || itdAimPhones.has(phone);
+              // If phone isn't even in ITD AIM data, still pass —
+              // Mail 4 is unpublished, only AIM sends calls there
+              if (!gate2Pass) gate2Pass = true;
+            }
+
+            totalOpenedCalls++;
+
             if (!gate2Pass) {
-              // Phone not in AIM on same day — could be a redial, callback, etc.
-              // Still count but can't attribute without queue rules
-              totalOpenedCalls++;
+              // Gate 2 failed — phone not in AIM on same day
               unattributedCalls++;
               continue;
             }
 
             // Gate 3: phone on a source list → attribute to that list
-            totalOpenedCalls++;
             const li = phoneToList.get(phone);
             if (li) {
               openedByList[li] = (openedByList[li] ?? 0) + 1;
