@@ -13,6 +13,8 @@ interface DashData {
   staleness?:  { cx: string | null; aim: string | null; moxy: string | null };
   apiSources?: { openedCount: number; salesCount: number; listFilesLoaded: number; dateRange: { from: string; to: string } };
   aimByAgent?: Record<string, Record<string, { min: number; cost: number; transfers: number }>>;
+  byAgent?:    Record<string, { calls: number; min: number; cost: number; t: number; deals: number }>;
+  allAgents?:  string[];
   loading?:    { sales?: boolean };
   error?:      string;
 }
@@ -462,7 +464,17 @@ function TransferView({ data, salesLoading }: { data: DashData; salesLoading: bo
     <div>
       <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
       {viewMode === "bylist"  && <ByListView  data={data} salesLoading={salesLoading} />}
-      {viewMode === "byagent" && <ByAgentView agents={DEMO_AGENT_STATS} lists={lists} crossData={crossData} salesLoading={salesLoading} />}
+      {viewMode === "byagent" && <ByAgentView agents={
+        // Build real agent stats from API data
+        Object.entries(data.byAgent || {}).map(([name, ag]) => ({
+          name,
+          t: (ag as any).t ?? 0,
+          o: 0,
+          s: (ag as any).deals ?? 0,
+          min: (ag as any).min ?? 0,
+          cost: (ag as any).cost ?? 0,
+        }))
+      } lists={lists} crossData={crossData} salesLoading={salesLoading} />}
     </div>
   );
 }

@@ -110,9 +110,8 @@ export async function GET(request: Request) {
       cx3LookupMap.set(call.phone, Math.max(existing, call.talkTimeSec));
     }
 
-    // Get Moxy sold phones + MET customer ID phones
-    const soldPhones = new Set<string>();       // all phones from Sold deals
-    const metCustIdPhones = new Set<string>();  // phones with MET-prefix customer ID
+    // Get Moxy sold phones (all phone variants)
+    const soldPhones = new Set<string>();
     try {
       const moxyRes = await fetch(`${origin}/api/moxy`, { cache: 'no-store' });
       if (moxyRes.ok) {
@@ -120,18 +119,9 @@ export async function GET(request: Request) {
         if (moxyData.sales && Array.isArray(moxyData.sales)) {
           for (const s of moxyData.sales) {
             if (s.status !== 'Sold') continue;
-            const hp = normalizePhone(s.homePhone || '');
-            const cp = normalizePhone(s.cellPhone || '');
-            const best = normalizePhone(s.phone || '');
-            for (const p of [best, hp, cp]) {
+            for (const raw of [s.phone, s.homePhone, s.cellPhone]) {
+              const p = normalizePhone(raw || '');
               if (p) soldPhones.add(p);
-            }
-            // Track phones with MET customer ID (Meta leads loaded into GUARD)
-            const custId = s.customerId || s.contractNo || '';
-            if (custId.toUpperCase().startsWith('MET')) {
-              for (const p of [best, hp, cp]) {
-                if (p) metCustIdPhones.add(p);
-              }
             }
           }
         }
@@ -190,10 +180,9 @@ export async function GET(request: Request) {
       // Get mail6 talk time
       const mail6TalkTime = cx3LookupMap.get(phone) || 0;
 
-      // Sold identification — two paths:
-      // Path A: phone in Moxy Sold + 3CX Mail 6 + AIM dash campaign (direct Meta path)
-      // Path B: phone in Moxy Sold with MET customer ID (Meta leads loaded into GUARD)
-      const isSold = (soldPhones.has(phone) && mail6TalkTime > 0) || metCustIdPhones.has(phone);
+      // Sold = phone in ALL THREE: Moxy Sold + 3CX Mail 6 + AIM dash campaign (any date)
+      // (MET customer ID leads are handled by the 3-gate on the Transfer tab)
+      const isSold = soldPhones.has(phone) && mail6TalkTime > 0;
 
       leads.push({
         phone,
