@@ -1,250 +1,228 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
 
-interface ListStats { o: number; s: number; t: number; min: number; cost: number; listCost: number; }
+interface ListStats { t: number; o: number; s: number; min: number; cost: number; listCost: number; }
+interface AgentStats { calls: number; min: number; cost: number; t: number; deals: number; }
+interface MatrixCell { t: number; o: number; d: number; }
 interface DashData {
-  byList:      Record<string, ListStats>;
-  totalSales:  number;
-  listCosts:   Record<string, number>;
-  allLists:    string[];
+  byList: Record<string, ListStats>;
+  byAgent: Record<string, AgentStats>;
+  matrix: Record<string, Record<string, MatrixCell>>;
+  nonListSales: NonListSale[];
+  totalSales: number;
+  listCosts: Record<string, number>;
+  allLists: string[];
+  allAgents: string[];
   loadedFiles: string[];
   lastUpdated: string;
-  hasData:     boolean;
-  staleness?:  { cx: string | null; aim: string | null; moxy: string | null };
-  apiSources?: { openedCount: number; salesCount: number; listFilesLoaded: number; dateRange: { from: string; to: string } };
-  aimByAgent?: Record<string, Record<string, { min: number; cost: number; transfers: number }>>;
-  error?:      string;
+  hasData: boolean;
+  dataDateRange?: { min: string | null; max: string | null };
+  error?: string;
+}
+interface AimData {
+  ok: boolean;
+  byList: Record<string, { t: number; min: number; cost: number; listCost: number }>;
+  byAgent: Record<string, { t: number; min: number; cost: number }>;
+  lastUpdated: string;
+}
+interface NonListSale {
+  firstName: string; lastName: string; soldDate: string;
+  promoCode: string; salesperson: string;
+  homePhone: string; mobilePhone: string; onOpened: boolean;
 }
 
-type DatePreset  = "today" | "yesterday" | "week" | "itd" | "custom";
-type CampaignTab = "transfer" | "outbound" | "inbound" | "meta" | "overview" | "agentmapping";
-type ViewMode    = "bylist" | "byagent";
-
-interface AgentAssignment { name: string; campaign: "transfer" | "outbound" | "inbound" | "unassigned"; }
-interface AgentStats      { name: string; t: number; o: number; s: number; min: number; cost: number; }
+type DatePreset = "itd" | "today" | "yesterday" | "week" | "custom";
 
 function getPresetDates(preset: DatePreset): { start: string | null; end: string | null } {
-  // Use Central Time (UTC-5 CDT / UTC-6 CST) for business day alignment
   const now = new Date();
-  const centralOffset = -5 * 60; // CDT — change to -6 * 60 after daylight saving ends
-  const centralMs = now.getTime() + (centralOffset - now.getTimezoneOffset()) * 60000;
-  const central = new Date(centralMs);
   const iso = (d: Date) => d.toISOString().slice(0, 10);
-  const today = iso(central);
-  if (preset === "itd")       return { start: null, end: null };
-  if (preset === "today")     return { start: today, end: today };
-  if (preset === "yesterday") { const y = new Date(centralMs); y.setDate(y.getDate() - 1); return { start: iso(y), end: iso(y) }; }
-  if (preset === "week")      { const mon = new Date(centralMs); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7)); return { start: iso(mon), end: today }; }
+  const today = iso(now);
+  if (preset === "itd") return { start: null, end: null };
+  if (preset === "today") return { start: today, end: today };
+  if (preset === "yesterday") { const y = new Date(now); y.setDate(y.getDate() - 1); return { start: iso(y), end: iso(y) }; }
+  if (preset === "week") { const mon = new Date(now); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7)); return { start: iso(mon), end: today }; }
   return { start: null, end: null };
+}
+
+function daysPast7(start: string | null): number {
+  if (!start) return 0;
+  const campaignStart = new Date("2026-02-25");
+  const startDate = new Date(start);
+  const diffDays = Math.ceil((campaignStart.getTime() - startDate.getTime()) / 86400000);
+  return Math.max(0, diffDays);
 }
 
 const DEMO: DashData = {
   byList: {
-    RT:         { o:1642, s:113, t:2421, min:80116, cost:23291, listCost:0    },
-    JL021926LP: { o:164,  s:9,   t:268,  min:10609, cost:3085,  listCost:8000 },
-    BL021926BO: { o:187,  s:9,   t:294,  min:13688, cost:3991,  listCost:8000 },
-    JH022326MN: { o:168,  s:5,   t:272,  min:21385, cost:6226,  listCost:8000 },
-    JL021926CR: { o:15,   s:0,   t:38,   min:5938,  cost:1729,  listCost:8000 },
-    DG021726SC: { o:105,  s:3,   t:182,  min:12424, cost:3621,  listCost:5000 },
-    JL022526RS: { o:12,   s:0,   t:30,   min:979,   cost:285,   listCost:6000 },
+    RT:         { t:987, o:597, s:37, min:8200,  cost:1640, listCost:0     },
+    JL021926LP: { t:208, o:124, s:6,  min:1750,  cost:350,  listCost:8000  },
+    BL021926BO: { t:145, o:93,  s:4,  min:1200,  cost:240,  listCost:8000  },
+    JH022326MN: { t:67,  o:38,  s:0,  min:580,   cost:116,  listCost:8000  },
+    JL021926CR: { t:36,  o:15,  s:0,  min:310,   cost:62,   listCost:8000  },
+    DG021726SC: { t:55,  o:24,  s:1,  min:460,   cost:92,   listCost:5000  },
+    JL022526RS: { t:30,  o:12,  s:0,  min:260,   cost:52,   listCost:6000  },
   },
-  totalSales:  139,
-  listCosts:   { RT:0, JL021926LP:8000, BL021926BO:8000, JH022326MN:8000, JL021926CR:8000, DG021726SC:5000, JL022526RS:6000 },
-  allLists:    ["RT","JL021926LP","BL021926BO","JH022326MN","JL021926CR","DG021726SC","JL022526RS"],
-  loadedFiles: [], lastUpdated: new Date().toISOString(), hasData: false,
+  byAgent: {
+    "Moxy OG":   { calls:12400, min:9800, cost:1960, t:907, deals:15 },
+    Activation:  { calls:2100,  min:1680, cost:336,  t:170, deals:9  },
+    "Female v3": { calls:1400,  min:1120, cost:224,  t:112, deals:6  },
+    "Moxy v2":   { calls:1050,  min:840,  cost:168,  t:84,  deals:4  },
+    "Male v3":   { calls:930,   min:740,  cost:148,  t:74,  deals:3  },
+  },
+  matrix: {
+    "Moxy OG":   { RT:{t:550,o:340,d:10},JL021926LP:{t:130,o:80,d:3},BL021926BO:{t:90,o:55,d:2},JH022326MN:{t:67,o:38,d:0},JL021926CR:{t:36,o:15,d:0},DG021726SC:{t:30,o:14,d:0},JL022526RS:{t:4,o:2,d:0}},
+    Activation:  { RT:{t:100,o:60,d:4},JL021926LP:{t:45,o:25,d:2},BL021926BO:{t:0,o:0,d:0},JH022326MN:{t:0,o:0,d:0},JL021926CR:{t:0,o:0,d:0},DG021726SC:{t:25,o:10,d:1},JL022526RS:{t:0,o:0,d:0}},
+    "Female v3": { RT:{t:85,o:52,d:3},JL021926LP:{t:27,o:16,d:2},BL021926BO:{t:0,o:0,d:0},JH022326MN:{t:0,o:0,d:0},JL021926CR:{t:0,o:0,d:0},DG021726SC:{t:0,o:0,d:1},JL022526RS:{t:0,o:0,d:0}},
+    "Moxy v2":   { RT:{t:84,o:51,d:4},JL021926LP:{t:0,o:0,d:0},BL021926BO:{t:0,o:0,d:0},JH022326MN:{t:0,o:0,d:0},JL021926CR:{t:0,o:0,d:0},DG021726SC:{t:0,o:0,d:0},JL022526RS:{t:0,o:0,d:0}},
+    "Male v3":   { RT:{t:68,o:42,d:2},JL021926LP:{t:6,o:3,d:1},BL021926BO:{t:0,o:0,d:0},JH022326MN:{t:0,o:0,d:0},JL021926CR:{t:0,o:0,d:0},DG021726SC:{t:0,o:0,d:0},JL022526RS:{t:0,o:0,d:0}},
+  },
+  nonListSales: [],
+  totalSales: 48,
+  listCosts: { RT:0,JL021926LP:8000,BL021926BO:8000,JH022326MN:8000,JL021926CR:8000,DG021726SC:5000,JL022526RS:6000 },
+  allLists: ["RT","JL021926LP","BL021926BO","JH022326MN","JL021926CR","DG021726SC","JL022526RS"],
+  allAgents: ["Moxy OG","Activation","Female v3","Moxy v2","Male v3"],
+  loadedFiles: [],
+  lastUpdated: new Date().toISOString(),
+  hasData: false,
 };
 
-const DEMO_AGENTS: AgentAssignment[] = [
-  { name: "Overflow Agent with Spanish Transfer",             campaign: "transfer"   },
-  { name: "Transfer Activation Outbound Agent with Moxy",    campaign: "transfer"   },
-  { name: "Purchased Data Transfer Agent with Moxy",         campaign: "transfer"   },
-  { name: "Meta Transfer Agent",                             campaign: "transfer"   },
-  { name: "Cancels Transfer Agent",                          campaign: "unassigned" },
-  { name: "Home Overflow Agent",                             campaign: "transfer"   },
-  { name: "Overflow Transfer Sales Agent",                   campaign: "transfer"   },
-  { name: "Picaso Agent",                                    campaign: "unassigned" },
-  { name: "Transfer Outbound Agent with Moxy",               campaign: "outbound"   },
-  { name: "BF Agent with Moxy Tools",                        campaign: "unassigned" },
-  { name: "Canceled Home 4 Transfer Agent",                  campaign: "transfer"   },
-  { name: "Transfer Outbound Agent with Moxy version 2",     campaign: "outbound"   },
-  { name: "Copy of Picaso Agent (improving)",                campaign: "unassigned" },
-  { name: "Black Friday Agent",                              campaign: "unassigned" },
-  { name: "Outbound Jr. Closer to TO Agent with Moxy Tools", campaign: "outbound"   },
-  { name: "Home Outbound Agent",                             campaign: "outbound"   },
-];
-
-const DEMO_AGENT_STATS: AgentStats[] = [
-  { name: "Transfer Activation Outbound Agent with Moxy", t:1843, o:1291, s:102, min:68546, cost:19936 },
-  { name: "Transfer Outbound Agent with Moxy",            t:712,  o:499,  s:14,  min:21877, cost:6363  },
-  { name: "Purchased Data Transfer Agent with Moxy",      t:389,  o:217,  s:8,   min:17503, cost:5101  },
-  { name: "Meta Transfer Agent",                          t:198,  o:120,  s:7,   min:6669,  cost:1944  },
-  { name: "Transfer Outbound Agent with Moxy version 2",  t:89,   o:43,   s:4,   min:3179,  cost:924   },
-  { name: "Overflow Agent with Spanish Transfer",         t:74,   o:53,   s:4,   min:3659,  cost:1063  },
-  { name: "Home Overflow Agent",                          t:42,   o:0,    s:0,   min:7740,  cost:2251  },
-  { name: "Overflow Transfer Sales Agent",                t:158,  o:0,    s:0,   min:1048,  cost:304   },
-];
-
-const STALE_HOURS = 2;
-const f   = (n: number) => (n || 0).toLocaleString();
-const fc  = (n: number) => "$" + (n || 0).toFixed(2);
-const pct = (n: number, d: number) => d > 0 ? ((n / d) * 100).toFixed(1) + "%" : "—";
-
+const f = (n: number) => (n || 0).toLocaleString();
+const fc = (n: number) => "$" + (n || 0).toFixed(2);
+const pct = (n: number, d: number) => d > 0 ? ((n / d) * 100).toFixed(1) + "%" : "-";
 const C = {
-  bg:"#06080F", surface:"#0C0F1A", card:"#101525", border:"#1B2440",
-  accent:"#00D4B8", amber:"#F59E0B", red:"#EF4444", green:"#22C55E",
-  text:"#C8D6E8", muted:"#3D5275", dim:"#1E2D45",
+  bg: "#06080F", surface: "#0C0F1A", card: "#101525", border: "#1B2440",
+  accent: "#00D4B8", amber: "#F59E0B", red: "#EF4444", green: "#22C55E",
+  text: "#C8D6E8", muted: "#3D5275", dim: "#1E2D45",
 };
 
-// ── STALE BANNER ──────────────────────────────────────────────────────────────
-function StaleBanner({ staleness, onRefresh }: { staleness: DashData["staleness"]; onRefresh: () => void }) {
-  if (!staleness) return null;
-  const now = Date.now(); const threshold = STALE_HOURS * 60 * 60 * 1000;
-  const sources = [{ label:"3CX", ts:staleness.cx }, { label:"AIM", ts:staleness.aim }, { label:"Moxy", ts:staleness.moxy }];
-  const stale = sources.filter(s => !s.ts || now - new Date(s.ts).getTime() > threshold);
-  if (stale.length === 0) return null;
-  const labels = stale.map(s => {
-    if (!s.ts) return `${s.label} (never)`;
-    const mins = Math.round((now - new Date(s.ts).getTime()) / 60000);
-    const hrs = Math.floor(mins / 60); const rem = mins % 60;
-    return `${s.label} (${hrs > 0 ? `${hrs}h ${rem}m` : `${mins}m`} ago)`;
-  });
-  return (
-    <div style={{ background:"rgba(245,158,11,.08)", borderBottom:`1px solid rgba(245,158,11,.3)`, borderLeft:`3px solid ${C.amber}`, padding:"7px 20px", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
-      <span>⚠️</span>
-      <span style={{ fontSize:12, color:C.amber, fontWeight:600 }}>Stale data:</span>
-      <span style={{ fontSize:12, color:C.text }}>{labels.join(" · ")} {stale.length > 1 ? "are" : "is"} more than {STALE_HOURS}h old.</span>
-      <button onClick={onRefresh} style={{ marginLeft:"auto", padding:"3px 12px", borderRadius:4, border:`1px solid ${C.amber}`, background:"transparent", color:C.amber, cursor:"pointer", fontSize:12, fontWeight:600 }}>↻ Refresh Now</button>
-    </div>
-  );
-}
-
-// ── TABLE PRIMITIVES ──────────────────────────────────────────────────────────
-function Th({ children, left }: { children: React.ReactNode; left?: boolean }) {
-  return <th style={{ background:C.surface, color:C.muted, fontSize:10, letterSpacing:".12em", textTransform:"uppercase", padding:"9px 14px", textAlign:left?"left":"right", borderBottom:`1px solid ${C.border}`, whiteSpace:"nowrap" }}>{children}</th>;
-}
-function Td({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
-  return <td style={{ padding:"9px 14px", textAlign:"right", fontSize:13, borderBottom:`1px solid ${C.dim}`, ...style }}>{children}</td>;
-}
 function ClosePct({ n, d }: { n: number; d: number }) {
   const v = d > 0 ? (n / d) * 100 : 0;
-  const color = v >= 7 ? C.green : v >= 4 ? C.amber : v > 0 ? C.red : C.muted;
-  return <span style={{ fontFamily:"monospace", fontSize:12, color, fontWeight:600 }}>{pct(n, d)}</span>;
+  const color = v >= 5 ? C.green : v >= 3 ? C.amber : C.muted;
+  return <span style={{ fontFamily: "monospace", fontSize: 12, color }}>{pct(n, d)}</span>;
+}
+function Th({ children, left }: { children: React.ReactNode; left?: boolean }) {
+  return <th style={{ background: C.surface, color: C.muted, fontSize: 11, letterSpacing: ".1em", textTransform: "uppercase", padding: "9px 12px", textAlign: left ? "left" : "right", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{children}</th>;
+}
+function Td({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+  return <td style={{ padding: "8px 12px", textAlign: "right", fontSize: 13, borderBottom: `1px solid ${C.dim}`, ...style }}>{children}</td>;
 }
 
-// ── DATE FILTER BAR ───────────────────────────────────────────────────────────
-function DateFilterBar({ preset, setPreset, customStart, setCustomStart, customEnd, setCustomEnd, onApply, onApplyWithPreset }: {
+function DateFilterBar({ preset, setPreset, customStart, setCustomStart, customEnd, setCustomEnd, onApply, onApplyWithPreset, dataRange, warnDays }: {
   preset: DatePreset; setPreset: (p: DatePreset) => void;
   customStart: string; setCustomStart: (s: string) => void;
   customEnd: string; setCustomEnd: (s: string) => void;
-  onApply: () => void; onApplyWithPreset: (p: DatePreset) => void;
+  onApply: () => void;
+  onApplyWithPreset: (preset: DatePreset) => void;
+  dataRange?: { min: string | null; max: string | null };
+  warnDays: number;
 }) {
   const presets: { id: DatePreset; label: string }[] = [
-    { id:"today", label:"Today" }, { id:"yesterday", label:"Yesterday" },
-    { id:"week", label:"This Week" }, { id:"itd", label:"ITD" }, { id:"custom", label:"Custom" },
+    { id: "itd", label: "ITD" }, { id: "today", label: "Today" },
+    { id: "yesterday", label: "Yesterday" }, { id: "week", label: "This Week" },
+    { id: "custom", label: "Custom" },
   ];
+
+  // Format the display date range based on active preset
+  const getDisplayRange = () => {
+    if (preset === "custom") return customStart && customEnd ? `${customStart} to ${customEnd}` : null;
+    const { start, end } = getPresetDates(preset);
+    if (!start && !end) return "2026-02-25 to " + new Date().toISOString().slice(0, 10);
+    return `${start} to ${end}`;
+  };
+
   return (
-    <div style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 20px", background:C.surface, borderBottom:`1px solid ${C.border}`, flexWrap:"wrap" }}>
-      <span style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginRight:4 }}>Range:</span>
-      {presets.map(p => (
-        <button key={p.id} onClick={() => { setPreset(p.id); if (p.id !== "custom") onApplyWithPreset(p.id); }}
-          style={{ padding:"4px 13px", borderRadius:4, border:`1px solid ${preset===p.id?C.accent:C.dim}`, background:preset===p.id?"rgba(0,212,184,.1)":"transparent", color:preset===p.id?C.accent:C.muted, cursor:"pointer", fontSize:12, fontWeight:preset===p.id?600:400 }}>
-          {p.label}
-        </button>
-      ))}
-      {preset === "custom" && (
-        <>
-          <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} style={{ padding:"3px 8px", borderRadius:4, border:`1px solid ${C.dim}`, background:C.card, color:C.text, fontSize:12 }} />
-          <span style={{ color:C.muted, fontSize:12 }}>to</span>
-          <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} style={{ padding:"3px 8px", borderRadius:4, border:`1px solid ${C.dim}`, background:C.card, color:C.text, fontSize:12 }} />
-          <button onClick={onApply} style={{ padding:"4px 14px", borderRadius:4, border:"none", background:C.accent, color:C.bg, cursor:"pointer", fontSize:12, fontWeight:700 }}>Apply</button>
-        </>
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", background: C.surface, borderBottom: `1px solid ${C.border}`, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 10, color: C.muted, letterSpacing: ".1em", textTransform: "uppercase", marginRight: 4 }}>Date Range:</span>
+        {presets.map(p => (
+          <button key={p.id} onClick={() => {
+            setPreset(p.id);
+            if (p.id !== "custom") onApplyWithPreset(p.id); // ← FIX: pass preset directly, no stale closure
+          }}
+            style={{ padding: "4px 12px", borderRadius: 4, border: `1px solid ${preset === p.id ? C.accent : C.dim}`, background: preset === p.id ? "rgba(0,212,184,.1)" : "transparent", color: preset === p.id ? C.accent : C.muted, cursor: "pointer", fontSize: 12, fontWeight: preset === p.id ? 600 : 400 }}>
+            {p.label}
+          </button>
+        ))}
+        {preset === "custom" && (
+          <>
+            <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)}
+              style={{ padding: "3px 8px", borderRadius: 4, border: `1px solid ${C.dim}`, background: C.card, color: C.text, fontSize: 12 }} />
+            <span style={{ color: C.muted, fontSize: 12 }}>to</span>
+            <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)}
+              style={{ padding: "3px 8px", borderRadius: 4, border: `1px solid ${C.dim}`, background: C.card, color: C.text, fontSize: 12 }} />
+            <button onClick={onApply}
+              style={{ padding: "4px 14px", borderRadius: 4, border: "none", background: C.accent, color: C.bg, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Apply</button>
+          </>
+        )}
+        <span style={{ marginLeft: "auto", fontSize: 10, color: C.muted }}>Date: {getDisplayRange()}</span>
+      </div>
+      {warnDays > 0 && (
+        <div style={{ padding: "8px 16px", background: "rgba(245,158,11,.08)", borderBottom: `1px solid rgba(245,158,11,.25)`, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 14 }}>⚠️</span>
+          <span style={{ fontSize: 12, color: C.amber }}>
+            This date range may result in longer load times (~{warnDays * 2} min — 2 min per day past 7 days)
+          </span>
+        </div>
       )}
     </div>
   );
 }
 
-// ── VIEW TOGGLE ───────────────────────────────────────────────────────────────
-function ViewToggle({ viewMode, setViewMode }: { viewMode: ViewMode; setViewMode: (v: ViewMode) => void }) {
-  return (
-    <div style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 16px", borderBottom:`1px solid ${C.border}`, background:C.surface }}>
-      <span style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginRight:4 }}>View:</span>
-      {(["bylist","byagent"] as ViewMode[]).map(id => (
-        <button key={id} onClick={() => setViewMode(id)} style={{
-          padding:"4px 14px", borderRadius:4, fontSize:12, fontWeight:viewMode===id?600:400, cursor:"pointer",
-          border:`1px solid ${viewMode===id?C.accent:C.dim}`,
-          background:viewMode===id?"rgba(0,212,184,.1)":"transparent",
-          color:viewMode===id?C.accent:C.muted,
-        }}>{id === "bylist" ? "By List" : "By Agent"}</button>
-      ))}
-    </div>
-  );
-}
-
-// ── BY LIST VIEW ──────────────────────────────────────────────────────────────
-function ByListView({ data }: { data: DashData }) {
-  const lists  = data.allLists?.length ? data.allLists : Object.keys(data.byList);
+function ITDView({ data, showListCost }: { data: DashData; showListCost: boolean }) {
+  const lists = data.allLists?.length ? data.allLists : Object.keys(data.byList);
   const totals = lists.reduce((a, li) => {
-    const r = data.byList[li] || { o:0, s:0, t:0, min:0, cost:0, listCost:0 };
-    return { t:a.t+r.t, o:a.o+r.o, s:a.s+r.s, min:a.min+r.min, cost:a.cost+r.cost, listCost:a.listCost+r.listCost };
-  }, { t:0, o:0, s:0, min:0, cost:0, listCost:0 });
-
+    const r = data.byList[li] || { t:0,o:0,s:0,min:0,cost:0,listCost:0 };
+    return { t:a.t+r.t, o:a.o+r.o, s:a.s+r.s, min:a.min+r.min, cost:a.cost+r.cost, listCost: showListCost ? a.listCost+r.listCost : 0 };
+  }, { t:0,o:0,s:0,min:0,cost:0,listCost:0 });
+  const kpis = [
+    { label: "Transfers", val: f(totals.t), color: C.accent },
+    { label: "Opened", val: f(totals.o), color: C.text },
+    { label: "Sales", val: f(totals.s), color: C.green },
+    { label: "Close Rate", val: pct(totals.s, totals.o), color: C.amber },
+    { label: "Minutes", val: f(Math.round(totals.min)), color: C.muted },
+    { label: "Dial Cost", val: fc(totals.cost), color: C.muted },
+  ];
   return (
-    <div style={{ display:"flex" }}>
-      {/* LEFT PANEL */}
-      <div style={{ width:180, flexShrink:0, borderRight:`1px solid ${C.border}`, padding:"10px", display:"flex", flexDirection:"column", gap:6, background:C.surface }}>
-        <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginBottom:4 }}>Active Lists</div>
-        {lists.map(li => {
-          const r = data.byList[li] || { s:0, listCost:0 };
-          const cps = r.s > 0 ? r.listCost / r.s : null;
-          return (
-            <div key={li} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px" }}>
-              <div style={{ fontSize:12, fontWeight:700, color:C.accent, marginBottom:4 }}>{li}</div>
-              <div style={{ fontFamily:"monospace", fontSize:12, color:r.listCost>0?C.text:C.muted }}>{r.listCost>0?fc(r.listCost):"free"}</div>
-              <div style={{ fontFamily:"monospace", fontSize:12, color:cps==null?C.dim:cps>1000?C.red:cps>500?C.amber:C.green, marginTop:2 }}>{cps!=null?fc(cps):"—"}</div>
-            </div>
-          );
-        })}
-        <div style={{ background:C.surface, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px", marginTop:4 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:C.text, marginBottom:4 }}>TOTAL</div>
-          <div style={{ fontFamily:"monospace", fontSize:12, color:C.text }}>{fc(totals.listCost)}</div>
-          <div style={{ fontFamily:"monospace", fontSize:12, color:C.amber, marginTop:2 }}>{totals.s>0?fc(totals.listCost/totals.s):"—"}</div>
-        </div>
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))", gap: 10, marginBottom: 20 }}>
+        {kpis.map(k => (
+          <div key={k.label} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 7, padding: "13px 15px" }}>
+            <div style={{ fontSize: 10, color: C.muted, letterSpacing: ".1em", textTransform: "uppercase", marginBottom: 4 }}>{k.label}</div>
+            <div style={{ fontFamily: "monospace", fontSize: 22, color: k.color, fontWeight: "bold" }}>{k.val}</div>
+          </div>
+        ))}
       </div>
-
-      {/* MAIN TABLE */}
-      <div style={{ flex:1, overflowX:"auto" }}>
-        <table style={{ borderCollapse:"collapse", width:"100%" }}>
-          <thead>
-            <tr>
-              <Th left>List Name</Th>
-              <Th>Calls</Th><Th>Sales</Th>
-              <Th>Closing %</Th><Th>Minutes</Th><Th>Dial Cost</Th><Th>Cost / Sale</Th>
-            </tr>
-          </thead>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead><tr><Th left>List</Th>{showListCost && <Th>List Cost</Th>}<Th>Transfers</Th><Th>Opened</Th><Th>Sales</Th><Th>Close %</Th><Th>Minutes</Th><Th>Dial Cost</Th>{showListCost && <Th>Cost/Sale</Th>}</tr></thead>
           <tbody>
             {lists.map(li => {
-              const r = data.byList[li] || { o:0, s:0, t:0, min:0, cost:0, listCost:0 };
-              const dcps = r.s > 0 ? r.cost / r.s : null;
+              const r = data.byList[li] || { t:0,o:0,s:0,min:0,cost:0,listCost:0 };
+              const cps = r.s > 0 ? (r.listCost + r.cost) / r.s : null;
               return (
-                <tr key={li} onMouseEnter={e=>(e.currentTarget.style.background="rgba(0,212,184,.04)")} onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
-                  <Td style={{ textAlign:"left" }}><span style={{ color:C.accent, fontWeight:600, fontSize:13 }}>{li}</span></Td>
-                  <Td><span style={{ fontFamily:"monospace", color:C.accent }}>{f(r.o)}</span></Td>
-                  <Td><span style={{ fontFamily:"monospace", color:r.s>0?C.green:C.muted, fontWeight:r.s>0?700:400 }}>{r.s}</span></Td>
+                <tr key={li}>
+                  <Td style={{ textAlign: "left" }}><span style={{ color: C.accent, fontWeight: 600, fontSize: 14 }}>{li}</span></Td>
+                  {showListCost && <Td><span style={{ fontFamily: "monospace", color: r.listCost > 0 ? C.text : C.muted }}>{r.listCost > 0 ? fc(r.listCost) : "free"}</span></Td>}
+                  <Td><span style={{ fontFamily: "monospace", color: C.accent }}>{f(r.t)}</span></Td>
+                  <Td><span style={{ fontFamily: "monospace" }}>{f(r.o)}</span></Td>
+                  <Td><span style={{ fontFamily: "monospace", color: r.s > 0 ? C.green : C.muted, fontWeight: r.s > 0 ? 600 : 400 }}>{r.s}</span></Td>
                   <Td><ClosePct n={r.s} d={r.o} /></Td>
-                  <Td><span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(r.min))}</span></Td>
-                  <Td><span style={{ fontFamily:"monospace", color:C.muted }}>{fc(r.cost)}</span></Td>
-                  <Td>{dcps!=null?<span style={{ fontFamily:"monospace", color:dcps>500?C.red:dcps>250?C.amber:C.green }}>{fc(dcps)}</span>:<span style={{ color:C.dim }}>—</span>}</Td>
+                  <Td><span style={{ fontFamily: "monospace", color: C.muted }}>{f(Math.round(r.min))}</span></Td>
+                  <Td><span style={{ fontFamily: "monospace", color: C.muted }}>{fc(r.cost)}</span></Td>
+                  {showListCost && <Td>{cps ? <span style={{ fontFamily: "monospace", color: cps > 1000 ? C.red : cps > 500 ? C.amber : C.green }}>{fc(cps)}</span> : <span style={{ color: C.dim }}>-</span>}</Td>}
                 </tr>
               );
             })}
-            <tr style={{ background:C.surface, borderTop:`2px solid ${C.border}` }}>
-              <Td style={{ textAlign:"left", fontWeight:700, color:C.text, fontSize:13 }}>TOTAL</Td>
-              <Td><span style={{ fontFamily:"monospace", color:C.accent, fontWeight:600 }}>{f(totals.o)}</span></Td>
-              <Td><span style={{ fontFamily:"monospace", color:C.green, fontWeight:700 }}>{totals.s}</span></Td>
+            <tr style={{ background: C.surface, borderTop: `1px solid ${C.border}` }}>
+              <Td style={{ textAlign: "left", fontWeight: 700, color: C.text }}>TOTAL</Td>
+              {showListCost && <Td><span style={{ fontFamily: "monospace" }}>{fc(totals.listCost)}</span></Td>}
+              <Td><span style={{ fontFamily: "monospace", color: C.accent, fontWeight: 600 }}>{f(totals.t)}</span></Td>
+              <Td><span style={{ fontFamily: "monospace" }}>{f(totals.o)}</span></Td>
+              <Td><span style={{ fontFamily: "monospace", color: C.green, fontWeight: 700 }}>{totals.s}</span></Td>
               <Td><ClosePct n={totals.s} d={totals.o} /></Td>
-              <Td><span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(totals.min))}</span></Td>
-              <Td><span style={{ fontFamily:"monospace", color:C.muted }}>{fc(totals.cost)}</span></Td>
-              <Td>{totals.s>0?<span style={{ fontFamily:"monospace", color:C.amber, fontWeight:600 }}>{fc(totals.cost/totals.s)}</span>:<span style={{ color:C.dim }}>—</span>}</Td>
+              <Td><span style={{ fontFamily: "monospace", color: C.muted }}>{f(Math.round(totals.min))}</span></Td>
+              <Td><span style={{ fontFamily: "monospace", color: C.muted }}>{fc(totals.cost)}</span></Td>
+              {showListCost && <Td>{totals.s > 0 ? <span style={{ fontFamily: "monospace", color: C.amber }}>{fc((totals.listCost + totals.cost) / totals.s)}</span> : <span style={{ color: C.dim }}>-</span>}</Td>}
             </tr>
           </tbody>
         </table>
@@ -253,263 +231,175 @@ function ByListView({ data }: { data: DashData }) {
   );
 }
 
-// ── BY AGENT VIEW (agent × list cross-tab) ───────────────────────────────────
-function ByAgentView({ agents, lists, crossData }: { 
-  agents: AgentStats[]; 
-  lists: string[];
-  crossData: Record<string, Record<string, { min: number; cost: number; transfers: number }>> | null;
-}) {
-  const cross = crossData ?? {};
-
-  const totals = agents.reduce((a, ag) => ({
-    t:a.t+ag.t, o:a.o+ag.o, s:a.s+ag.s, min:a.min+ag.min, cost:a.cost+ag.cost,
-  }), { t:0, o:0, s:0, min:0, cost:0 });
-
-  // Column totals per list
-  const listTotals: Record<string, { min:number; t:number; s:number }> = {};
-  for (const li of lists) {
-    listTotals[li] = { min:0, t:0, s:0 };
-    for (const ag of agents) {
-      const cell = cross[ag.name]?.[li];
-      if (cell) {
-        listTotals[li].min += cell.min;
-        listTotals[li].t   += (cell as any).t ?? (cell as any).transfers ?? 0;
-        listTotals[li].s   += (cell as any).s ?? 0;
-      }
-    }
-  }
-
-  return (
-    <div style={{ display:"flex" }}>
-      {/* LEFT PANEL */}
-      <div style={{ width:220, flexShrink:0, borderRight:`1px solid ${C.border}`, padding:"10px", display:"flex", flexDirection:"column", gap:6, background:C.surface }}>
-        <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginBottom:4 }}>Active Agents</div>
-        {agents.map(ag => {
-          const cps = ag.s > 0 ? ag.cost / ag.s : null;
-          return (
-            <div key={ag.name} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px" }}>
-              <div style={{ fontSize:11, fontWeight:700, color:C.accent, marginBottom:3, lineHeight:1.3 }}>{ag.name}</div>
-              <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>{f(ag.o)} calls · {ag.s} deals</div>
-              <div style={{ fontFamily:"monospace", fontSize:12, color:C.muted }}>{fc(ag.cost)}</div>
-              <div style={{ fontFamily:"monospace", fontSize:12, color:cps==null?C.dim:cps>500?C.red:cps>250?C.amber:C.green, marginTop:2 }}>
-                {cps!=null?fc(cps)+" / sale":"—"}
-              </div>
-            </div>
-          );
-        })}
-        <div style={{ background:C.surface, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px", marginTop:4 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:C.text, marginBottom:3 }}>TOTAL</div>
-          <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>{f(totals.o)} calls · {totals.s} deals</div>
-          <div style={{ fontFamily:"monospace", fontSize:12, color:C.text }}>{fc(totals.cost)}</div>
-          <div style={{ fontFamily:"monospace", fontSize:12, color:C.amber, marginTop:2 }}>{totals.s>0?fc(totals.cost/totals.s)+" / sale":"—"}</div>
-        </div>
-      </div>
-
-      {/* CROSS-TAB GRID */}
-      <div style={{ flex:1, overflowX:"auto" }}>
-        <table style={{ borderCollapse:"collapse", width:"100%" }}>
-          <thead>
-            <tr>
-              <th style={{ background:C.surface, color:C.muted, fontSize:10, letterSpacing:".12em", textTransform:"uppercase", padding:"9px 14px", textAlign:"left", borderBottom:`1px solid ${C.border}`, whiteSpace:"nowrap" }}>Agent</th>
-              {lists.map(li => (
-                <th key={li} style={{ background:C.surface, color:C.accent, fontSize:11, fontWeight:700, padding:"9px 14px", textAlign:"center", borderBottom:`1px solid ${C.border}`, whiteSpace:"nowrap", borderLeft:`1px solid ${C.border}` }}>{li}</th>
-              ))}
-            </tr>
-            {/* no sub-header row */}
-          </thead>
-          <tbody>
-            {agents.map(ag => (
-              <tr key={ag.name} onMouseEnter={e=>(e.currentTarget.style.background="rgba(0,212,184,.04)")} onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
-                <td style={{ padding:"8px 14px", fontSize:12, fontWeight:600, color:C.text, borderBottom:`1px solid ${C.dim}`, whiteSpace:"nowrap" }}>{ag.name}</td>
-                {lists.map(li => {
-                  const raw  = cross[ag.name]?.[li];
-                  const cell = raw ? {
-                    min: raw.min,
-                    t:   (raw as any).t ?? (raw as any).transfers ?? 0,
-                    s:   (raw as any).s ?? 0,
-                  } : null;
-                  return (
-                    <td key={li} style={{ padding:"6px 10px", textAlign:"center", borderBottom:`1px solid ${C.dim}`, borderLeft:`1px solid ${C.dim}`, minWidth:90 }}>
-                      {cell ? (
-                        <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
-                          <span style={{ fontFamily:"monospace", fontSize:11, color:C.text }}><span style={{ color:C.muted }}>Mins: </span>{f(cell.min)}</span>
-                          <span style={{ fontFamily:"monospace", fontSize:11, color:C.accent }}><span style={{ color:C.muted }}>Calls: </span>{f(cell.t)}</span>
-                          <span style={{ fontFamily:"monospace", fontSize:11, color:cell.s>0?C.green:C.dim, fontWeight:cell.s>0?700:400 }}><span style={{ color:C.muted, fontWeight:400 }}>Sales: </span>{cell.s}</span>
-                          <span style={{ fontFamily:"monospace", fontSize:11, color:C.amber }}><span style={{ color:C.muted }}>Cls%: </span>{pct(cell.s, cell.t)}</span>
-                        </div>
-                      ) : (
-                        <span style={{ color:C.dim, fontSize:12 }}>—</span>
-                      )}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-            {/* totals row */}
-            <tr style={{ background:C.surface, borderTop:`2px solid ${C.border}` }}>
-              <td style={{ padding:"8px 14px", fontSize:12, fontWeight:700, color:C.text }}>TOTAL</td>
-              {lists.map(li => {
-                const lt = listTotals[li] || { min:0, t:0, s:0 };
-                return (
-                  <td key={li} style={{ padding:"6px 10px", textAlign:"center", borderLeft:`1px solid ${C.border}` }}>
-                    <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
-                      <span style={{ fontFamily:"monospace", fontSize:11, color:C.text, fontWeight:600 }}><span style={{ color:C.muted, fontWeight:400 }}>Mins: </span>{f(lt.min)}</span>
-                      <span style={{ fontFamily:"monospace", fontSize:11, color:C.accent, fontWeight:600 }}><span style={{ color:C.muted, fontWeight:400 }}>Calls: </span>{f(lt.t)}</span>
-                      <span style={{ fontFamily:"monospace", fontSize:11, color:lt.s>0?C.green:C.dim, fontWeight:700 }}><span style={{ color:C.muted, fontWeight:400 }}>Sales: </span>{lt.s}</span>
-                      <span style={{ fontFamily:"monospace", fontSize:11, color:C.amber, fontWeight:600 }}><span style={{ color:C.muted, fontWeight:400 }}>Cls%: </span>{pct(lt.s, lt.t)}</span>
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-// ── TRANSFER VIEW (wrapper with toggle) ───────────────────────────────────────
-function TransferView({ data }: { data: DashData }) {
-  const [viewMode, setViewMode] = useState<ViewMode>("bylist");
-  const lists     = data.allLists?.length ? data.allLists : Object.keys(data.byList);
-  const crossData = data.aimByAgent ?? null;
+function MatrixView({ data }: { data: DashData }) {
+  const lists = data.allLists?.length ? data.allLists : Object.keys(data.byList);
+  const agents = data.allAgents?.length ? data.allAgents : Object.keys(data.byAgent);
   return (
     <div>
-      <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
-      {viewMode === "bylist"  && <ByListView  data={data} />}
-      {viewMode === "byagent" && <ByAgentView agents={DEMO_AGENT_STATS} lists={lists} crossData={crossData} />}
-    </div>
-  );
-}
-
-// ── COMING SOON ───────────────────────────────────────────────────────────────
-function ComingSoon({ label }: { label: string }) {
-  return (
-    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"80px 20px", gap:12 }}>
-      <div style={{ fontSize:32, opacity:.25 }}>🚧</div>
-      <div style={{ fontSize:14, color:C.muted, fontWeight:600, letterSpacing:".12em", textTransform:"uppercase" }}>{label}</div>
-      <div style={{ fontSize:11, color:C.dim }}>Coming soon</div>
-    </div>
-  );
-}
-
-// ── AGENT MAPPING VIEW ────────────────────────────────────────────────────────
-function AgentMappingView() {
-  const [agents, setAgents] = useState<AgentAssignment[]>(DEMO_AGENTS);
-  const setAgent = (name: string, campaign: AgentAssignment["campaign"]) =>
-    setAgents(prev => prev.map(a => a.name === name ? { ...a, campaign } : a));
-  const campaignColor = (c: AgentAssignment["campaign"]) =>
-    c==="transfer"?C.accent : c==="outbound"?C.amber : c==="inbound"?C.green : C.muted;
-  const groups: { id: AgentAssignment["campaign"]; label: string }[] = [
-    { id:"transfer", label:"Transfer" }, { id:"outbound", label:"Outbound" },
-    { id:"inbound",  label:"Inbound"  }, { id:"unassigned", label:"⚠ Unassigned" },
-  ];
-  return (
-    <div style={{ padding:20 }}>
-      <div style={{ marginBottom:18, fontSize:12, color:C.muted }}>
-        Assign each AIM agent to a campaign. Metrics will roll up into the corresponding campaign tab.
+      <div style={{ marginBottom: 10, fontSize: 11, color: C.muted }}>Each cell: <span style={{ color: C.accent }}>Transfers</span> / <span style={{ color: C.text }}>Opened</span> / <span style={{ color: C.green }}>Deals</span> / Close%</div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead><tr><Th left>Agent</Th>{lists.map(li => <Th key={li}>{li}</Th>)}<Th>Tot. T</Th><Th>Tot. D</Th><Th>Close %</Th></tr></thead>
+          <tbody>
+            {agents.map(agent => {
+              const m = data.matrix[agent] || {};
+              let tT = 0, tD = 0, tO = 0;
+              for (const li of lists) { const c = m[li] || {t:0,o:0,d:0}; tT+=c.t; tD+=c.d; tO+=c.o; }
+              return (
+                <tr key={agent} style={{ borderBottom: `1px solid ${C.dim}` }}>
+                  <Td style={{ textAlign: "left", color: C.text, fontWeight: 600, fontSize: 13 }}>{agent}</Td>
+                  {lists.map(li => {
+                    const c = m[li] || {t:0,o:0,d:0};
+                    if (!c.t && !c.o && !c.d) return <Td key={li} style={{ color: C.dim }}>-</Td>;
+                    return (
+                      <td key={li} style={{ padding: "5px 10px", textAlign: "right", borderBottom: `1px solid ${C.dim}` }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 1, alignItems: "flex-end" }}>
+                          <span style={{ fontFamily: "monospace", fontSize: 11, color: C.accent }}>{f(c.t)}</span>
+                          <span style={{ fontFamily: "monospace", fontSize: 11, color: C.muted }}>{f(c.o)}</span>
+                          <span style={{ fontFamily: "monospace", fontSize: 11, color: c.d > 0 ? C.green : C.dim }}>{c.d}</span>
+                          <span style={{ fontFamily: "monospace", fontSize: 10, color: c.d > 0 ? C.amber : C.dim }}>{pct(c.d, c.o)}</span>
+                        </div>
+                      </td>
+                    );
+                  })}
+                  <Td><span style={{ fontFamily: "monospace", color: C.accent }}>{f(tT)}</span></Td>
+                  <Td><span style={{ fontFamily: "monospace", color: tD > 0 ? C.green : C.muted, fontWeight: 600 }}>{tD}</span></Td>
+                  <Td><ClosePct n={tD} d={tO} /></Td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
-      {groups.map(group => {
-        const groupAgents = agents.filter(a => a.campaign === group.id);
-        if (groupAgents.length === 0) return null;
-        return (
-          <div key={group.id} style={{ marginBottom:24 }}>
-            <div style={{ fontSize:10, color:campaignColor(group.id), letterSpacing:".14em", textTransform:"uppercase", fontWeight:700, marginBottom:8, paddingBottom:6, borderBottom:`1px solid ${C.border}` }}>
-              {group.label} <span style={{ color:C.dim, fontWeight:400 }}>({groupAgents.length})</span>
-            </div>
-            <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
-              {groupAgents.map(a => (
-                <div key={a.name} style={{ display:"flex", alignItems:"center", gap:12, padding:"8px 12px", background:C.card, borderRadius:6, border:`1px solid ${C.border}` }}>
-                  <span style={{ flex:1, fontSize:13, color:C.text }}>{a.name}</span>
-                  <div style={{ display:"flex", gap:5 }}>
-                    {(["transfer","outbound","inbound","unassigned"] as AgentAssignment["campaign"][]).map(opt => (
-                      <button key={opt} onClick={() => setAgent(a.name, opt)} style={{
-                        padding:"3px 10px", borderRadius:4, fontSize:11, fontWeight:600, cursor:"pointer", textTransform:"capitalize",
-                        border:`1px solid ${a.campaign===opt?campaignColor(opt):C.dim}`,
-                        background:a.campaign===opt?`${campaignColor(opt)}22`:"transparent",
-                        color:a.campaign===opt?campaignColor(opt):C.muted,
-                      }}>{opt}</button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 }
 
-// ── SOURCE HEALTH BAR ─────────────────────────────────────────────────────────
-function SourceHealthBar({ staleness }: { staleness: DashData["staleness"] }) {
-  const now = Date.now();
-  const sources = [
-    { label: "AIM",  ts: staleness?.aim  },
-    { label: "3CX",  ts: staleness?.cx   },
-    { label: "Moxy", ts: staleness?.moxy },
-  ];
-  const getColor = (ts: string | null | undefined) => {
-    if (!ts) return C.muted;
-    const mins = Math.round((now - new Date(ts).getTime()) / 60000);
-    if (mins <= 60)  return C.green;
-    if (mins <= 120) return C.amber;
-    return C.red;
-  };
-  const getAge = (ts: string | null | undefined) => {
-    if (!ts) return "never";
-    const mins = Math.round((now - new Date(ts).getTime()) / 60000);
-    if (mins < 60) return `${mins}m`;
-    return `${Math.floor(mins/60)}h ${mins%60}m`;
-  };
+function AgentView({ data }: { data: DashData }) {
+  const agents = data.allAgents?.length ? data.allAgents : Object.keys(data.byAgent);
   return (
-    <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:3 }}>
-      {sources.map(s => (
-        <div key={s.label} style={{ display:"flex", alignItems:"center", gap:3 }}>
-          <div style={{ width:6, height:6, borderRadius:"50%", background:getColor(s.ts), boxShadow:`0 0 4px ${getColor(s.ts)}` }} />
-          <span style={{ fontSize:10, color:getColor(s.ts), fontFamily:"monospace" }}>
-            {s.label}
-          </span>
-          <span style={{ fontSize:9, color:C.muted, fontFamily:"monospace" }}>
-            ({getAge(s.ts)})
-          </span>
-        </div>
-      ))}
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <thead><tr><Th left>Agent</Th><Th>Calls</Th><Th>Minutes</Th><Th>Dial Cost</Th><Th>Transfers</Th><Th>Deals</Th><Th>Close %</Th><Th>Cost/Deal</Th></tr></thead>
+        <tbody>
+          {agents.map(agent => {
+            const a = data.byAgent[agent] || { calls:0,min:0,cost:0,t:0,deals:0 };
+            const cpd = a.deals > 0 ? a.cost / a.deals : null;
+            return (
+              <tr key={agent} style={{ borderBottom: `1px solid ${C.dim}` }}>
+                <Td style={{ textAlign: "left", color: C.accent, fontWeight: 600, fontSize: 14 }}>{agent}</Td>
+                <Td><span style={{ fontFamily: "monospace" }}>{f(a.calls)}</span></Td>
+                <Td><span style={{ fontFamily: "monospace" }}>{f(Math.round(a.min))}</span></Td>
+                <Td><span style={{ fontFamily: "monospace", color: C.muted }}>{fc(a.cost)}</span></Td>
+                <Td><span style={{ fontFamily: "monospace", color: C.accent }}>{f(a.t)}</span></Td>
+                <Td><span style={{ fontFamily: "monospace", color: a.deals > 0 ? C.green : C.muted, fontWeight: 600 }}>{a.deals}</span></Td>
+                <Td><ClosePct n={a.deals} d={a.t} /></Td>
+                <Td>{cpd ? <span style={{ fontFamily: "monospace", color: cpd > 200 ? C.red : cpd > 100 ? C.amber : C.green }}>{fc(cpd)}</span> : <span style={{ color: C.dim }}>-</span>}</Td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
 
-// ── MAIN PAGE ─────────────────────────────────────────────────────────────────
+function NonListView({ data }: { data: DashData }) {
+  const sales = data.nonListSales || [];
+  if (!sales.length) return (
+    <div style={{ padding: "40px 24px", textAlign: "center", color: C.muted }}>
+      <div style={{ fontSize: 14 }}>No non-list sales detected</div>
+    </div>
+  );
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <thead><tr><Th left>Name</Th><Th>Date</Th><Th>Promo</Th><Th>Salesperson</Th><Th>Home #</Th><Th>Mobile #</Th><Th>On Opened</Th></tr></thead>
+        <tbody>
+          {sales.map((s, i) => (
+            <tr key={i} style={{ borderBottom: `1px solid ${C.dim}` }}>
+              <Td style={{ textAlign: "left", color: C.text }}>{s.firstName} {s.lastName}</Td>
+              <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.soldDate || "-"}</span></Td>
+              <Td><span style={{ fontSize: 11, color: C.amber }}>{s.promoCode}</span></Td>
+              <Td><span style={{ color: C.muted, fontSize: 12 }}>{s.salesperson}</span></Td>
+              <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.homePhone || "-"}</span></Td>
+              <Td><span style={{ fontFamily: "monospace", fontSize: 12, color: C.muted }}>{s.mobilePhone || "-"}</span></Td>
+              <Td style={{ textAlign: "center" }}>{s.onOpened ? <span style={{ color: C.green }}>Y</span> : <span style={{ color: C.dim }}>N</span>}</Td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function Home() {
-  const [data, setData]               = useState<DashData>(DEMO);
-  const [isLive, setIsLive]           = useState(false);
-  const [loading, setLoading]         = useState(true);
+  const [data, setData] = useState<DashData>(DEMO);
+  const [isLive, setIsLive] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<string>("");
-  const [campaign, setCampaign]       = useState<CampaignTab>("transfer");
-  const [preset, setPreset]           = useState<DatePreset>("today");
+  const [tab, setTab] = useState("itd");
+  const [preset, setPreset] = useState<DatePreset>("today");
   const [customStart, setCustomStart] = useState("");
-  const [customEnd, setCustomEnd]     = useState("");
+  const [customEnd, setCustomEnd] = useState("");
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const activeStart = preset === "custom" ? customStart : getPresetDates(preset).start;
+  const warnDays = daysPast7(activeStart);
 
   const loadData = useCallback(async (start: string | null, end: string | null) => {
     setLoading(true);
     try {
       const qs = new URLSearchParams();
       if (start) qs.set("start", start);
-      if (end)   qs.set("end", end);
+      if (end) qs.set("end", end);
       const q = qs.toString() ? "?" + qs.toString() : "";
-      const res  = await fetch(`/api/data${q}`);
-      const json = await res.json();
-      if (json?.hasData) { setData(json); setIsLive(true); }
-      else               { setData(DEMO); setIsLive(false); }
+
+      const [fileRes, aimRes] = await Promise.allSettled([
+        fetch(`/api/data${q}`).then(r => r.json()),
+        fetch(`/api/aim${q}`).then(r => r.json()),
+      ]);
+
+      const fileData: DashData | null = fileRes.status === "fulfilled" && fileRes.value?.hasData ? fileRes.value : null;
+      const aimData: AimData | null = aimRes.status === "fulfilled" && aimRes.value?.ok ? aimRes.value : null;
+
+      if (!fileData && !aimData) { setIsLive(false); setData(DEMO); return; }
+
+      const base: DashData = fileData || DEMO;
+
+      if (aimData) {
+        const allLists = base.allLists?.length ? base.allLists : Object.keys(base.byList);
+        const newByList: Record<string, ListStats> = {};
+        for (const li of allLists) {
+          const fl = base.byList[li] || { t:0,o:0,s:0,min:0,cost:0,listCost:0 };
+          const al = aimData.byList[li];
+          newByList[li] = { ...fl, t: al?.t ?? fl.t, min: al?.min ?? fl.min, cost: al?.cost ?? fl.cost, listCost: al?.listCost ?? fl.listCost };
+        }
+        const allAgents = base.allAgents?.length ? base.allAgents : Object.keys(base.byAgent);
+        const newByAgent: Record<string, AgentStats> = {};
+        for (const ag of allAgents) {
+          const fa = base.byAgent[ag] || { calls:0,min:0,cost:0,t:0,deals:0 };
+          const aa = aimData.byAgent[ag];
+          newByAgent[ag] = { ...fa, t: aa?.t ?? fa.t, min: aa?.min ?? fa.min, cost: aa?.cost ?? fa.cost };
+        }
+        for (const ag of Object.keys(aimData.byAgent)) {
+          if (!newByAgent[ag]) { const a = aimData.byAgent[ag]; newByAgent[ag] = { calls:0, min:a.min, cost:a.cost, t:a.t, deals:0 }; }
+        }
+        setData({ ...base, byList: newByList, byAgent: newByAgent, lastUpdated: aimData.lastUpdated });
+        setIsLive(true);
+      } else {
+        setData(base);
+        setIsLive(!!fileData);
+      }
       setLastRefresh(new Date().toLocaleTimeString());
     } catch { setIsLive(false); }
-    finally  { setLoading(false); }
+    finally { setLoading(false); }
   }, []);
 
-  const handleApplyWithPreset = useCallback((p: DatePreset) => {
-    const { start, end } = getPresetDates(p); loadData(start, end);
+  // FIX: handleApplyWithPreset accepts preset directly to avoid stale closure
+  const handleApplyWithPreset = useCallback((newPreset: DatePreset) => {
+    const { start, end } = getPresetDates(newPreset);
+    loadData(start, end);
   }, [loadData]);
 
   const handleApply = useCallback(() => {
@@ -519,109 +409,128 @@ export default function Home() {
     loadData(start, end);
   }, [preset, customStart, customEnd, loadData]);
 
+  // Load today on mount (not ITD)
   useEffect(() => {
-    const { start, end } = getPresetDates("today"); loadData(start, end);
+    const { start, end } = getPresetDates("today");
+    loadData(start, end);
   }, [loadData]);
 
+  // Auto-refresh every 15 min using current preset
   useEffect(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(handleApply, 15 * 60 * 1000);
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [handleApply]);
 
-  const tabs: { id: CampaignTab; label: string; active: boolean }[] = [
-    { id:"transfer",     label:"Transfer",      active:true  },
-    { id:"outbound",     label:"Outbound",      active:false },
-    { id:"inbound",      label:"Inbound",       active:false },
-    { id:"meta",         label:"Meta",          active:false },
-    { id:"overview",     label:"Overview",      active:false },
-    { id:"agentmapping", label:"Agent Mapping", active:true  },
+  const tabs = [
+    { id: "itd", label: "By List" }, { id: "matrix", label: "Agent x List" },
+    { id: "agents", label: "Agent Summary" }, { id: "nonlist", label: "Non-List Sales" },
   ];
+  const sideTotal = Object.values(data.byList).reduce((a, r) => a + (r.s || 0), 0);
+  const lists = data.allLists?.length ? data.allLists : Object.keys(data.byList);
 
   return (
-    <div style={{ background:C.bg, minHeight:"100vh", color:C.text, fontFamily:"system-ui, sans-serif" }}>
-
-      {/* HEADER */}
-      <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:"11px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", position:"sticky", top:0, zIndex:100 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-          <div style={{ width:8, height:8, borderRadius:"50%", background:C.accent, boxShadow:`0 0 10px ${C.accent}`, animation:"pulse 2s infinite" }} />
+    <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: "system-ui, sans-serif" }}>
+      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "13px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: C.accent, boxShadow: `0 0 10px ${C.accent}`, animation: "pulse 2s infinite" }} />
           <div>
-            <div style={{ fontSize:16, fontWeight:700, color:C.text, letterSpacing:".06em", textTransform:"uppercase" }}>GPG — AI Voice Agent Dashboard</div>
-            <SourceHealthBar staleness={data.staleness} />
+            <div style={{ fontSize: 17, fontWeight: 700, color: C.text, letterSpacing: ".06em", textTransform: "uppercase" }}>APC - AI Voice Agent Dashboard</div>
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>Auto Protection Center · AIM Now / Moxy · AI-Attributed Sales Only</div>
           </div>
         </div>
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          {(loading || !isLive) && (
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <div style={{ width:18, height:18, borderRadius:"50%", border:`2px solid ${C.dim}`, borderTopColor:C.amber, animation:"spin 0.8s linear infinite" }} />
-              <span style={{ fontSize:11, color:C.amber, fontFamily:"monospace" }}>{loading?"Loading…":"Awaiting Data"}</span>
-            </div>
-          )}
-          {!loading && isLive && lastRefresh && <span style={{ fontSize:10, color:C.muted, fontFamily:"monospace" }}>↻ {lastRefresh}</span>}
-          {!loading && isLive && (
-            <span style={{ padding:"2px 8px", borderRadius:3, fontSize:10, fontWeight:600, letterSpacing:".08em", textTransform:"uppercase", background:"rgba(34,197,94,.12)", color:C.green, border:"1px solid rgba(34,197,94,.3)" }}>Live Data</span>
-          )}
-          <span style={{ fontFamily:"monospace", fontSize:11, color:C.muted }}>
-            {new Date().toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" })}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {loading && <span style={{ fontSize: 11, color: C.muted, fontFamily: "monospace" }}>Loading...</span>}
+          {!loading && lastRefresh && <span style={{ fontSize: 10, color: C.muted, fontFamily: "monospace" }}>↻ {lastRefresh}</span>}
+          <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 3, fontSize: 10, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", background: isLive ? "rgba(34,197,94,.12)" : "rgba(245,158,11,.12)", color: isLive ? C.green : C.amber, border: `1px solid ${isLive ? "rgba(34,197,94,.3)" : "rgba(245,158,11,.3)"}` }}>
+            {isLive ? "Live Data" : "Demo Mode"}
+          </span>
+          <span style={{ fontFamily: "monospace", fontSize: 11, color: C.muted }}>
+            {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
           </span>
         </div>
       </div>
 
-      {/* CAMPAIGN TAB BAR */}
-      <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:"0 20px", display:"flex", alignItems:"stretch" }}>
-        {tabs.map(t => (
-          <button key={t.id} onClick={() => t.active && setCampaign(t.id)} style={{
-            padding:"11px 20px", background:"transparent", border:"none",
-            borderBottom:`2px solid ${campaign===t.id?C.accent:"transparent"}`,
-            color:!t.active?C.dim:campaign===t.id?C.accent:C.muted,
-            cursor:t.active?"pointer":"not-allowed", fontSize:12, fontWeight:campaign===t.id?700:500,
-            letterSpacing:".1em", textTransform:"uppercase", opacity:t.active?1:0.38,
-          }}>
-            {t.label}
-            {!t.active && <span style={{ fontSize:8, marginLeft:5, opacity:.6 }}>SOON</span>}
+      <DateFilterBar
+        preset={preset} setPreset={setPreset}
+        customStart={customStart} setCustomStart={setCustomStart}
+        customEnd={customEnd} setCustomEnd={setCustomEnd}
+        onApply={handleApply}
+        onApplyWithPreset={handleApplyWithPreset}
+        dataRange={data.dataDateRange}
+        warnDays={warnDays}
+      />
+
+      <div style={{ display: "flex", minHeight: "calc(100vh - 100px)" }}>
+        <div style={{ width: 200, flexShrink: 0, background: C.surface, borderRight: `1px solid ${C.border}`, padding: "16px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 10, color: C.muted, letterSpacing: ".12em", textTransform: "uppercase", marginBottom: 2 }}>Data Sources</div>
+          {[
+            { label: "AIM Live API", live: isLive },
+            { label: "sales.csv/xls", live: data.loadedFiles?.some(f => f.toLowerCase().startsWith("sales")) },
+            { label: "opened.csv/xls", live: data.loadedFiles?.some(f => f.toLowerCase().startsWith("opened")) },
+          ].map(item => (
+            <div key={item.label} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", background: C.card, borderRadius: 4, border: `1px solid ${item.live ? "rgba(34,197,94,.3)" : C.border}` }}>
+              <span style={{ color: item.live ? C.green : C.dim, fontSize: 12 }}>{item.live ? "✓" : "○"}</span>
+              <span style={{ fontSize: 11, color: item.live ? C.text : C.muted }}>{item.label}</span>
+            </div>
+          ))}
+
+          <div style={{ fontSize: 10, color: C.muted, letterSpacing: ".12em", textTransform: "uppercase", marginTop: 8 }}>Lists</div>
+          {lists.map(li => (
+            <div key={li} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: C.card, borderRadius: 4, border: `1px solid ${isLive ? "rgba(0,212,184,.2)" : C.border}` }}>
+              <span style={{ color: isLive ? C.accent : C.dim, fontSize: 12 }}>{isLive ? "✓" : "○"}</span>
+              <span style={{ fontSize: 11, color: isLive ? C.accent : C.muted, fontWeight: isLive ? 600 : 400 }}>{li}</span>
+            </div>
+          ))}
+
+          <button onClick={handleApply} style={{ marginTop: 8, padding: "9px 0", background: C.accent, color: C.bg, border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 700, fontSize: 12, letterSpacing: ".1em", textTransform: "uppercase" }}>
+            ↻ Refresh
           </button>
-        ))}
-        <button onClick={handleApply} style={{ marginLeft:"auto", padding:"8px 16px", background:"transparent", border:"none", color:C.muted, cursor:"pointer", fontSize:12 }}>
-          ↻ Refresh
-        </button>
-      </div>
 
-      {/* STALE BANNER */}
-      {isLive && <StaleBanner staleness={data.staleness} onRefresh={handleApply} />}
-
-      {/* DATE FILTER BAR */}
-      {campaign !== "agentmapping" && (
-        <DateFilterBar
-          preset={preset} setPreset={setPreset}
-          customStart={customStart} setCustomStart={setCustomStart}
-          customEnd={customEnd} setCustomEnd={setCustomEnd}
-          onApply={handleApply} onApplyWithPreset={handleApplyWithPreset}
-        />
-      )}
-
-      {/* MAIN CONTENT */}
-      <div style={{ padding:"20px" }}>
-        <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
-          {campaign === "transfer"     && <TransferView data={data} />}
-          {campaign === "outbound"     && <ComingSoon label="Outbound" />}
-          {campaign === "inbound"      && <ComingSoon label="Inbound" />}
-          {campaign === "meta"         && <ComingSoon label="Meta" />}
-          {campaign === "overview"     && <ComingSoon label="Overview" />}
-          {campaign === "agentmapping" && <AgentMappingView />}
+          <div style={{ marginTop: "auto", paddingTop: 14, borderTop: `1px solid ${C.dim}` }}>
+            <div style={{ fontSize: 10, color: C.muted, letterSpacing: ".1em", textTransform: "uppercase", marginBottom: 8 }}>Snapshot</div>
+            {lists.map(li => {
+              const r = data.byList[li] || { t: 0, s: 0 };
+              return (
+                <div key={li} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "3px 0", borderBottom: `1px solid ${C.dim}` }}>
+                  <span style={{ fontSize: 11, color: C.accent }}>{li}</span>
+                  <span style={{ display: "flex", gap: 6 }}>
+                    <span style={{ fontFamily: "monospace", fontSize: 11, color: C.muted }}>{r.t}T</span>
+                    <span style={{ fontFamily: "monospace", fontSize: 11, color: r.s > 0 ? C.green : C.dim }}>{r.s}S</span>
+                  </span>
+                </div>
+              );
+            })}
+            <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 6 }}>
+              <span style={{ fontSize: 12, color: C.text, fontWeight: 600 }}>Total</span>
+              <span style={{ fontFamily: "monospace", fontSize: 12, color: C.green, fontWeight: 600 }}>{sideTotal} sales</span>
+            </div>
+          </div>
         </div>
-        {isLive && data.lastUpdated && campaign !== "agentmapping" && (
-          <div style={{ marginTop:8, fontSize:10, color:C.muted, textAlign:"right" }}>
-            Last updated: {new Date(data.lastUpdated).toLocaleString()} · Auto-refreshes every 15 min
-          </div>
-        )}
-        {isLive && data.apiSources && campaign !== "agentmapping" && (
-          <div style={{ marginTop:3, fontSize:10, color:C.dim, textAlign:"right" }}>
-            {data.apiSources.openedCount} opened · {data.apiSources.salesCount} sales checked · {data.apiSources.listFilesLoaded} list files loaded
-          </div>
-        )}
-      </div>
 
-      <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}} @keyframes spin{to{transform:rotate(360deg)}}`}</style>
+        <div style={{ flex: 1, padding: "18px 22px", minWidth: 0 }}>
+          <div style={{ display: "flex", borderBottom: `1px solid ${C.border}`, marginBottom: 18 }}>
+            {tabs.map(t => (
+              <div key={t.id} onClick={() => setTab(t.id)}
+                style={{ padding: "8px 16px", cursor: "pointer", fontSize: 13, letterSpacing: ".08em", textTransform: "uppercase", borderBottom: `2px solid ${tab === t.id ? C.accent : "transparent"}`, color: tab === t.id ? C.accent : C.muted, transition: "all .2s" }}>
+                {t.label}
+              </div>
+            ))}
+          </div>
+          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: 18 }}>
+            {tab === "itd" && <ITDView data={data} showListCost={preset === "itd"} />}
+            {tab === "matrix" && <MatrixView data={data} />}
+            {tab === "agents" && <AgentView data={data} />}
+            {tab === "nonlist" && <NonListView data={data} />}
+          </div>
+          {isLive && data.lastUpdated && (
+            <div style={{ marginTop: 10, fontSize: 10, color: C.muted, textAlign: "right" }}>
+              Last updated: {new Date(data.lastUpdated).toLocaleString()} · Auto-refreshes every 15 min
+            </div>
+          )}
+        </div>
+      </div>
+      <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}`}</style>
     </div>
   );
 }
