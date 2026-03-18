@@ -140,9 +140,9 @@ export async function GET(request: Request) {
       }
     }
 
-    // ── 2. FETCH AIM API ─────────────────────────────────────────────────────
-    // Returns phones[] per list — used for transfer attribution and minutes/cost
-    const aimTransferPhones = new Set<string>();
+    // ── 2. FETCH AIM API (date-filtered for display) ────────────────────────
+    // Returns phones[] per list — used for transfer counts, minutes, cost
+    const aimTransferPhones = new Set<string>();  // date-filtered (for display)
     const phoneToAgent      = new Map<string, string>();
     let aimByList:  Record<string, { t: number; phones: string[]; phoneToAgent: Record<string,string>; min: number; cost: number; listCost: number }> = {};
     let aimByAgent: Record<string, { t: number; min: number; cost: number }> = {};
@@ -168,14 +168,47 @@ export async function GET(request: Request) {
       console.error("[data/route] AIM fetch failed:", e);
     }
 
-    // ── 3. FETCH 3CX CALLS (opened) ──────────────────────────────────────────
+    // ── 2b. LOAD ITD PHONE SETS FOR TRIPLE GATE (from seed files) ────────────
+    // Sales attribution needs ITD transfer + opened phones, not just the
+    // selected date range. A sale may close days after the transfer.
+    // Reading seed JSON files is instant (~375KB + ~221KB) — no API call.
+    const itdAimPhones    = new Set<string>();
+    const itdOpenedPhones = new Set<string>();
+
+    try {
+      const aimSeedPath = path.join(DATA_DIR, "aim_transfers_seed.json");
+      if (fs.existsSync(aimSeedPath)) {
+        const aimSeed = JSON.parse(fs.readFileSync(aimSeedPath, "utf8"));
+        for (const t of (aimSeed.transfers ?? [])) {
+          if (t.phone?.length === 10) itdAimPhones.add(t.phone);
+        }
+      }
+    } catch (e) {
+      console.error("[data/route] AIM seed read failed:", e);
+    }
+
+    try {
+      const tcxSeedPath = path.join(DATA_DIR, "tcx_calls_seed.json");
+      if (fs.existsSync(tcxSeedPath)) {
+        const tcxSeed = JSON.parse(fs.readFileSync(tcxSeedPath, "utf8"));
+        for (const o of (tcxSeed.opened ?? [])) {
+          if (o.phone?.length === 10) itdOpenedPhones.add(o.phone);
+        }
+      }
+    } catch (e) {
+      console.error("[data/route] 3CX seed read failed:", e);
+    }
+
+    // Also include date-filtered phones in ITD sets (covers live API data)
+    for (const p of aimTransferPhones) itdAimPhones.add(p);
+
+    // ── 3. FETCH 3CX CALLS (date-filtered for display) ──────────────────────
     // Opened rules:
     //   1. Passed all 4 3CX rules (answered + not AI F + talk time > 0 + mail 4)
     //   2. Exists in data list files (phoneToList)
     //   3. Was transferred by AIM (aimTransferPhones)
     // COUNT every qualifying call row (no dedup) — matches manual methodology
-    // Keep a Set for sales cross-referencing
-    const openedPhones    = new Set<string>();   // for sales matching
+    const openedPhones    = new Set<string>();   // date-filtered (for display)
     const openedByList: Record<string, number> = {}; // raw count per list
 
     try {
@@ -190,9 +223,10 @@ export async function GET(request: Request) {
             phoneToList.has(phone) &&
             aimTransferPhones.has(phone)
           ) {
-            openedPhones.add(phone); // for sales matching
+            openedPhones.add(phone);
+            itdOpenedPhones.add(phone); // also add to ITD set
             const li = phoneToList.get(phone)!;
-            openedByList[li] = (openedByList[li] ?? 0) + 1; // count every instance
+            openedByList[li] = (openedByList[li] ?? 0) + 1;
           }
         }
       }
@@ -280,7 +314,7 @@ export async function GET(request: Request) {
       const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
 
       const matchedPhone = phones.find(p =>
-        phoneToList.has(p) && aimTransferPhones.has(p) && openedPhones.has(p)
+        phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
       );
 
       const onOpened = phones.some(p => openedPhones.has(p));
@@ -307,7 +341,7 @@ export async function GET(request: Request) {
 
       const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
       const matchedPhone = phones.find(p =>
-        phoneToList.has(p) && aimTransferPhones.has(p) && openedPhones.has(p)
+        phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
       );
       if (!matchedPhone) continue;
 
@@ -341,7 +375,7 @@ export async function GET(request: Request) {
       if (!notFishbein) continue;
       const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
       const matchedPhone = phones.find(p =>
-        phoneToList.has(p) && aimTransferPhones.has(p) && openedPhones.has(p)
+        phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
       );
       if (!matchedPhone) continue;
       const li    = phoneToList.get(matchedPhone);
