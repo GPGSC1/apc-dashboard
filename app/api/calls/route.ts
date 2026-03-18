@@ -274,7 +274,7 @@ export async function GET(request: Request) {
             `&Criteria=Date1%3D${encodeURIComponent(fromFmt)}%7C%7C%7C` +
             `Date2%3D${encodeURIComponent(toFmt)}%7C%7C%7C` +
             `Extensions%3D%7C%7C%7CQueues%3D%7C%7C%7C` +
-            `PageNumber%3D1%7C%7C%7CPageCnt%3D2000%7C%7C%7C` +
+            `PageNumber%3D1%7C%7C%7CPageCnt%3D10000%7C%7C%7C` +
             `SortColumn%3D%7C%7C%7CSortAorD%3D`;
 
           const csv       = await httpsGet(reportUrl, { Cookie: loginResp.cookies });
