@@ -498,7 +498,7 @@ export async function GET(request: Request) {
 
     // Build cross-tab for the campaign-tab UI (agent → list → stats)
     // Allocate agent's total min/cost proportionally by transfer count across lists
-    const aimByAgentGrid: Record<string, Record<string, { min: number; cost: number; transfers: number; deals: number }>> = {};
+    const aimByAgentGrid: Record<string, Record<string, { min: number; cost: number; t: number; s: number }>> = {};
     for (const agent of allAgents) {
       aimByAgentGrid[agent] = {};
 
@@ -527,10 +527,10 @@ export async function GET(request: Request) {
         }
 
         aimByAgentGrid[agent][li] = {
-          min:       allocatedMin,
-          cost:      allocatedCost,
-          transfers: transfers,
-          deals:     m?.d ?? 0,
+          min:  allocatedMin,
+          cost: allocatedCost,
+          t:    transfers,
+          s:    m?.d ?? 0,
         };
       }
     }

@@ -12,7 +12,7 @@ interface DashData {
   hasData:     boolean;
   staleness?:  { cx: string | null; aim: string | null; moxy: string | null };
   apiSources?: { openedCount: number; salesCount: number; listFilesLoaded: number; dateRange: { from: string; to: string } };
-  aimByAgent?: Record<string, Record<string, { min: number; cost: number; transfers: number; deals: number }>>;
+  aimByAgent?: Record<string, Record<string, { min: number; cost: number; t: number; s: number }>>;
   byAgent?:    Record<string, { calls: number; min: number; cost: number; t: number; deals: number }>;
   allAgents?:  string[];
   loading?:    { sales?: boolean; calls?: boolean; costs?: boolean };
@@ -298,7 +298,7 @@ function ByListView({ data, salesLoading, callsLoading, costsLoading }: { data: 
 function ByAgentView({ agents, lists, crossData, salesLoading, callsLoading, costsLoading }: {
   agents: AgentStats[];
   lists: string[];
-  crossData: Record<string, Record<string, { min: number; cost: number; transfers: number }>> | null;
+  crossData: Record<string, Record<string, { min: number; cost: number; t: number; s: number }>> | null;
   salesLoading: boolean;
   callsLoading: boolean;
   costsLoading: boolean;
