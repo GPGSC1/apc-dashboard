@@ -12,7 +12,7 @@ interface DashData {
   hasData:     boolean;
   staleness?:  { cx: string | null; aim: string | null; moxy: string | null };
   apiSources?: { openedCount: number; salesCount: number; listFilesLoaded: number; dateRange: { from: string; to: string } };
-  aimByAgent?: Record<string, Record<string, { min: number; cost: number; transfers: number }>>;
+  aimByAgent?: Record<string, Record<string, { min: number; cost: number; transfers: number; deals: number }>>;
   byAgent?:    Record<string, { calls: number; min: number; cost: number; t: number; deals: number }>;
   allAgents?:  string[];
   loading?:    { sales?: boolean; calls?: boolean; costs?: boolean };
@@ -258,8 +258,8 @@ function ByListView({ data, salesLoading, callsLoading, costsLoading }: { data: 
           <thead>
             <tr>
               <Th left>List Name</Th>
-              <Th>Calls</Th><Th>Sales</Th>
-              <Th>Closing %</Th><Th>Minutes</Th><Th>Dial Cost</Th><Th>Cost / Sale</Th>
+              <Th>Sales</Th><Th>Closing %</Th>
+              <Th>Calls</Th><Th>Minutes</Th><Th>Dial Cost</Th><Th>Cost / Sale</Th>
             </tr>
           </thead>
           <tbody>
@@ -269,9 +269,9 @@ function ByListView({ data, salesLoading, callsLoading, costsLoading }: { data: 
               return (
                 <tr key={li} onMouseEnter={e=>(e.currentTarget.style.background="rgba(0,212,184,.04)")} onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
                   <Td style={{ textAlign:"left" }}><span style={{ color:C.accent, fontWeight:600, fontSize:13 }}>{li}</span></Td>
-                  <Td>{callsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.accent }}>{f(r.o)}</span>}</Td>
                   <Td>{salesLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:r.s>0?C.green:C.muted, fontWeight:r.s>0?700:400 }}>{r.s}</span>}</Td>
                   <Td>{salesLoading || callsLoading ? <LoadingSpinner /> : <ClosePct n={r.s} d={r.o} />}</Td>
+                  <Td>{callsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.accent }}>{f(r.o)}</span>}</Td>
                   <Td>{costsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(r.min))}</span>}</Td>
                   <Td>{costsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{fc(r.cost)}</span>}</Td>
                   <Td>{costsLoading ? <LoadingSpinner /> : (dcps!=null?<span style={{ fontFamily:"monospace", color:dcps>500?C.red:dcps>250?C.amber:C.green }}>{fc(dcps)}</span>:<span style={{ color:C.dim }}>—</span>)}</Td>
@@ -280,9 +280,9 @@ function ByListView({ data, salesLoading, callsLoading, costsLoading }: { data: 
             })}
             <tr style={{ background:C.surface, borderTop:`2px solid ${C.border}` }}>
               <Td style={{ textAlign:"left", fontWeight:700, color:C.text, fontSize:13 }}>TOTAL</Td>
-              <Td>{callsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.accent, fontWeight:600 }}>{f(totals.o)}</span>}</Td>
               <Td>{salesLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.green, fontWeight:700 }}>{totals.s}</span>}</Td>
               <Td>{salesLoading || callsLoading ? <LoadingSpinner /> : <ClosePct n={totals.s} d={totals.o} />}</Td>
+              <Td>{callsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.accent, fontWeight:600 }}>{f(totals.o)}</span>}</Td>
               <Td>{costsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(totals.min))}</span>}</Td>
               <Td>{costsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{fc(totals.cost)}</span>}</Td>
               <Td>{costsLoading ? <LoadingSpinner /> : (totals.s>0?<span style={{ fontFamily:"monospace", color:C.amber, fontWeight:600 }}>{fc(totals.cost/totals.s)}</span>:<span style={{ color:C.dim }}>—</span>)}</Td>
@@ -785,9 +785,10 @@ export default function Home() {
             Object.entries(prev.byList).map(([li, stats]) => [li, {
               ...stats,
               o: json2.byList[li]?.o ?? stats.o,
+              t: json2.byList[li]?.t ?? stats.t,
             }])
           ),
-          totalSales: json2.totalSales,
+          // Don't override totalSales — stage 2 doesn't compute sales
         }));
         setIsLive(true);
       }
