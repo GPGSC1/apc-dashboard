@@ -221,14 +221,32 @@ export async function GET(request: Request) {
     // Also include date-filtered phones in ITD sets (covers live API data)
     for (const p of aimTransferPhones) itdAimPhones.add(p);
 
-    // ── 3. FETCH 3CX CALLS (date-filtered for display) ──────────────────────
-    // Opened rules:
-    //   1. Passed all 4 3CX rules (answered + not AI F + talk time > 0 + mail 4)
-    //   2. Exists in data list files (phoneToList)
-    //   3. Was transferred by AIM (aimTransferPhones)
-    // COUNT every qualifying call row (no dedup) — matches manual methodology
-    const openedPhones    = new Set<string>();   // date-filtered (for display)
-    const openedByList: Record<string, number> = {}; // raw count per list
+    // ── 3. FETCH 3CX CALLS + 3-GATE ATTRIBUTION ───────────────────────────
+    // Gate 1: 3CX Mail 4 opened (answered + not AI + talk time > 0 + mail 4 queue)
+    // Gate 2: Phone in AIM call history on SAME DAY (any outcome, not just transferred)
+    //         If no same-day AIM match → fall back to queue rules
+    // Gate 3: Phone on a source list → attribute to that list
+    //
+    // Calls passing all 3 gates → attributed to list
+    // Calls passing Gates 1+2 but not 3 → counted in TOTAL, flagged separately
+    const openedPhones    = new Set<string>();   // all opened phones (for sales triple gate)
+    const openedByList: Record<string, number> = {}; // calls per list (3-gated)
+    let totalOpenedCalls = 0;                         // total Mail 4 opened (all gates)
+    let unattributedCalls = 0;                        // Gate 1+2 pass but no list match
+
+    // Load AIM daily phone sets for Gate 2 (phone in AIM on same day, any outcome)
+    let aimDailyPhones: Record<string, Set<string>> = {};
+    try {
+      const dailyPath = path.join(DATA_DIR, "aim_daily_phones.json");
+      if (fs.existsSync(dailyPath)) {
+        const raw = JSON.parse(fs.readFileSync(dailyPath, "utf8"));
+        for (const [date, phones] of Object.entries(raw.dailyPhones ?? {})) {
+          aimDailyPhones[date] = new Set(phones as string[]);
+        }
+      }
+    } catch (e) {
+      console.error("[data/route] aim_daily_phones.json read failed:", e);
+    }
 
     // Only fetch 3CX calls for stage="calls" or no stage (full load)
     if (stage !== "sales" && stage !== "costs") {
@@ -238,16 +256,34 @@ export async function GET(request: Request) {
           const callsData = await callsResp.json();
           for (const call of (callsData.calls ?? [])) {
             const phone = call.phoneNumber;
-            if (
-              call.opened &&
-              phone?.length === 10 &&
-              phoneToList.has(phone) &&
-              aimTransferPhones.has(phone)
-            ) {
-              openedPhones.add(phone);
-              itdOpenedPhones.add(phone); // also add to ITD set
-              const li = phoneToList.get(phone)!;
+            if (!call.opened || !phone || phone.length !== 10) continue;
+
+            // Gate 1 passed (3CX opened rules already applied by calls route)
+            openedPhones.add(phone);
+            itdOpenedPhones.add(phone);
+
+            // Gate 2: phone in AIM call history on same day (any outcome)
+            const callDate = (call.startTime || "").slice(0, 10);
+            const aimPhonesForDay = aimDailyPhones[callDate];
+            const gate2Pass = aimPhonesForDay ? aimPhonesForDay.has(phone) : false;
+
+            // If Gate 2 fails, fall back to queue rules
+            // (for now, still count the call — Mail 4 is unpublished, all calls are from AIM)
+            if (!gate2Pass) {
+              // Phone not in AIM on same day — could be a redial, callback, etc.
+              // Still count but can't attribute without queue rules
+              totalOpenedCalls++;
+              unattributedCalls++;
+              continue;
+            }
+
+            // Gate 3: phone on a source list → attribute to that list
+            totalOpenedCalls++;
+            const li = phoneToList.get(phone);
+            if (li) {
               openedByList[li] = (openedByList[li] ?? 0) + 1;
+            } else {
+              unattributedCalls++;
             }
           }
         }
@@ -555,11 +591,13 @@ export async function GET(request: Request) {
         moxy: (stage !== "calls" && stage !== "costs") ? new Date().toISOString() : null,
       },
       apiSources: {
-        aimTransfers:    aimTransferPhones.size,
-        openedCount:     openedPhones.size,
-        salesCount:      salesRows.length,
-        listFilesLoaded: loadedFiles.length,
-        dateRange:       { from: fromDate, to: toDate },
+        aimTransfers:      aimTransferPhones.size,
+        openedCount:       openedPhones.size,
+        totalOpenedCalls,
+        unattributedCalls,
+        salesCount:        salesRows.length,
+        listFilesLoaded:   loadedFiles.length,
+        dateRange:         { from: fromDate, to: toDate },
       },
     });
 
