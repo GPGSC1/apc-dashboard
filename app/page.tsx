@@ -15,7 +15,7 @@ interface DashData {
   aimByAgent?: Record<string, Record<string, { min: number; cost: number; transfers: number }>>;
   byAgent?:    Record<string, { calls: number; min: number; cost: number; t: number; deals: number }>;
   allAgents?:  string[];
-  loading?:    { sales?: boolean };
+  loading?:    { sales?: boolean; calls?: boolean; costs?: boolean };
   error?:      string;
 }
 
@@ -222,7 +222,7 @@ function ViewToggle({ viewMode, setViewMode }: { viewMode: ViewMode; setViewMode
 }
 
 // ── BY LIST VIEW ──────────────────────────────────────────────────────────────
-function ByListView({ data, salesLoading }: { data: DashData; salesLoading: boolean }) {
+function ByListView({ data, salesLoading, callsLoading, costsLoading }: { data: DashData; salesLoading: boolean; callsLoading: boolean; costsLoading: boolean }) {
   const lists  = data.allLists?.length ? data.allLists : Object.keys(data.byList);
   const totals = lists.reduce((a, li) => {
     const r = data.byList[li] || { o:0, s:0, t:0, min:0, cost:0, listCost:0 };
@@ -269,23 +269,23 @@ function ByListView({ data, salesLoading }: { data: DashData; salesLoading: bool
               return (
                 <tr key={li} onMouseEnter={e=>(e.currentTarget.style.background="rgba(0,212,184,.04)")} onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
                   <Td style={{ textAlign:"left" }}><span style={{ color:C.accent, fontWeight:600, fontSize:13 }}>{li}</span></Td>
-                  <Td><span style={{ fontFamily:"monospace", color:C.accent }}>{f(r.o)}</span></Td>
+                  <Td>{callsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.accent }}>{f(r.o)}</span>}</Td>
                   <Td>{salesLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:r.s>0?C.green:C.muted, fontWeight:r.s>0?700:400 }}>{r.s}</span>}</Td>
-                  <Td>{salesLoading ? <LoadingSpinner /> : <ClosePct n={r.s} d={r.o} />}</Td>
-                  <Td><span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(r.min))}</span></Td>
-                  <Td><span style={{ fontFamily:"monospace", color:C.muted }}>{fc(r.cost)}</span></Td>
-                  <Td>{salesLoading ? <LoadingSpinner /> : (dcps!=null?<span style={{ fontFamily:"monospace", color:dcps>500?C.red:dcps>250?C.amber:C.green }}>{fc(dcps)}</span>:<span style={{ color:C.dim }}>—</span>)}</Td>
+                  <Td>{salesLoading || callsLoading ? <LoadingSpinner /> : <ClosePct n={r.s} d={r.o} />}</Td>
+                  <Td>{costsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(r.min))}</span>}</Td>
+                  <Td>{costsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{fc(r.cost)}</span>}</Td>
+                  <Td>{costsLoading ? <LoadingSpinner /> : (dcps!=null?<span style={{ fontFamily:"monospace", color:dcps>500?C.red:dcps>250?C.amber:C.green }}>{fc(dcps)}</span>:<span style={{ color:C.dim }}>—</span>)}</Td>
                 </tr>
               );
             })}
             <tr style={{ background:C.surface, borderTop:`2px solid ${C.border}` }}>
               <Td style={{ textAlign:"left", fontWeight:700, color:C.text, fontSize:13 }}>TOTAL</Td>
-              <Td><span style={{ fontFamily:"monospace", color:C.accent, fontWeight:600 }}>{f(totals.o)}</span></Td>
+              <Td>{callsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.accent, fontWeight:600 }}>{f(totals.o)}</span>}</Td>
               <Td>{salesLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.green, fontWeight:700 }}>{totals.s}</span>}</Td>
-              <Td>{salesLoading ? <LoadingSpinner /> : <ClosePct n={totals.s} d={totals.o} />}</Td>
-              <Td><span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(totals.min))}</span></Td>
-              <Td><span style={{ fontFamily:"monospace", color:C.muted }}>{fc(totals.cost)}</span></Td>
-              <Td>{salesLoading ? <LoadingSpinner /> : (totals.s>0?<span style={{ fontFamily:"monospace", color:C.amber, fontWeight:600 }}>{fc(totals.cost/totals.s)}</span>:<span style={{ color:C.dim }}>—</span>)}</Td>
+              <Td>{salesLoading || callsLoading ? <LoadingSpinner /> : <ClosePct n={totals.s} d={totals.o} />}</Td>
+              <Td>{costsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(totals.min))}</span>}</Td>
+              <Td>{costsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{fc(totals.cost)}</span>}</Td>
+              <Td>{costsLoading ? <LoadingSpinner /> : (totals.s>0?<span style={{ fontFamily:"monospace", color:C.amber, fontWeight:600 }}>{fc(totals.cost/totals.s)}</span>:<span style={{ color:C.dim }}>—</span>)}</Td>
             </tr>
           </tbody>
         </table>
@@ -295,11 +295,13 @@ function ByListView({ data, salesLoading }: { data: DashData; salesLoading: bool
 }
 
 // ── BY AGENT VIEW (agent stat cards) ──────────────────────────────────────
-function ByAgentView({ agents, lists, crossData, salesLoading }: {
+function ByAgentView({ agents, lists, crossData, salesLoading, callsLoading, costsLoading }: {
   agents: AgentStats[];
   lists: string[];
   crossData: Record<string, Record<string, { min: number; cost: number; transfers: number }>> | null;
   salesLoading: boolean;
+  callsLoading: boolean;
+  costsLoading: boolean;
 }) {
   const cross = crossData ?? {};
 
@@ -456,14 +458,14 @@ function ByAgentView({ agents, lists, crossData, salesLoading }: {
 }
 
 // ── TRANSFER VIEW (wrapper with toggle) ───────────────────────────────────────
-function TransferView({ data, salesLoading }: { data: DashData; salesLoading: boolean }) {
+function TransferView({ data, salesLoading, callsLoading, costsLoading }: { data: DashData; salesLoading: boolean; callsLoading: boolean; costsLoading: boolean }) {
   const [viewMode, setViewMode] = useState<ViewMode>("bylist");
   const lists     = data.allLists?.length ? data.allLists : Object.keys(data.byList);
   const crossData = data.aimByAgent ?? null;
   return (
     <div>
       <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
-      {viewMode === "bylist"  && <ByListView  data={data} salesLoading={salesLoading} />}
+      {viewMode === "bylist"  && <ByListView  data={data} salesLoading={salesLoading} callsLoading={callsLoading} costsLoading={costsLoading} />}
       {viewMode === "byagent" && <ByAgentView agents={
         // Build real agent stats from API data
         Object.entries(data.byAgent || {}).map(([name, ag]) => ({
@@ -474,7 +476,7 @@ function TransferView({ data, salesLoading }: { data: DashData; salesLoading: bo
           min: (ag as any).min ?? 0,
           cost: (ag as any).cost ?? 0,
         }))
-      } lists={lists} crossData={crossData} salesLoading={salesLoading} />}
+      } lists={lists} crossData={crossData} salesLoading={salesLoading} callsLoading={callsLoading} costsLoading={costsLoading} />}
     </div>
   );
 }
@@ -735,6 +737,8 @@ export default function Home() {
   const [isLive, setIsLive]           = useState(false);
   const [loading, setLoading]         = useState(true);
   const [salesLoading, setSalesLoading] = useState(true);
+  const [callsLoading, setCallsLoading] = useState(false);
+  const [costsLoading, setCostsLoading] = useState(false);
   const [metaLoading, setMetaLoading] = useState(false);
   const [metaData, setMetaData]       = useState<MetaResponse | null>(null);
   const [lastRefresh, setLastRefresh] = useState<string>("");
@@ -747,33 +751,75 @@ export default function Home() {
   const loadData = useCallback(async (start: string | null, end: string | null) => {
     setLoading(true);
     setSalesLoading(true);
+    setCallsLoading(false);
+    setCostsLoading(false);
     setMetaLoading(true);
     try {
-      // Stage 1: Fast load with seed files only
+      // Stage 1: Sales (Moxy + seed files for triple gate)
       const qs1 = new URLSearchParams();
       if (start) qs1.set("start", start);
       if (end)   qs1.set("end", end);
-      qs1.set("stage", "1");
+      qs1.set("stage", "sales");
       const q1 = qs1.toString() ? "?" + qs1.toString() : "";
       const res1 = await fetch(`/api/data${q1}`);
       const json1 = await res1.json();
       if (json1?.hasData) { setData(json1); setIsLive(true); }
       else                { setData(DEMO); setIsLive(false); }
       setLoading(false);
-      setLastRefresh(new Date().toLocaleTimeString());
-
-      // Stage 2: Full load with Moxy
-      const qs2 = new URLSearchParams();
-      if (start) qs2.set("start", start);
-      if (end)   qs2.set("end", end);
-      const q2 = qs2.toString() ? "?" + qs2.toString() : "";
-      const res2 = await fetch(`/api/data${q2}`);
-      const json2 = await res2.json();
-      if (json2?.hasData) { setData(json2); setIsLive(true); }
       setSalesLoading(false);
       setLastRefresh(new Date().toLocaleTimeString());
 
-      // Load Meta data
+      // Stage 2: Calls (3CX data + AIM transfers)
+      setCallsLoading(true);
+      const qs2 = new URLSearchParams();
+      if (start) qs2.set("start", start);
+      if (end)   qs2.set("end", end);
+      qs2.set("stage", "calls");
+      const q2 = qs2.toString() ? "?" + qs2.toString() : "";
+      const res2 = await fetch(`/api/data${q2}`);
+      const json2 = await res2.json();
+      if (json2?.hasData) {
+        setData(prev => ({
+          ...prev,
+          byList: Object.fromEntries(
+            Object.entries(prev.byList).map(([li, stats]) => [li, {
+              ...stats,
+              o: json2.byList[li]?.o ?? stats.o,
+            }])
+          ),
+          totalSales: json2.totalSales,
+        }));
+        setIsLive(true);
+      }
+      setCallsLoading(false);
+      setLastRefresh(new Date().toLocaleTimeString());
+
+      // Stage 3: Costs (AIM daily costs)
+      setCostsLoading(true);
+      const qs3 = new URLSearchParams();
+      if (start) qs3.set("start", start);
+      if (end)   qs3.set("end", end);
+      qs3.set("stage", "costs");
+      const q3 = qs3.toString() ? "?" + qs3.toString() : "";
+      const res3 = await fetch(`/api/data${q3}`);
+      const json3 = await res3.json();
+      if (json3?.hasData) {
+        setData(prev => ({
+          ...prev,
+          byList: Object.fromEntries(
+            Object.entries(prev.byList).map(([li, stats]) => [li, {
+              ...stats,
+              min: json3.byList[li]?.min ?? stats.min,
+              cost: json3.byList[li]?.cost ?? stats.cost,
+            }])
+          ),
+        }));
+        setIsLive(true);
+      }
+      setCostsLoading(false);
+      setLastRefresh(new Date().toLocaleTimeString());
+
+      // Load Meta data (in parallel with stages)
       const qsMeta = new URLSearchParams();
       if (start) qsMeta.set("start", start);
       if (end)   qsMeta.set("end", end);
@@ -786,7 +832,7 @@ export default function Home() {
       console.error('Data load error:', e);
       setIsLive(false);
     }
-    finally  { setLoading(false); setSalesLoading(false); setMetaLoading(false); }
+    finally  { setLoading(false); setSalesLoading(false); setCallsLoading(false); setCostsLoading(false); setMetaLoading(false); }
   }, []);
 
   const handleApplyWithPreset = useCallback((p: DatePreset) => {
@@ -883,7 +929,7 @@ export default function Home() {
       {/* MAIN CONTENT */}
       <div style={{ padding:"20px" }}>
         <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
-          {campaign === "transfer"     && <TransferView data={data} salesLoading={salesLoading} />}
+          {campaign === "transfer"     && <TransferView data={data} salesLoading={salesLoading} callsLoading={callsLoading} costsLoading={costsLoading} />}
           {campaign === "outbound"     && <ComingSoon label="Outbound" />}
           {campaign === "inbound"      && <ComingSoon label="Inbound" />}
           {campaign === "meta"         && <MetaView metaData={metaData} loading={metaLoading} />}

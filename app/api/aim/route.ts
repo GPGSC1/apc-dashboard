@@ -52,6 +52,7 @@ interface SeedFile {
   count:       number;
   transfers:   SeedTransfer[];
   listCosts?:  Record<string, { min: number; cost: number; calls: number }>;
+  dailyCosts?: Record<string, Record<string, { min: number; cost: number }>>;
 }
 
 // ─── Aggregation structure ────────────────────────────────────────────────────
@@ -184,9 +185,25 @@ export async function GET(request: Request) {
         seedCount++;
       }
 
-      // Load aggregate cost/minutes from ALL calls (not just transfers)
-      // This overwrites the transfer-only costs with accurate totals
-      if (seed.listCosts && fromDate <= seedMaxDate) {
+      // Load aggregate cost/minutes from dailyCosts (new format)
+      // Sums dailyCosts entries within the requested date range
+      if (seed.dailyCosts && fromDate <= seedMaxDate) {
+        for (const [li, dateCosts] of Object.entries(seed.dailyCosts)) {
+          if (!byList[li]) continue;
+          let totalMin = 0, totalCost = 0;
+          const effectiveEnd2 = toDate <= seedMaxDate ? toDate : seedMaxDate;
+          for (const [date, stats] of Object.entries(dateCosts)) {
+            if (date >= fromDate && date <= effectiveEnd2) {
+              totalMin += stats.min;
+              totalCost += stats.cost;
+            }
+          }
+          byList[li].min = Math.round(totalMin);
+          byList[li].cost = Math.round(totalCost * 100) / 100;
+        }
+      }
+      // Fallback to old listCosts format if dailyCosts not present
+      else if (seed.listCosts && fromDate <= seedMaxDate) {
         for (const [li, stats] of Object.entries(seed.listCosts)) {
           if (byList[li]) {
             byList[li].min  = stats.min;

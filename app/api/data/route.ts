@@ -148,25 +148,28 @@ export async function GET(request: Request) {
     let aimByList:  Record<string, { t: number; phones: string[]; phoneToAgent: Record<string,string>; min: number; cost: number; listCost: number }> = {};
     let aimByAgent: Record<string, { t: number; min: number; cost: number }> = {};
 
-    try {
-      const aimResp = await fetch(`${origin}/api/aim?start=${fromDate}&end=${toDate}`);
-      if (aimResp.ok) {
-        const aimData = await aimResp.json();
-        if (aimData.ok) {
-          aimByList  = aimData.byList  ?? {};
-          aimByAgent = aimData.byAgent ?? {};
-          for (const v of Object.values(aimByList)) {
-            for (const phone of (v.phones ?? [])) {
-              aimTransferPhones.add(phone);
-              if (v.phoneToAgent?.[phone] && !phoneToAgent.has(phone)) {
-                phoneToAgent.set(phone, v.phoneToAgent[phone]);
+    // Skip AIM API for stage="calls" since we only need 3CX data; fetch seed files instead
+    if (stage !== "calls") {
+      try {
+        const aimResp = await fetch(`${origin}/api/aim?start=${fromDate}&end=${toDate}`);
+        if (aimResp.ok) {
+          const aimData = await aimResp.json();
+          if (aimData.ok) {
+            aimByList  = aimData.byList  ?? {};
+            aimByAgent = aimData.byAgent ?? {};
+            for (const v of Object.values(aimByList)) {
+              for (const phone of (v.phones ?? [])) {
+                aimTransferPhones.add(phone);
+                if (v.phoneToAgent?.[phone] && !phoneToAgent.has(phone)) {
+                  phoneToAgent.set(phone, v.phoneToAgent[phone]);
+                }
               }
             }
           }
         }
+      } catch (e) {
+        console.error("[data/route] AIM fetch failed:", e);
       }
-    } catch (e) {
-      console.error("[data/route] AIM fetch failed:", e);
     }
 
     // ── 2b. LOAD ITD PHONE SETS FOR TRIPLE GATE (from seed files) ────────────
@@ -186,6 +189,21 @@ export async function GET(request: Request) {
       }
     } catch (e) {
       console.error("[data/route] AIM seed read failed:", e);
+    }
+
+    // For stage="calls", also need to populate aimTransferPhones from seed since we skipped AIM API
+    if (stage === "calls") {
+      try {
+        const aimSeedPath = path.join(DATA_DIR, "aim_transfers_seed.json");
+        if (fs.existsSync(aimSeedPath)) {
+          const aimSeed = JSON.parse(fs.readFileSync(aimSeedPath, "utf8"));
+          for (const t of (aimSeed.transfers ?? [])) {
+            if (t.phone?.length === 10) aimTransferPhones.add(t.phone);
+          }
+        }
+      } catch (e) {
+        console.error("[data/route] AIM seed read (stage=calls) failed:", e);
+      }
     }
 
     try {
@@ -212,27 +230,30 @@ export async function GET(request: Request) {
     const openedPhones    = new Set<string>();   // date-filtered (for display)
     const openedByList: Record<string, number> = {}; // raw count per list
 
-    try {
-      const callsResp = await fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`);
-      if (callsResp.ok) {
-        const callsData = await callsResp.json();
-        for (const call of (callsData.calls ?? [])) {
-          const phone = call.phoneNumber;
-          if (
-            call.opened &&
-            phone?.length === 10 &&
-            phoneToList.has(phone) &&
-            aimTransferPhones.has(phone)
-          ) {
-            openedPhones.add(phone);
-            itdOpenedPhones.add(phone); // also add to ITD set
-            const li = phoneToList.get(phone)!;
-            openedByList[li] = (openedByList[li] ?? 0) + 1;
+    // Only fetch 3CX calls for stage="calls" or no stage (full load)
+    if (stage !== "sales" && stage !== "costs") {
+      try {
+        const callsResp = await fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`);
+        if (callsResp.ok) {
+          const callsData = await callsResp.json();
+          for (const call of (callsData.calls ?? [])) {
+            const phone = call.phoneNumber;
+            if (
+              call.opened &&
+              phone?.length === 10 &&
+              phoneToList.has(phone) &&
+              aimTransferPhones.has(phone)
+            ) {
+              openedPhones.add(phone);
+              itdOpenedPhones.add(phone); // also add to ITD set
+              const li = phoneToList.get(phone)!;
+              openedByList[li] = (openedByList[li] ?? 0) + 1;
+            }
           }
         }
+      } catch (e) {
+        console.error("[data/route] 3CX fetch failed:", e);
       }
-    } catch (e) {
-      console.error("[data/route] 3CX fetch failed:", e);
     }
 
     // ── 4. FETCH MOXY SALES ──────────────────────────────────────────────────
@@ -242,7 +263,7 @@ export async function GET(request: Request) {
       dealStatus: string; salesperson: string; campaign: string;
     }[] = [];
 
-    if (stage !== "1") {
+    if (stage !== "calls" && stage !== "costs") {
       try {
         const moxyResp = await fetch(`${origin}/api/moxy`);
         if (moxyResp.ok) {
@@ -336,32 +357,38 @@ export async function GET(request: Request) {
     };
     for (const li of allListKeys) ensure(li as string);
 
-    // TRANSFERS — phone in data list file AND in AIM transfer set
-    for (const [listKey, phones] of Object.entries(listPhones)) {
-      ensure(listKey);
-      for (const phone of phones) {
-        if (aimTransferPhones.has(phone)) byList[listKey].t++;
+    // Stage 1 (sales): TRANSFERS — phone in data list file AND in AIM transfer set
+    if (stage === "sales" || stage === null || stage === undefined) {
+      for (const [listKey, phones] of Object.entries(listPhones)) {
+        ensure(listKey);
+        for (const phone of phones) {
+          if (aimTransferPhones.has(phone)) byList[listKey].t++;
+        }
       }
     }
 
-    // MINUTES & COST — from AIM campaign-level data
-    for (const [aimListKey, aimStats] of Object.entries(aimByList)) {
-      if (byList[aimListKey]) {
-        byList[aimListKey].min  += aimStats.min  ?? 0;
-        byList[aimListKey].cost += aimStats.cost ?? 0;
+    // Stage 2 (calls): OPENED — use raw per-call counts (matches manual: no dedup across dates)
+    if (stage === "calls" || stage === null || stage === undefined) {
+      for (const [li, count] of Object.entries(openedByList)) {
+        if (byList[li]) byList[li].o += count;
       }
     }
 
-    // OPENED — use raw per-call counts (matches manual: no dedup across dates)
-    for (const [li, count] of Object.entries(openedByList)) {
-      if (byList[li]) byList[li].o += count;
+    // Stage 3 (costs): MINUTES & COST — from AIM campaign-level data
+    if (stage === "costs" || stage === null || stage === undefined) {
+      for (const [aimListKey, aimStats] of Object.entries(aimByList)) {
+        if (byList[aimListKey]) {
+          byList[aimListKey].min  += aimStats.min  ?? 0;
+          byList[aimListKey].cost += aimStats.cost ?? 0;
+        }
+      }
     }
 
     // SALES — homePhone OR cellPhone must pass triple gate + queue rules guardrail
     const nonListSales: (typeof salesRows[0] & { onOpened: boolean })[] = [];
     const seenSales = new Set<string>();
 
-    if (stage !== "1") {
+    if (stage !== "calls" && stage !== "costs") {
       for (const s of salesRows) {
         const key = `${s.homePhone}|${s.mobilePhone}`;
         if (seenSales.has(key)) continue;
@@ -417,7 +444,7 @@ export async function GET(request: Request) {
     }
 
     // Deals per agent
-    if (stage !== "1") {
+    if (stage !== "calls" && stage !== "costs") {
       for (const s of salesRows) {
         const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
         if (!notFishbein) continue;
@@ -454,7 +481,7 @@ export async function GET(request: Request) {
       const agent = phoneToAgent.get(phone);
       if (li && agent && matrix[agent]?.[li] !== undefined) matrix[agent][li].o++;
     }
-    if (stage !== "1") {
+    if (stage !== "calls" && stage !== "costs") {
       for (const s of salesRows) {
         const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
         if (!notFishbein) continue;
@@ -519,13 +546,12 @@ export async function GET(request: Request) {
       loadedFiles,
       lastUpdated: new Date().toISOString(),
       hasData:     aimTransferPhones.size > 0 || openedPhones.size > 0,
-      loading:     stage === "1" ? { sales: true } : undefined,
       // Fields expected by campaign-tab UI (page.tsx)
       aimByAgent: aimByAgentGrid,
       staleness: {
         cx:   new Date().toISOString(),
         aim:  new Date().toISOString(),
-        moxy: stage === "1" ? null : new Date().toISOString(),
+        moxy: (stage !== "calls" && stage !== "costs") ? new Date().toISOString() : null,
       },
       apiSources: {
         aimTransfers:    aimTransferPhones.size,
