@@ -349,13 +349,13 @@ export async function GET(request: Request) {
       if (li && agent && matrix[agent]?.[li] !== undefined) matrix[agent][li].d++;
     }
 
-    // Build aimByAgent cross-tab for the campaign-tab UI (agent → list → stats)
-    const aimByAgent: Record<string, Record<string, { min: number; cost: number; transfers: number }>> = {};
+    // Build cross-tab for the campaign-tab UI (agent → list → stats)
+    const aimByAgentGrid: Record<string, Record<string, { min: number; cost: number; transfers: number }>> = {};
     for (const agent of allAgents) {
-      aimByAgent[agent] = {};
+      aimByAgentGrid[agent] = {};
       for (const li of allLists) {
         const m = matrix[agent]?.[li];
-        aimByAgent[agent][li] = {
+        aimByAgentGrid[agent][li] = {
           min:       0,
           cost:      0,
           transfers: m?.t ?? 0,
@@ -376,7 +376,7 @@ export async function GET(request: Request) {
       lastUpdated: new Date().toISOString(),
       hasData:     aimTransferPhones.size > 0 || openedPhones.size > 0,
       // Fields expected by campaign-tab UI (page.tsx)
-      aimByAgent,
+      aimByAgent: aimByAgentGrid,
       staleness: { cx: null, aim: null, moxy: null },
       apiSources: {
         aimTransfers:    aimTransferPhones.size,
