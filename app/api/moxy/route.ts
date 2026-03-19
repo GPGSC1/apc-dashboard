@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { tomorrowLocal } from '../../../lib/date-utils';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 export interface MoxySale {
@@ -37,22 +38,15 @@ function normalizePhone(raw: string | null | undefined): string {
   return d.length === 10 ? d : '';
 }
 
-/**
- * Returns tomorrow's date as YYYY-MM-DD.
- * The Moxy REST API toDate parameter is EXCLUSIVE — to include today's deals
- * the toDate must be set to tomorrow.
- */
-function tomorrowISO(): string {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
+// tomorrowISO replaced by tomorrowLocal from lib/date-utils
+// The Moxy REST API toDate parameter is EXCLUSIVE — to include today's deals
+// the toDate must be set to tomorrow.
 
 // ─── Route handler ────────────────────────────────────────────────────────────
 export async function GET() {
   try {
     const fromDate = CAMPAIGN_START;
-    const toDate   = tomorrowISO(); // exclusive upper bound — tomorrow captures today
+    const toDate   = tomorrowLocal(); // exclusive upper bound — tomorrow captures today
 
     const url = `${MOXY_BASE}/api/GetDealLog?fromDate=${fromDate}&toDate=${toDate}&dealType=Both`;
 

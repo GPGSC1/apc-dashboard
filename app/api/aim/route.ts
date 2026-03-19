@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import * as fs from "fs";
 import * as path from "path";
+import { todayLocal } from "../../../lib/date-utils";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 const AIM_BASE = "https://dash.aimnow.ai";
@@ -147,7 +148,7 @@ export async function GET(request: Request) {
     const endParam   = searchParams.get("end");
 
     const fromDate = startParam ?? "2026-02-25";
-    const toDate   = endParam   ?? new Date().toISOString().slice(0, 10);
+    const toDate   = endParam   ?? todayLocal();
 
     // ── 1. Load seed for historical transfers ────────────────────────────────
     const seed = loadSeed();

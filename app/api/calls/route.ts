@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import * as fs from 'fs';
 import * as path from 'path';
 import https from 'https';
+import { parseDate, todayLocal } from '../../../lib/date-utils';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 export interface CallRecord {
@@ -160,13 +161,8 @@ function parseCSV(csv: string, fromDate: string, toDate: string): CallRecord[] {
     const queueName  = (c[QI]  ?? '').trim();
 
     // Date filter
-    try {
-      const d = new Date(startTime);
-      if (!isNaN(d.getTime())) {
-        const dateStr = d.toISOString().slice(0, 10);
-        if (dateStr < fromDate || dateStr > toDate) continue;
-      }
-    } catch { /* include if can't parse */ }
+    const dateStr = parseDate(startTime);
+    if (dateStr && (dateStr < fromDate || dateStr > toDate)) continue;
 
     records.push({
       callId:      (c[CI] ?? '').trim(),
@@ -186,7 +182,7 @@ function parseCSV(csv: string, fromDate: string, toDate: string): CallRecord[] {
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const from = searchParams.get('from') ?? '2026-02-25';
-  const to   = searchParams.get('to')   ?? new Date().toISOString().slice(0, 10);
+  const to   = searchParams.get('to')   ?? todayLocal();
 
   const domain   = process.env.TCX_DOMAIN   ?? 'gpgsc.innicom.com';
   const username = process.env.TCX_USERNAME ?? '1911';
@@ -197,10 +193,7 @@ export async function GET(request: Request) {
   const seedMaxDate = seed && seed.rows && seed.rows.length > 0
     ? seed.rows.reduce((max, row) => {
         const startTime = (row[1] ?? '') as string;
-        const dateStr = startTime ? startTime.split(' ')[0] : '';
-        // Parse date: "1/1/2026" or "01/01/2026" → YYYY-MM-DD
-        const d = new Date(dateStr);
-        const iso = isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+        const iso = parseDate(startTime) ?? '';
         return iso > max ? iso : max;
       }, '')
     : '';
@@ -220,14 +213,7 @@ export async function GET(request: Request) {
       const queueName = (row[6] ?? '') as string;
 
       // Parse startTime date: "1/1/2026 0:35" → YYYY-MM-DD
-      const dateStr = startTime ? startTime.split(' ')[0] : '';
-      let callDate = '';
-      try {
-        const d = new Date(dateStr);
-        if (!isNaN(d.getTime())) {
-          callDate = d.toISOString().slice(0, 10);
-        }
-      } catch { /* skip if unparseable */ }
+      const callDate = parseDate(startTime) ?? '';
 
       if (!callDate || callDate < from || callDate > effectiveEnd) continue;
 
@@ -239,7 +225,7 @@ export async function GET(request: Request) {
 
       calls.push({
         callId,
-        startTime: dateStr,
+        startTime: callDate,
         phoneNumber: phoneNum,
         destName,
         status,

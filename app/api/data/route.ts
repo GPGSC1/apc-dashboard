@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import * as fs from "fs";
 import * as path from "path";
+import { parseDate, todayLocal } from "../../../lib/date-utils";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const CAMPAIGN_START = "2026-02-25";
-const AIM_COST_PER_MIN = 0.29;
+const AIM_COST_PER_MIN = parseFloat(process.env.AIM_COST_PER_MIN ?? "0.29");
 
 const DEFAULT_LISTS: Record<string, number> = {
   RT: 0,
@@ -26,11 +27,7 @@ function cleanPhone(raw: unknown): string {
   return d.length === 10 ? d : "";
 }
 
-function toISO(s: string): string | null {
-  if (!s) return null;
-  const d = new Date(s.replace(/"/g, "").trim());
-  return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
-}
+// toISO replaced by parseDate from lib/date-utils
 
 function detectListKey(text: string): string | null {
   if (!text) return null;
@@ -111,7 +108,7 @@ export async function GET(request: Request) {
   try {
     const { searchParams, origin } = new URL(request.url);
     const fromDate = searchParams.get("start") ?? CAMPAIGN_START;
-    const toDate = searchParams.get("end") ?? new Date().toISOString().slice(0, 10);
+    const toDate = searchParams.get("end") ?? todayLocal();
 
     const inRange = (date: string | null) => {
       if (!date) return true;
@@ -216,8 +213,7 @@ export async function GET(request: Request) {
           const isSalesQueue = SALES_QUEUES.some(q => queueName.includes(q));
           if (isSalesQueue) {
             // Parse date to YYYY-MM-DD for correct comparison (raw format is "M/D/YYYY H:MM")
-            let dateStr = "";
-            try { const d = new Date(startTime); if (!isNaN(d.getTime())) dateStr = d.toISOString().slice(0, 10); } catch {}
+            const dateStr = parseDate(startTime) ?? "";
             if (dateStr) {
               const existing = phoneLastQueue.get(phone);
               if (!existing || dateStr > existing.date) {
@@ -336,9 +332,9 @@ export async function GET(request: Request) {
 
     const normalizeMoxyDeal = (d: any): MoxySale => {
       const hp = cleanPhone(d.homePhone ?? "");
-      const cp = cleanPhone(d.mobilePhone ?? d.cellphone ?? "");
+      const cp = cleanPhone(d.mobilePhone ?? d.cellphone ?? d.cellPhone ?? "");
       return {
-        soldDate: toISO(d.soldDate ?? ""),
+        soldDate: parseDate(d.soldDate ?? ""),
         homePhone: hp,
         mobilePhone: cp,
         salesperson: String(d.salesperson ?? d.salesRep ?? d.closer ?? ""),

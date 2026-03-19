@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { Redis } from "@upstash/redis";
 import * as fs from "fs";
 import * as path from "path";
+import { parseDate, todayLocal } from "../../../lib/date-utils";
 
 const DATA_DIR       = path.join(process.cwd(), "data");
 const CAMPAIGN_START = "2026-02-25";
@@ -17,11 +18,7 @@ const cleanPhone = (p: unknown): string => {
   return s.replace(/\D/g, "").slice(-10);
 };
 
-const toISO = (s: string): string | null => {
-  if (!s) return null;
-  const d = new Date(s.replace(/"/g, "").trim());
-  return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
-};
+// toISO replaced by parseDate from lib/date-utils
 
 function getRedis(): Redis | null {
   const url   = process.env.KV_REST_API_URL;
@@ -110,7 +107,7 @@ export async function GET(request: Request) {
     const { searchParams, origin } = new URL(request.url);
     const dateStart = searchParams.get("start");
     const dateEnd   = searchParams.get("end");
-    const today     = new Date().toISOString().slice(0, 10);
+    const today     = todayLocal();
     const fromDate  = dateStart ?? CAMPAIGN_START;
     const toDate    = dateEnd   ?? today;
 
@@ -185,7 +182,7 @@ export async function GET(request: Request) {
             promoCode: string; homePhone: string; cellPhone: string;
             status: string; salesRep: string;
           }) => ({
-            soldDate:    toISO(s.soldDate ?? ""),
+            soldDate:    parseDate(s.soldDate ?? ""),
             lastName:    s.lastName  ?? "",
             firstName:   s.firstName ?? "",
             promoCode:   s.promoCode ?? "",

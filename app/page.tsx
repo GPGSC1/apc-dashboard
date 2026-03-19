@@ -77,35 +77,7 @@ const DEMO: DashData = {
   loadedFiles: [], lastUpdated: new Date().toISOString(), hasData: false,
 };
 
-const DEMO_AGENTS: AgentAssignment[] = [
-  { name: "Overflow Agent with Spanish Transfer",             campaign: "transfer"   },
-  { name: "Transfer Activation Outbound Agent with Moxy",    campaign: "transfer"   },
-  { name: "Purchased Data Transfer Agent with Moxy",         campaign: "transfer"   },
-  { name: "Meta Transfer Agent",                             campaign: "transfer"   },
-  { name: "Cancels Transfer Agent",                          campaign: "unassigned" },
-  { name: "Home Overflow Agent",                             campaign: "transfer"   },
-  { name: "Overflow Transfer Sales Agent",                   campaign: "transfer"   },
-  { name: "Picaso Agent",                                    campaign: "unassigned" },
-  { name: "Transfer Outbound Agent with Moxy",               campaign: "outbound"   },
-  { name: "BF Agent with Moxy Tools",                        campaign: "unassigned" },
-  { name: "Canceled Home 4 Transfer Agent",                  campaign: "transfer"   },
-  { name: "Transfer Outbound Agent with Moxy version 2",     campaign: "outbound"   },
-  { name: "Copy of Picaso Agent (improving)",                campaign: "unassigned" },
-  { name: "Black Friday Agent",                              campaign: "unassigned" },
-  { name: "Outbound Jr. Closer to TO Agent with Moxy Tools", campaign: "outbound"   },
-  { name: "Home Outbound Agent",                             campaign: "outbound"   },
-];
-
-const DEMO_AGENT_STATS: AgentStats[] = [
-  { name: "Transfer Activation Outbound Agent with Moxy", t:1843, o:1291, s:102, min:68546, cost:19936 },
-  { name: "Transfer Outbound Agent with Moxy",            t:712,  o:499,  s:14,  min:21877, cost:6363  },
-  { name: "Purchased Data Transfer Agent with Moxy",      t:389,  o:217,  s:8,   min:17503, cost:5101  },
-  { name: "Meta Transfer Agent",                          t:198,  o:120,  s:7,   min:6669,  cost:1944  },
-  { name: "Transfer Outbound Agent with Moxy version 2",  t:89,   o:43,   s:4,   min:3179,  cost:924   },
-  { name: "Overflow Agent with Spanish Transfer",         t:74,   o:53,   s:4,   min:3659,  cost:1063  },
-  { name: "Home Overflow Agent",                          t:42,   o:0,    s:0,   min:7740,  cost:2251  },
-  { name: "Overflow Transfer Sales Agent",                t:158,  o:0,    s:0,   min:1048,  cost:304   },
-];
+// DEMO_AGENTS and DEMO_AGENT_STATS removed — agent data comes from live API
 
 const STALE_HOURS = 2;
 const f   = (n: number) => (n || 0).toLocaleString();
@@ -316,21 +288,18 @@ function ByAgentView({ agents, lists, crossData, itdData, loading }: {
       <div style={{ width:180, flexShrink:0, borderRight:`1px solid ${C.border}`, padding:"10px", display:"flex", flexDirection:"column", gap:6, background:C.surface }}>
         <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginBottom:4 }}>Active Agents</div>
         {activeAgents.map(ag => {
-          // Use ITD data for the left panel
-          const itdAgentData = Object.values(itdData.byList).reduce((acc, list) => {
-            // Sum all stats for this agent across all lists from ITD data
-            return acc + (list.cost || 0);
-          }, 0);
-          const itdDialCost = itdAgentData;
-          const itdOpened = Object.values(itdData.byList).reduce((acc, list) => acc + (list.o || 0), 0);
-          const itdSales = Object.values(itdData.byList).reduce((acc, list) => acc + (list.s || 0), 0);
-          const costPerCall = itdOpened > 0 ? itdDialCost / itdOpened : null;
-          const costPerDeal = itdSales > 0 ? itdDialCost / itdSales : null;
+          // Per-agent ITD data from byAgent (cost, transfers, deals)
+          const agentItd = (itdData.byAgent as any)?.[ag.name] ?? { cost: 0, t: 0, deals: 0 };
+          const itdDialCost = agentItd.cost ?? 0;
+          const itdTransfers = agentItd.t ?? 0;
+          const itdDeals = agentItd.deals ?? 0;
+          const costPerCall = itdTransfers > 0 ? itdDialCost / itdTransfers : null;
+          const costPerDeal = itdDeals > 0 ? itdDialCost / itdDeals : null;
           return (
             <div key={ag.name} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px" }}>
               <div style={{ fontSize:11, fontWeight:700, color:C.accent, marginBottom:4, wordBreak:"break-word" }}>{ag.name}</div>
               <div style={{ fontFamily:"monospace", fontSize:12, color:C.text, marginBottom:4 }}>{fc(itdDialCost)}</div>
-              <div style={{ fontSize:9, color:C.muted, marginBottom:1 }}>ITD / ITD</div>
+              <div style={{ fontSize:9, color:C.muted, marginBottom:1 }}>Cost/Call · Cost/Deal</div>
               <div style={{ fontFamily:"monospace", fontSize:11, color:C.text, display:"flex", gap:2, justifyContent:"space-between" }}>
                 <span style={{ color:costPerCall==null?C.dim:costPerCall>100?C.red:costPerCall>50?C.amber:C.green }}>{costPerCall!=null?fc(costPerCall):"—"}</span>
                 <span style={{ color:costPerDeal==null?C.dim:costPerDeal>500?C.red:costPerDeal>250?C.amber:C.green }}>{costPerDeal!=null?fc(costPerDeal):"—"}</span>
@@ -668,7 +637,7 @@ function ComingSoon({ label }: { label: string }) {
 
 // ── AGENT MAPPING VIEW ────────────────────────────────────────────────────────
 function AgentMappingView() {
-  const [agents, setAgents] = useState<AgentAssignment[]>(DEMO_AGENTS);
+  const [agents, setAgents] = useState<AgentAssignment[]>([]);
   const setAgent = (name: string, campaign: AgentAssignment["campaign"]) =>
     setAgents(prev => prev.map(a => a.name === name ? { ...a, campaign } : a));
   const campaignColor = (c: AgentAssignment["campaign"]) =>
