@@ -825,22 +825,27 @@ export default function Home() {
     // Clear previous data so spinners show (no stale numbers from cache)
     setData(DEMO);
     try {
-      // Stage 1: Sales (Moxy + seed files for triple gate)
+      // Waterfall: AIM → 3CX → Moxy
+      // This order ensures the triple gate has all phone sets before sales computation:
+      // Stage 1 loads AIM transfers + itdAimPhones + phoneToAgent
+      // Stage 2 loads 3CX opened + itdOpenedPhones (including today's live data)
+      // Stage 3 loads Moxy sales + runs triple gate (all phone sets ready)
+
+      // Stage 1: Costs (AIM — minutes, dial cost, transfer phones)
       const qs1 = new URLSearchParams();
       if (start) qs1.set("start", start);
       if (end)   qs1.set("end", end);
-      qs1.set("stage", "sales");
+      qs1.set("stage", "costs");
       const q1 = qs1.toString() ? "?" + qs1.toString() : "";
       const res1 = await fetch(`/api/data${q1}`);
       const json1 = await res1.json();
       if (json1?.hasData) { setData(json1); setIsLive(true); }
       else                { setData(DEMO); setIsLive(false); }
       setLoading(false);
-      setSalesLoading(false);
+      setCostsLoading(false);
       setLastRefresh(new Date().toLocaleTimeString());
 
-      // Stage 2: Calls (3CX data + AIM transfers)
-      setCallsLoading(true);
+      // Stage 2: Calls (3CX — opened count, itdOpenedPhones for triple gate)
       const qs2 = new URLSearchParams();
       if (start) qs2.set("start", start);
       if (end)   qs2.set("end", end);
@@ -858,7 +863,6 @@ export default function Home() {
               t: json2.byList[li]?.t ?? stats.t,
             }])
           ),
-          // Merge staleness from stage 2 (3CX date)
           staleness: {
             cx: json2.staleness?.cx ?? prev.staleness?.cx ?? null,
             aim: prev.staleness?.aim ?? null,
@@ -870,12 +874,11 @@ export default function Home() {
       setCallsLoading(false);
       setLastRefresh(new Date().toLocaleTimeString());
 
-      // Stage 3: Costs (AIM daily costs)
-      setCostsLoading(true);
+      // Stage 3: Sales (Moxy — triple gate now has AIM + 3CX phone sets)
       const qs3 = new URLSearchParams();
       if (start) qs3.set("start", start);
       if (end)   qs3.set("end", end);
-      qs3.set("stage", "costs");
+      qs3.set("stage", "sales");
       const q3 = qs3.toString() ? "?" + qs3.toString() : "";
       const res3 = await fetch(`/api/data${q3}`);
       const json3 = await res3.json();
@@ -885,20 +888,21 @@ export default function Home() {
           byList: Object.fromEntries(
             Object.entries(prev.byList).map(([li, stats]) => [li, {
               ...stats,
-              min: json3.byList[li]?.min ?? stats.min,
-              cost: json3.byList[li]?.cost ?? stats.cost,
+              s: json3.byList[li]?.s ?? stats.s,
             }])
           ),
-          // Merge staleness from stage 3 (AIM date)
+          totalSales: json3.totalSales ?? prev.totalSales,
+          byAgent: json3.byAgent ?? prev.byAgent,
+          aimByAgent: json3.aimByAgent ?? prev.aimByAgent,
           staleness: {
             cx: prev.staleness?.cx ?? null,
-            aim: json3.staleness?.aim ?? prev.staleness?.aim ?? null,
-            moxy: prev.staleness?.moxy ?? null,
+            aim: prev.staleness?.aim ?? null,
+            moxy: json3.staleness?.moxy ?? prev.staleness?.moxy ?? null,
           },
         }));
         setIsLive(true);
       }
-      setCostsLoading(false);
+      setSalesLoading(false);
       setLastRefresh(new Date().toLocaleTimeString());
 
       // Load Meta data (in parallel with stages)
