@@ -269,9 +269,10 @@ export async function GET(request: Request) {
       console.error("[data/route] aim_daily_phones.json read failed:", e);
     }
 
-    // Fetch 3CX for stage="calls" or no stage (full load)
-    // Waterfall order: AIM → 3CX → Moxy — 3CX runs before sales so triple gate has today's phones
-    if (stage === "calls" || stage === null || stage === undefined) {
+    // Fetch 3CX for stage="calls" (display), stage="sales" (triple gate needs today's phones), or full load
+    // Each stage is a separate HTTP request — they don't share memory.
+    // stage="sales" needs 3CX opened phones for the triple gate but doesn't count calls for display.
+    if (stage !== "costs") {
       try {
         const callsResp = await fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`);
         if (callsResp.ok) {
