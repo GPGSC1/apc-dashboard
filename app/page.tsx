@@ -458,14 +458,24 @@ function TransferView({ data, itdData, loading }: { data: DashData; itdData: Das
       <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
       {viewMode === "bylist"  && <ByListView data={data} itdData={itdData} loading={loading} />}
       {viewMode === "byagent" && <ByAgentView agents={
-        Object.entries(data.byAgent || {}).map(([name, ag]) => ({
-          name,
-          t: (ag as any).t ?? 0,
-          o: 0,
-          s: (ag as any).deals ?? 0,
-          min: (ag as any).min ?? 0,
-          cost: (ag as any).cost ?? 0,
-        }))
+        // Build agents from ITD data (all agents), with selected-range metrics overlaid
+        (() => {
+          const itdAgents = itdData.byAgent || {};
+          const rangeAgents = data.byAgent || {};
+          // Merge: use all ITD agent names, populate range metrics from selected data
+          const allNames = new Set([...Object.keys(itdAgents), ...Object.keys(rangeAgents)]);
+          return Array.from(allNames).map(name => {
+            const ra = (rangeAgents as any)[name];
+            return {
+              name,
+              t: ra?.t ?? 0,
+              o: 0,
+              s: ra?.deals ?? 0,
+              min: ra?.min ?? 0,
+              cost: ra?.cost ?? 0,
+            };
+          });
+        })()
       } lists={lists} crossData={crossData} itdData={itdData} loading={loading} />}
     </div>
   );

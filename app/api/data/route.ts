@@ -278,7 +278,7 @@ export async function GET(request: Request) {
           aimByList = (aimData.byList ?? {}) as Record<string, { min: number; cost: number }>;
           aimByAgent = (aimData.byAgent ?? {}) as Record<string, { min: number; cost: number; t: number }>;
 
-          // Also add live transfer phones to our set (if available from API)
+          // Also add live transfer phones and phone→agent mappings
           for (const v of Object.values(aimByList)) {
             const phones = (v as any).phones ?? [];
             if (Array.isArray(phones)) {
@@ -287,6 +287,13 @@ export async function GET(request: Request) {
                   aimTransferPhones.add(phone);
                 }
               });
+            }
+            // Update phoneToAgent from live AIM data
+            const pa = (v as any).phoneToAgent ?? {};
+            for (const [phone, agent] of Object.entries(pa)) {
+              if (typeof phone === "string" && phone.length === 10 && !phoneToAgent.has(phone)) {
+                phoneToAgent.set(phone, agent as string);
+              }
             }
           }
         }
