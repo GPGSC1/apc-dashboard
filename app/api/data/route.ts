@@ -4,7 +4,7 @@ import * as path from "path";
 
 const DATA_DIR           = path.join(process.cwd(), "data");
 const CAMPAIGN_START     = "2026-02-25";
-const AIM_COST_PER_MIN   = 0.29; // $/min — update if rate changes. Used for real-time cost calculation via /calls/count endpoint.
+const AIM_COST_PER_MIN   = 0.29; // $/min for real-time cost calculation from /calls/count endpoint
 
 const DEFAULT_LISTS: Record<string, number> = {
   RT:         0,
@@ -96,7 +96,7 @@ export async function GET(request: Request) {
     const { searchParams, origin } = new URL(request.url);
     const dateStart = searchParams.get("start");
     const dateEnd   = searchParams.get("end");
-    const stage     = searchParams.get("stage");
+    // Note: stage parameter is now ignored — all requests do full load
     const today     = new Date().toISOString().slice(0, 10);
     const fromDate  = dateStart ?? CAMPAIGN_START;
     const toDate    = dateEnd   ?? today;
@@ -153,28 +153,26 @@ export async function GET(request: Request) {
     let aimByAgent: Record<string, { t: number; min: number; cost: number }> = {};
     let aimMaxDate: string | null = null;  // Track max date from AIM data
 
-    // Skip AIM API for stage="calls" since we only need 3CX data; fetch seed files instead
-    if (stage !== "calls") {
-      try {
-        const aimResp = await fetch(`${origin}/api/aim?start=${fromDate}&end=${toDate}`);
-        if (aimResp.ok) {
-          const aimData = await aimResp.json();
-          if (aimData.ok) {
-            aimByList  = aimData.byList  ?? {};
-            aimByAgent = aimData.byAgent ?? {};
-            for (const v of Object.values(aimByList)) {
-              for (const phone of (v.phones ?? [])) {
-                aimTransferPhones.add(phone);
-                if (v.phoneToAgent?.[phone] && !phoneToAgent.has(phone)) {
-                  phoneToAgent.set(phone, v.phoneToAgent[phone]);
-                }
+    // AIM API: always fetch for full load
+    try {
+      const aimResp = await fetch(`${origin}/api/aim?start=${fromDate}&end=${toDate}`);
+      if (aimResp.ok) {
+        const aimData = await aimResp.json();
+        if (aimData.ok) {
+          aimByList  = aimData.byList  ?? {};
+          aimByAgent = aimData.byAgent ?? {};
+          for (const v of Object.values(aimByList)) {
+            for (const phone of (v.phones ?? [])) {
+              aimTransferPhones.add(phone);
+              if (v.phoneToAgent?.[phone] && !phoneToAgent.has(phone)) {
+                phoneToAgent.set(phone, v.phoneToAgent[phone]);
               }
             }
           }
         }
-      } catch (e) {
-        console.error("[data/route] AIM fetch failed:", e);
       }
+    } catch (e) {
+      console.error("[data/route] AIM fetch failed:", e);
     }
 
     // ── 2b. LOAD ITD PHONE SETS FOR TRIPLE GATE (from seed files) ────────────
@@ -206,24 +204,6 @@ export async function GET(request: Request) {
       console.error("[data/route] AIM seed read failed:", e);
     }
 
-    // For stage="calls", also need to populate aimTransferPhones from seed since we skipped AIM API
-    if (stage === "calls") {
-      try {
-        const aimSeedPath = path.join(DATA_DIR, "aim_transfers_seed.json");
-        if (fs.existsSync(aimSeedPath)) {
-          const aimSeed = JSON.parse(fs.readFileSync(aimSeedPath, "utf8"));
-          for (const t of (aimSeed.transfers ?? [])) {
-            if (t.phone?.length === 10) aimTransferPhones.add(t.phone);
-            // Track max date from AIM seed
-            if (t.date && inRange(t.date) && (!aimMaxDate || t.date > aimMaxDate)) {
-              aimMaxDate = t.date;
-            }
-          }
-        }
-      } catch (e) {
-        console.error("[data/route] AIM seed read (stage=calls) failed:", e);
-      }
-    }
 
     try {
       const tcxSeedPath = path.join(DATA_DIR, "tcx_calls_seed.json");
@@ -269,72 +249,73 @@ export async function GET(request: Request) {
       console.error("[data/route] aim_daily_phones.json read failed:", e);
     }
 
-    // Fetch 3CX for stage="calls" (display), stage="sales" (triple gate needs today's phones), or full load
-    // Each stage is a separate HTTP request — they don't share memory.
-    // stage="sales" needs 3CX opened phones for the triple gate but doesn't count calls for display.
-    if (stage !== "costs") {
-      try {
-        const callsResp = await fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`);
-        if (callsResp.ok) {
-          const callsData = await callsResp.json();
-          for (const call of (callsData.calls ?? [])) {
-            const phone = call.phoneNumber;
-            if (!call.opened || !phone || phone.length !== 10) continue;
+    // Fetch 3CX: always fetch for full load
+    try {
+      const callsResp = await fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`);
+      if (callsResp.ok) {
+        const callsData = await callsResp.json();
+        for (const call of (callsData.calls ?? [])) {
+          const phone = call.phoneNumber;
+          if (!call.opened || !phone || phone.length !== 10) continue;
 
-            // Gate 1 passed (3CX opened rules already applied by calls route)
-            openedPhones.add(phone);
-            itdOpenedPhones.add(phone);
+          // Gate 1 passed (3CX opened rules already applied by calls route)
+          openedPhones.add(phone);
+          itdOpenedPhones.add(phone);
 
-            // Gate 2: phone in AIM call history on same day (any outcome)
-            // Parse callDate to YYYY-MM-DD (handles "2026-03-18" from seed AND "3/18/2026 14:30" from live 3CX)
-            let callDate = "";
-            const rawTime = call.startTime || "";
-            if (rawTime.match(/^\d{4}-\d{2}-\d{2}/)) {
-              callDate = rawTime.slice(0, 10);
-            } else {
-              try { const d = new Date(rawTime); if (!isNaN(d.getTime())) callDate = d.toISOString().slice(0, 10); } catch {}
-            }
-            // Track max 3CX date
-            if (callDate && (!tcxMaxDate || callDate > tcxMaxDate)) {
-              tcxMaxDate = callDate;
-            }
-            const aimPhonesForDay = aimDailyPhones[callDate];
-            let gate2Pass = false;
+          // Gate 2: phone in AIM call history on same day (any outcome)
+          // Parse callDate to YYYY-MM-DD (handles "2026-03-18" from seed AND "3/18/2026 14:30" from live 3CX)
+          let callDate = "";
+          const rawTime = call.startTime || "";
+          if (rawTime.match(/^\d{4}-\d{2}-\d{2}/)) {
+            callDate = rawTime.slice(0, 10);
+          } else {
+            try { const d = new Date(rawTime); if (!isNaN(d.getTime())) callDate = d.toISOString().slice(0, 10); } catch {}
+          }
+          // Track max 3CX date
+          if (callDate && (!tcxMaxDate || callDate > tcxMaxDate)) {
+            tcxMaxDate = callDate;
+          }
+          const aimPhonesForDay = aimDailyPhones[callDate];
+          let gate2Pass = false;
 
-            if (aimPhonesForDay) {
-              // Seed has data for this day — check all AIM phones
-              gate2Pass = aimPhonesForDay.has(phone);
-            } else {
-              // Seed doesn't cover this day (e.g., today) — fallback options:
-              // 1. Check live AIM transfer phones (transfers only, not all calls)
-              // 2. If that's empty too, Mail 4 is unpublished so pass Gate 2
-              gate2Pass = aimTransferPhones.has(phone) || itdAimPhones.has(phone);
-              // If phone isn't even in ITD AIM data, still pass —
-              // Mail 4 is unpublished, only AIM sends calls there
-              if (!gate2Pass) gate2Pass = true;
-            }
+          if (aimPhonesForDay) {
+            // Seed has data for this day — check all AIM phones
+            gate2Pass = aimPhonesForDay.has(phone);
+          } else {
+            // Seed doesn't cover this day (e.g., today) — fallback options:
+            // 1. Check live AIM transfer phones (transfers only, not all calls)
+            // 2. If that's empty too, Mail 4 is unpublished so pass Gate 2
+            gate2Pass = aimTransferPhones.has(phone) || itdAimPhones.has(phone);
+            // If phone isn't even in ITD AIM data, still pass —
+            // Mail 4 is unpublished, only AIM sends calls there
+            if (!gate2Pass) gate2Pass = true;
+          }
 
-            totalOpenedCalls++;
+          totalOpenedCalls++;
 
-            if (!gate2Pass) {
-              // Gate 2 failed — phone not in AIM on same day
-              unattributedCalls++;
-              continue;
-            }
+          if (!gate2Pass) {
+            // Gate 2 failed — phone not in AIM on same day
+            unattributedCalls++;
+            continue;
+          }
 
-            // Gate 3: phone on a source list → attribute to that list
-            const li = phoneToList.get(phone);
-            if (li) {
-              openedByList[li] = (openedByList[li] ?? 0) + 1;
-            } else {
-              unattributedCalls++;
-            }
+          // Gate 3: phone on a source list → attribute to that list
+          const li = phoneToList.get(phone);
+          if (li) {
+            openedByList[li] = (openedByList[li] ?? 0) + 1;
+          } else {
+            unattributedCalls++;
           }
         }
-      } catch (e) {
-        console.error("[data/route] 3CX fetch failed:", e);
       }
+    } catch (e) {
+      console.error("[data/route] 3CX fetch failed:", e);
     }
+
+    // Mail 4 is unpublished — every opened phone was transferred by AIM.
+    // Add opened phones to itdAimPhones so same-day sales pass the triple gate
+    // even when the live AIM API wasn't called (stage="sales" skips it to avoid timeout).
+    for (const p of openedPhones) itdAimPhones.add(p);
 
     // ── 4. FETCH MOXY SALES ──────────────────────────────────────────────────
     // Moxy REST API: toDate is exclusive upper bound (tomorrowISO).
@@ -346,41 +327,40 @@ export async function GET(request: Request) {
     }[] = [];
     let moxyMaxDate: string | null = null;  // Track max date from Moxy data
 
-    if (stage !== "calls" && stage !== "costs") {
-      try {
-        const moxyResp = await fetch(`${origin}/api/moxy`);
-        if (moxyResp.ok) {
-          const moxyData = await moxyResp.json();
-          salesRows = (moxyData.sales ?? [])
-            .filter((s: { status: string }) => (s.status ?? "").trim() === "Sold")
-            .map((s: {
-              soldDate: string; lastName: string; firstName: string;
-              promoCode: string; homePhone: string; cellPhone: string;
-              status: string; salesRep: string; campaign: string;
-            }) => ({
-              soldDate:    toISO(s.soldDate ?? ""),
-              lastName:    s.lastName  ?? "",
-              firstName:   s.firstName ?? "",
-              promoCode:   s.promoCode ?? "",
-              homePhone:   cleanPhone(s.homePhone ?? ""),
-              mobilePhone: cleanPhone(s.cellPhone ?? ""),
-              dealStatus:  s.status    ?? "",
-              salesperson: s.salesRep  ?? "",
-              campaign:    s.campaign  ?? "",
-            }))
-            .filter((s: { soldDate: string | null }) =>
-              s.soldDate && s.soldDate >= CAMPAIGN_START && inRange(s.soldDate)
-            );
-          // Track max date from Moxy
-          for (const s of salesRows) {
-            if (s.soldDate && (!moxyMaxDate || s.soldDate > moxyMaxDate)) {
-              moxyMaxDate = s.soldDate;
-            }
+    // Moxy API: always fetch for full load
+    try {
+      const moxyResp = await fetch(`${origin}/api/moxy`);
+      if (moxyResp.ok) {
+        const moxyData = await moxyResp.json();
+        salesRows = (moxyData.sales ?? [])
+          .filter((s: { status: string }) => (s.status ?? "").trim() === "Sold")
+          .map((s: {
+            soldDate: string; lastName: string; firstName: string;
+            promoCode: string; homePhone: string; cellPhone: string;
+            status: string; salesRep: string; campaign: string;
+          }) => ({
+            soldDate:    toISO(s.soldDate ?? ""),
+            lastName:    s.lastName  ?? "",
+            firstName:   s.firstName ?? "",
+            promoCode:   s.promoCode ?? "",
+            homePhone:   cleanPhone(s.homePhone ?? ""),
+            mobilePhone: cleanPhone(s.cellPhone ?? ""),
+            dealStatus:  s.status    ?? "",
+            salesperson: s.salesRep  ?? "",
+            campaign:    s.campaign  ?? "",
+          }))
+          .filter((s: { soldDate: string | null }) =>
+            s.soldDate && s.soldDate >= CAMPAIGN_START && inRange(s.soldDate)
+          );
+        // Track max date from Moxy
+        for (const s of salesRows) {
+          if (s.soldDate && (!moxyMaxDate || s.soldDate > moxyMaxDate)) {
+            moxyMaxDate = s.soldDate;
           }
         }
-      } catch (e) {
-        console.error("[data/route] Moxy fetch failed:", e);
       }
+    } catch (e) {
+      console.error("[data/route] Moxy fetch failed:", e);
     }
 
     // ── 4b. LOAD QUEUE RULES (guardrail for non-same-day sales) ──────────────
@@ -446,30 +426,24 @@ export async function GET(request: Request) {
     };
     for (const li of allListKeys) ensure(li as string);
 
-    // Stage 1 (sales): TRANSFERS — phone in data list file AND in AIM transfer set
-    if (stage === "sales" || stage === null || stage === undefined) {
-      for (const [listKey, phones] of Object.entries(listPhones)) {
-        ensure(listKey);
-        for (const phone of phones) {
-          if (aimTransferPhones.has(phone)) byList[listKey].t++;
-        }
+    // TRANSFERS — phone in data list file AND in AIM transfer set
+    for (const [listKey, phones] of Object.entries(listPhones)) {
+      ensure(listKey);
+      for (const phone of phones) {
+        if (aimTransferPhones.has(phone)) byList[listKey].t++;
       }
     }
 
-    // Stage 2 (calls): OPENED — use raw per-call counts (matches manual: no dedup across dates)
-    if (stage === "calls" || stage === null || stage === undefined) {
-      for (const [li, count] of Object.entries(openedByList)) {
-        if (byList[li]) byList[li].o += count;
-      }
+    // OPENED — use raw per-call counts (matches manual: no dedup across dates)
+    for (const [li, count] of Object.entries(openedByList)) {
+      if (byList[li]) byList[li].o += count;
     }
 
-    // Stage 3 (costs): MINUTES & COST — from AIM campaign-level data
-    if (stage === "costs" || stage === null || stage === undefined) {
-      for (const [aimListKey, aimStats] of Object.entries(aimByList)) {
-        if (byList[aimListKey]) {
-          byList[aimListKey].min  += aimStats.min  ?? 0;
-          byList[aimListKey].cost += aimStats.cost ?? 0;
-        }
+    // MINUTES & COST — from AIM campaign-level data
+    for (const [aimListKey, aimStats] of Object.entries(aimByList)) {
+      if (byList[aimListKey]) {
+        byList[aimListKey].min  += aimStats.min  ?? 0;
+        byList[aimListKey].cost += aimStats.cost ?? 0;
       }
     }
 
@@ -477,53 +451,51 @@ export async function GET(request: Request) {
     const nonListSales: (typeof salesRows[0] & { onOpened: boolean })[] = [];
     const seenSales = new Set<string>();
 
-    if (stage !== "calls" && stage !== "costs") {
-      for (const s of salesRows) {
-        const key = `${s.homePhone}|${s.mobilePhone}`;
-        if (seenSales.has(key)) continue;
-        seenSales.add(key);
+    for (const s of salesRows) {
+      const key = `${s.homePhone}|${s.mobilePhone}`;
+      if (seenSales.has(key)) continue;
+      seenSales.add(key);
 
-        const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
-        if (!notFishbein) continue;
+      const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
+      if (!notFishbein) continue;
 
-        const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
+      const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
 
-        const matchedPhone = phones.find(p =>
-          phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
+      const matchedPhone = phones.find(p =>
+        phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
+      );
+
+      const onOpened = phones.some(p => openedPhones.has(p));
+
+      if (!matchedPhone) {
+        nonListSales.push({ ...s, onOpened });
+        continue;
+      }
+
+      // ── GUARDRAIL: non-same-day sales must pass queue rules ──────────────
+      // If the sale's phone was transferred on the SAME day as the sale, trust
+      // the triple gate (97% of cases). If NOT same-day, apply queue rules to
+      // verify the sale actually belongs to Mail 4 (AI campaign).
+      const soldDate = s.soldDate ?? "";
+      const transferDates = aimPhoneDates.get(matchedPhone);
+      const isSameDay = transferDates?.has(soldDate) ?? false;
+
+      if (!isSameDay && queueRules.length > 0) {
+        // Not same-day: apply queue rules using Moxy promoCode + campaign
+        const assignedQueue = assignQueue(
+          { promoCode: s.promoCode, campaign: s.campaign },
+          "" // no 3CX queue name available here; promoCode/campaign rules take precedence
         );
-
-        const onOpened = phones.some(p => openedPhones.has(p));
-
-        if (!matchedPhone) {
+        if (assignedQueue && assignedQueue !== "Mail 4") {
+          // Rules say this sale belongs to a different campaign — don't count as AI
           nonListSales.push({ ...s, onOpened });
           continue;
         }
-
-        // ── GUARDRAIL: non-same-day sales must pass queue rules ──────────────
-        // If the sale's phone was transferred on the SAME day as the sale, trust
-        // the triple gate (97% of cases). If NOT same-day, apply queue rules to
-        // verify the sale actually belongs to Mail 4 (AI campaign).
-        const soldDate = s.soldDate ?? "";
-        const transferDates = aimPhoneDates.get(matchedPhone);
-        const isSameDay = transferDates?.has(soldDate) ?? false;
-
-        if (!isSameDay && queueRules.length > 0) {
-          // Not same-day: apply queue rules using Moxy promoCode + campaign
-          const assignedQueue = assignQueue(
-            { promoCode: s.promoCode, campaign: s.campaign },
-            "" // no 3CX queue name available here; promoCode/campaign rules take precedence
-          );
-          if (assignedQueue && assignedQueue !== "Mail 4") {
-            // Rules say this sale belongs to a different campaign — don't count as AI
-            nonListSales.push({ ...s, onOpened });
-            continue;
-          }
-          // If no rule matched OR rule says Mail 4 → count it
-        }
-
-        const li = phoneToList.get(matchedPhone)!;
-        if (byList[li]) byList[li].s++;
+        // If no rule matched OR rule says Mail 4 → count it
       }
+
+      const li = phoneToList.get(matchedPhone)!;
+      if (byList[li]) byList[li].s++;
     }
 
     // AGENT SUMMARY
@@ -533,20 +505,18 @@ export async function GET(request: Request) {
     }
 
     // Deals per agent
-    if (stage !== "calls" && stage !== "costs") {
-      for (const s of salesRows) {
-        const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
-        if (!notFishbein) continue;
+    for (const s of salesRows) {
+      const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
+      if (!notFishbein) continue;
 
-        const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
-        const matchedPhone = phones.find(p =>
-          phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
-        );
-        if (!matchedPhone) continue;
+      const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
+      const matchedPhone = phones.find(p =>
+        phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
+      );
+      if (!matchedPhone) continue;
 
-        const agent = phoneToAgent.get(matchedPhone) || itdPhoneToAgent.get(matchedPhone);
-        if (agent && byAgent[agent]) byAgent[agent].deals++;
-      }
+      const agent = phoneToAgent.get(matchedPhone) || itdPhoneToAgent.get(matchedPhone);
+      if (agent && byAgent[agent]) byAgent[agent].deals++;
     }
 
     // AGENT × LIST MATRIX
@@ -570,20 +540,18 @@ export async function GET(request: Request) {
       const agent = phoneToAgent.get(phone);
       if (li && agent && matrix[agent]?.[li] !== undefined) matrix[agent][li].o++;
     }
-    if (stage !== "calls" && stage !== "costs") {
-      for (const s of salesRows) {
-        const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
-        if (!notFishbein) continue;
-        const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
-        const matchedPhone = phones.find(p =>
-          phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
-        );
-        if (!matchedPhone) continue;
-        const li    = phoneToList.get(matchedPhone);
-        // Use date-filtered agent first, fall back to ITD agent for cross-day sales
-        const agent = phoneToAgent.get(matchedPhone) || itdPhoneToAgent.get(matchedPhone);
-        if (li && agent && matrix[agent]?.[li] !== undefined) matrix[agent][li].d++;
-      }
+    for (const s of salesRows) {
+      const notFishbein = !s.salesperson?.toLowerCase().includes("fishbein");
+      if (!notFishbein) continue;
+      const phones = [s.homePhone, s.mobilePhone].filter(p => p && p.length === 10);
+      const matchedPhone = phones.find(p =>
+        phoneToList.has(p) && itdAimPhones.has(p) && itdOpenedPhones.has(p)
+      );
+      if (!matchedPhone) continue;
+      const li    = phoneToList.get(matchedPhone);
+      // Use date-filtered agent first, fall back to ITD agent for cross-day sales
+      const agent = phoneToAgent.get(matchedPhone) || itdPhoneToAgent.get(matchedPhone);
+      if (li && agent && matrix[agent]?.[li] !== undefined) matrix[agent][li].d++;
     }
 
     // Build cross-tab for the campaign-tab UI (agent → list → stats)

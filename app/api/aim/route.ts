@@ -114,44 +114,28 @@ function loadSeed(): SeedFile | null {
   }
 }
 
-// ─── Live AIM API helpers ─────────────────────────────────────────────────────
-async function getSessionCookie(): Promise<string> {
-  const email    = process.env.AIM_EMAIL;
-  const password = process.env.AIM_PASSWORD;
-  if (!email || !password) throw new Error("AIM_EMAIL or AIM_PASSWORD not set");
+// ─── REST API helper with bearer token auth ─────────────────────────────────
+const AIM_REST = 'https://dash.aimnow.ai/api';
 
-  const res = await fetch(`${AIM_BASE}/api/auth/sign-in/email`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, rememberMe: true, callbackURL: "/" }),
+async function aimFetch(path: string, params: Record<string, string | string[]>): Promise<any> {
+  const token = process.env.AIM_BEARER_TOKEN;
+  if (!token) throw new Error('AIM_BEARER_TOKEN not set');
+
+  const url = new URL(`${AIM_REST}${path}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (Array.isArray(v)) {
+      for (const item of v) url.searchParams.append(k, item);
+    } else {
+      url.searchParams.set(k, v);
+    }
+  }
+
+  const res = await fetch(url.toString(), {
+    headers: { 'Authorization': `Bearer ${token}` },
+    cache: 'no-store',
   });
-  if (!res.ok) throw new Error(`AIM login failed: ${res.status}`);
-
-  const setCookie  = res.headers.get("set-cookie") || "";
-  const tokenMatch = setCookie.match(/__Secure-better-auth\.session_token=([^;]+)/);
-  if (!tokenMatch) throw new Error("No session token in login response");
-  return `__Secure-better-auth.session_token=${tokenMatch[1]}`;
-}
-
-async function fetchCallsPage(
-  cookie: string, startISO: string, endISO: string, page: number, perPage = 100
-) {
-  const res = await fetch(`${AIM_BASE}/rpc/calls/list`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: cookie },
-    body: JSON.stringify({
-      json: {
-        query: {
-          page, perPage,
-          startedAt: [startISO, endISO],
-          outcomes: [89], // transferred only — all-call costs come from seed
-        },
-      },
-    }),
-  });
-  if (!res.ok) throw new Error(`AIM calls/list failed: ${res.status}`);
-  const data = await res.json();
-  return data?.json?.body ?? data?.body ?? null;
+  if (!res.ok) throw new Error(`AIM API ${res.status}: ${await res.text()}`);
+  return res.json();
 }
 
 // ─── Main route ───────────────────────────────────────────────────────────────
@@ -237,18 +221,29 @@ export async function GET(request: Request) {
             return d.toISOString();
           })();
 
-          const cookie    = await getSessionCookie();
-          const firstPage = await fetchCallsPage(cookie, liveFromISO, liveToISO, 1, 100);
+          // Fetch transfer phones with outcome filter (outcomes[] = 89 for transferred)
+          const callsResp = await aimFetch('/calls', {
+            'startedAt[]': [liveFromISO, liveToISO],
+            'outcomes[]': '89',
+            'perPage': '500',
+            'page': '1',
+          });
 
-          if (firstPage) {
-            const totalCount: number = firstPage.count ?? 0;
-            const allCalls = [...(firstPage.data ?? [])];
+          if (callsResp && callsResp.data) {
+            const allCalls = [...(callsResp.data ?? [])];
+            const totalCount: number = callsResp.count ?? 0;
 
-            const totalPages = Math.ceil(totalCount / 100);
+            // Paginate if needed (perPage=500, max calls)
+            const totalPages = Math.ceil(totalCount / 500);
             if (totalPages > 1) {
               const pagePromises = [];
               for (let p = 2; p <= totalPages; p++) {
-                pagePromises.push(fetchCallsPage(cookie, liveFromISO, liveToISO, p, 100));
+                pagePromises.push(aimFetch('/calls', {
+                  'startedAt[]': [liveFromISO, liveToISO],
+                  'outcomes[]': '89',
+                  'perPage': '500',
+                  'page': String(p),
+                }));
               }
               const remainingPages = await Promise.all(pagePromises);
               for (const page of remainingPages) {
@@ -263,16 +258,14 @@ export async function GET(request: Request) {
 
               const phone       = (call.to ?? "").replace(/\D/g, "").slice(-10);
               const agent       = shortAgent(call.agent?.name ?? "Unknown");
-              const isTransfer  = call.outcomes?.some((o: { label: string }) => o.label === "transferred");
               const callDate    = call.startedAt ? call.startedAt.slice(0, 10) : "unknown";
               const durationSec = call.endedAt && call.startedAt
                 ? (new Date(call.endedAt).getTime() - new Date(call.startedAt).getTime()) / 1000
                 : 0;
               const cost = call.price ?? 0;
 
-              if (!isTransfer || !phone || phone.length !== 10) continue;
+              if (!phone || phone.length !== 10) continue;
 
-              // Live API only fetches transfers — full cost comes from seed
               mergeTransfer(byList, byAgent, list, phone, agent, callDate, durationSec, cost);
               liveCount++;
             }

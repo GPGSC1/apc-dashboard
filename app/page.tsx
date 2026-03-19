@@ -15,7 +15,6 @@ interface DashData {
   aimByAgent?: Record<string, Record<string, { min: number; cost: number; t: number; s: number }>>;
   byAgent?:    Record<string, { calls: number; min: number; cost: number; t: number; deals: number }>;
   allAgents?:  string[];
-  loading?:    { sales?: boolean; calls?: boolean; costs?: boolean };
   error?:      string;
 }
 
@@ -119,57 +118,6 @@ const C = {
   text:"#C8D6E8", muted:"#3D5275", dim:"#1E2D45",
 };
 
-// ── STALE BANNER ──────────────────────────────────────────────────────────────
-function StaleBanner({ staleness, onRefresh }: { staleness: DashData["staleness"]; onRefresh: () => void }) {
-  if (!staleness) return null;
-
-  // staleness now contains dates (YYYY-MM-DD) or null, not timestamps
-  const now = new Date();
-  const today = now.toISOString().slice(0, 10);
-  const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000).toISOString().slice(0, 10);
-
-  // Check if all sources have recent data (within last 5 minutes, approximated as today's date)
-  const sources = [
-    { label: "3CX", date: staleness.cx },
-    { label: "AIM", date: staleness.aim },
-    { label: "Moxy", date: staleness.moxy },
-  ];
-
-  const allDataFresh = sources.every(s => s.date && s.date >= fiveMinutesAgo);
-
-  if (allDataFresh) {
-    return (
-      <div style={{ background:"rgba(34,197,94,.08)", borderBottom:`1px solid rgba(34,197,94,.3)`, borderLeft:`3px solid ${C.green}`, padding:"7px 20px", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
-        <span style={{ fontSize:11, color:C.green, fontWeight:700 }}>LIVE DATA</span>
-        <span style={{ fontSize:12, color:C.text }}>All sources updated {sources.map(s => `${s.label} thru ${s.date}`).filter(x => x.includes(today)).join(" · ")}</span>
-      </div>
-    );
-  }
-
-  // Show data source coverage with max dates
-  const labels = sources
-    .filter(s => s.date)
-    .map(s => `${s.label} seed thru ${s.date}`)
-    .join(" · ");
-
-  if (!labels) {
-    return (
-      <div style={{ background:"rgba(245,158,11,.08)", borderBottom:`1px solid rgba(245,158,11,.3)`, borderLeft:`3px solid ${C.amber}`, padding:"7px 20px", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
-        <span>⚠️</span>
-        <span style={{ fontSize:12, color:C.amber, fontWeight:600 }}>No data loaded</span>
-        <button onClick={onRefresh} style={{ marginLeft:"auto", padding:"3px 12px", borderRadius:4, border:`1px solid ${C.amber}`, background:"transparent", color:C.amber, cursor:"pointer", fontSize:12, fontWeight:600 }}>↻ Refresh Now</button>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ background:"rgba(245,158,11,.08)", borderBottom:`1px solid rgba(245,158,11,.3)`, borderLeft:`3px solid ${C.amber}`, padding:"7px 20px", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
-      <span style={{ fontSize:12, color:C.amber, fontWeight:600 }}>Data sources:</span>
-      <span style={{ fontSize:12, color:C.text }}>{labels}</span>
-      <button onClick={onRefresh} style={{ marginLeft:"auto", padding:"3px 12px", borderRadius:4, border:`1px solid ${C.amber}`, background:"transparent", color:C.amber, cursor:"pointer", fontSize:12, fontWeight:600 }}>↻ Refresh Now</button>
-    </div>
-  );
-}
 
 // ── TABLE PRIMITIVES ──────────────────────────────────────────────────────────
 function Th({ children, left }: { children: React.ReactNode; left?: boolean }) {
@@ -250,7 +198,7 @@ function ViewToggle({ viewMode, setViewMode }: { viewMode: ViewMode; setViewMode
 }
 
 // ── BY LIST VIEW ──────────────────────────────────────────────────────────────
-function ByListView({ data, salesLoading, callsLoading, costsLoading }: { data: DashData; salesLoading: boolean; callsLoading: boolean; costsLoading: boolean }) {
+function ByListView({ data, itdData, loading }: { data: DashData; itdData: DashData; loading: boolean }) {
   const lists  = data.allLists?.length ? data.allLists : Object.keys(data.byList);
   const totals = lists.reduce((a, li) => {
     const r = data.byList[li] || { o:0, s:0, t:0, min:0, cost:0, listCost:0 };
@@ -259,25 +207,31 @@ function ByListView({ data, salesLoading, callsLoading, costsLoading }: { data: 
 
   return (
     <div style={{ display:"flex" }}>
-      {/* LEFT PANEL */}
+      {/* LEFT PANEL - ITD DATA */}
       <div style={{ width:180, flexShrink:0, borderRight:`1px solid ${C.border}`, padding:"10px", display:"flex", flexDirection:"column", gap:6, background:C.surface }}>
         <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginBottom:4 }}>Active Lists</div>
         {lists.map(li => {
-          const r = data.byList[li] || { s:0, listCost:0 };
-          const costPerSale = r.s > 0 ? r.listCost / r.s : null;
+          const itdListData = itdData.byList[li] || { s:0, listCost:0 };
+          const listCost = itdListData.listCost;
+          const itdSalesCount = itdListData.s || 0;
+          const costPerDeal = itdSalesCount > 0 ? listCost / itdSalesCount : null;
           return (
             <div key={li} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px" }}>
               <div style={{ fontSize:12, fontWeight:700, color:C.accent, marginBottom:4 }}>{li}</div>
-              <div style={{ fontFamily:"monospace", fontSize:12, color:r.listCost>0?C.text:C.muted, marginBottom:4 }}>{r.listCost>0?fc(r.listCost):"free"}</div>
-              <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>Cost/Sale</div>
-              <div style={{ fontFamily:"monospace", fontSize:12, color:costPerSale==null?C.dim:costPerSale>1000?C.red:costPerSale>500?C.amber:C.green }}>{costPerSale!=null?fc(costPerSale):"—"}</div>
+              <div style={{ fontFamily:"monospace", fontSize:12, color:listCost>0?C.text:C.muted, marginBottom:4 }}>{listCost>0?fc(listCost):"free"}</div>
+              <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>ITD Deal Count</div>
+              <div style={{ fontFamily:"monospace", fontSize:12, color:C.text, marginBottom:4 }}>{itdSalesCount}</div>
+              <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>Cost/Deal</div>
+              <div style={{ fontFamily:"monospace", fontSize:12, color:costPerDeal==null?C.dim:costPerDeal>1000?C.red:costPerDeal>500?C.amber:C.green }}>{costPerDeal!=null?fc(costPerDeal):"—"}</div>
             </div>
           );
         })}
         <div style={{ background:C.surface, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px", marginTop:4 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.text, marginBottom:4 }}>TOTAL</div>
           <div style={{ fontFamily:"monospace", fontSize:12, color:C.text, marginBottom:4 }}>{fc(totals.listCost)}</div>
-          <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>Cost/Sale</div>
+          <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>ITD Deal Count</div>
+          <div style={{ fontFamily:"monospace", fontSize:12, color:C.text, marginBottom:4 }}>{Object.values(itdData.byList).reduce((a, r) => a + (r.s || 0), 0)}</div>
+          <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>Cost/Deal</div>
           <div style={{ fontFamily:"monospace", fontSize:12, color:C.amber }}>{totals.s>0?fc(totals.listCost/totals.s):"—"}</div>
         </div>
       </div>
@@ -299,23 +253,23 @@ function ByListView({ data, salesLoading, callsLoading, costsLoading }: { data: 
               return (
                 <tr key={li} onMouseEnter={e=>(e.currentTarget.style.background="rgba(0,212,184,.04)")} onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
                   <Td style={{ textAlign:"left" }}><span style={{ color:C.accent, fontWeight:600, fontSize:13 }}>{li}</span></Td>
-                  <Td>{salesLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:r.s>0?C.green:C.muted, fontWeight:r.s>0?700:400 }}>{r.s}</span>}</Td>
-                  <Td>{salesLoading || callsLoading ? <LoadingSpinner /> : <ClosePct n={r.s} d={r.o} />}</Td>
-                  <Td>{callsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.accent }}>{f(r.o)}</span>}</Td>
-                  <Td>{costsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(r.min))}</span>}</Td>
-                  <Td>{costsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{fc(r.cost)}</span>}</Td>
-                  <Td>{costsLoading ? <LoadingSpinner /> : (dcps!=null?<span style={{ fontFamily:"monospace", color:dcps>500?C.red:dcps>250?C.amber:C.green }}>{fc(dcps)}</span>:<span style={{ color:C.dim }}>—</span>)}</Td>
+                  <Td>{loading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:r.s>0?C.green:C.muted, fontWeight:r.s>0?700:400 }}>{r.s}</span>}</Td>
+                  <Td>{loading ? <LoadingSpinner /> : <ClosePct n={r.s} d={r.o} />}</Td>
+                  <Td>{loading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.accent }}>{f(r.o)}</span>}</Td>
+                  <Td>{loading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(r.min))}</span>}</Td>
+                  <Td>{loading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{fc(r.cost)}</span>}</Td>
+                  <Td>{loading ? <LoadingSpinner /> : (dcps!=null?<span style={{ fontFamily:"monospace", color:dcps>500?C.red:dcps>250?C.amber:C.green }}>{fc(dcps)}</span>:<span style={{ color:C.dim }}>—</span>)}</Td>
                 </tr>
               );
             })}
             <tr style={{ background:C.surface, borderTop:`2px solid ${C.border}` }}>
               <Td style={{ textAlign:"left", fontWeight:700, color:C.text, fontSize:13 }}>TOTAL</Td>
-              <Td>{salesLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.green, fontWeight:700 }}>{totals.s}</span>}</Td>
-              <Td>{salesLoading || callsLoading ? <LoadingSpinner /> : <ClosePct n={totals.s} d={totals.o} />}</Td>
-              <Td>{callsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.accent, fontWeight:600 }}>{f(totals.o)}</span>}</Td>
-              <Td>{costsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(totals.min))}</span>}</Td>
-              <Td>{costsLoading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{fc(totals.cost)}</span>}</Td>
-              <Td>{costsLoading ? <LoadingSpinner /> : (totals.s>0?<span style={{ fontFamily:"monospace", color:C.amber, fontWeight:600 }}>{fc(totals.cost/totals.s)}</span>:<span style={{ color:C.dim }}>—</span>)}</Td>
+              <Td>{loading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.green, fontWeight:700 }}>{totals.s}</span>}</Td>
+              <Td>{loading ? <LoadingSpinner /> : <ClosePct n={totals.s} d={totals.o} />}</Td>
+              <Td>{loading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.accent, fontWeight:600 }}>{f(totals.o)}</span>}</Td>
+              <Td>{loading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{f(Math.round(totals.min))}</span>}</Td>
+              <Td>{loading ? <LoadingSpinner /> : <span style={{ fontFamily:"monospace", color:C.muted }}>{fc(totals.cost)}</span>}</Td>
+              <Td>{loading ? <LoadingSpinner /> : (totals.s>0?<span style={{ fontFamily:"monospace", color:C.amber, fontWeight:600 }}>{fc(totals.cost/totals.s)}</span>:<span style={{ color:C.dim }}>—</span>)}</Td>
             </tr>
           </tbody>
         </table>
@@ -325,13 +279,12 @@ function ByListView({ data, salesLoading, callsLoading, costsLoading }: { data: 
 }
 
 // ── BY AGENT VIEW (agent stat cards) ──────────────────────────────────────
-function ByAgentView({ agents, lists, crossData, salesLoading, callsLoading, costsLoading }: {
+function ByAgentView({ agents, lists, crossData, itdData, loading }: {
   agents: AgentStats[];
   lists: string[];
   crossData: Record<string, Record<string, { min: number; cost: number; t: number; s: number }>> | null;
-  salesLoading: boolean;
-  callsLoading: boolean;
-  costsLoading: boolean;
+  itdData: DashData;
+  loading: boolean;
 }) {
   const cross = crossData ?? {};
 
@@ -363,19 +316,24 @@ function ByAgentView({ agents, lists, crossData, salesLoading, callsLoading, cos
       <div style={{ width:180, flexShrink:0, borderRight:`1px solid ${C.border}`, padding:"10px", display:"flex", flexDirection:"column", gap:6, background:C.surface }}>
         <div style={{ fontSize:10, color:C.muted, letterSpacing:".12em", textTransform:"uppercase", marginBottom:4 }}>Active Agents</div>
         {activeAgents.map(ag => {
-          const totalCost = ag.cost;
-          const openedCount = ag.o || 0;
-          const salesCount = ag.s || 0;
-          const costPerCall = openedCount > 0 ? totalCost / openedCount : null;
-          const costPerSale = salesCount > 0 ? totalCost / salesCount : null;
+          // Use ITD data for the left panel
+          const itdAgentData = Object.values(itdData.byList).reduce((acc, list) => {
+            // Sum all stats for this agent across all lists from ITD data
+            return acc + (list.cost || 0);
+          }, 0);
+          const itdDialCost = itdAgentData;
+          const itdOpened = Object.values(itdData.byList).reduce((acc, list) => acc + (list.o || 0), 0);
+          const itdSales = Object.values(itdData.byList).reduce((acc, list) => acc + (list.s || 0), 0);
+          const costPerCall = itdOpened > 0 ? itdDialCost / itdOpened : null;
+          const costPerDeal = itdSales > 0 ? itdDialCost / itdSales : null;
           return (
             <div key={ag.name} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 10px" }}>
               <div style={{ fontSize:11, fontWeight:700, color:C.accent, marginBottom:4, wordBreak:"break-word" }}>{ag.name}</div>
-              <div style={{ fontFamily:"monospace", fontSize:12, color:C.text, marginBottom:4 }}>{fc(totalCost)}</div>
-              <div style={{ fontSize:9, color:C.muted, marginBottom:1 }}>Cost/Call · Cost/Sale</div>
+              <div style={{ fontFamily:"monospace", fontSize:12, color:C.text, marginBottom:4 }}>{fc(itdDialCost)}</div>
+              <div style={{ fontSize:9, color:C.muted, marginBottom:1 }}>ITD / ITD</div>
               <div style={{ fontFamily:"monospace", fontSize:11, color:C.text, display:"flex", gap:2, justifyContent:"space-between" }}>
                 <span style={{ color:costPerCall==null?C.dim:costPerCall>100?C.red:costPerCall>50?C.amber:C.green }}>{costPerCall!=null?fc(costPerCall):"—"}</span>
-                <span style={{ color:costPerSale==null?C.dim:costPerSale>500?C.red:costPerSale>250?C.amber:C.green }}>{costPerSale!=null?fc(costPerSale):"—"}</span>
+                <span style={{ color:costPerDeal==null?C.dim:costPerDeal>500?C.red:costPerDeal>250?C.amber:C.green }}>{costPerDeal!=null?fc(costPerDeal):"—"}</span>
               </div>
             </div>
           );
@@ -462,10 +420,10 @@ function ByAgentView({ agents, lists, crossData, salesLoading, callsLoading, cos
                             <span style={{ color:C.muted }}>Calls: </span>{f(cell.t)}
                           </div>
                           <div style={{ fontFamily:"monospace", color: hasSales ? C.green : C.dim, fontWeight:hasSales?600:400 }}>
-                            <span style={{ color:C.muted }}>Sales: </span>{salesLoading ? <LoadingSpinner /> : cell.s}
+                            <span style={{ color:C.muted }}>Sales: </span>{cell.s}
                           </div>
                           <div style={{ fontFamily:"monospace", color: C.amber, fontWeight:500 }}>
-                            <span style={{ color:C.muted }}>Cls%: </span>{salesLoading ? <LoadingSpinner /> : pct(cell.s, cell.t)}
+                            <span style={{ color:C.muted }}>Cls%: </span>{pct(cell.s, cell.t)}
                           </div>
                         </div>
                       ) : (
@@ -505,10 +463,10 @@ function ByAgentView({ agents, lists, crossData, salesLoading, callsLoading, cos
                       <span style={{ color:C.muted, fontWeight:400 }}>Calls: </span>{f(lt.t)}
                     </div>
                     <div style={{ fontFamily:"monospace", color: lt.s>0?C.green:C.dim, fontWeight:700 }}>
-                      <span style={{ color:C.muted, fontWeight:400 }}>Sales: </span>{salesLoading ? <LoadingSpinner /> : lt.s}
+                      <span style={{ color:C.muted, fontWeight:400 }}>Sales: </span>{lt.s}
                     </div>
                     <div style={{ fontFamily:"monospace", color: C.amber, fontWeight:600 }}>
-                      <span style={{ color:C.muted, fontWeight:400 }}>Cls%: </span>{salesLoading ? <LoadingSpinner /> : pct(lt.s, lt.t)}
+                      <span style={{ color:C.muted, fontWeight:400 }}>Cls%: </span>{pct(lt.s, lt.t)}
                     </div>
                   </div>
                 );
@@ -522,16 +480,15 @@ function ByAgentView({ agents, lists, crossData, salesLoading, callsLoading, cos
 }
 
 // ── TRANSFER VIEW (wrapper with toggle) ───────────────────────────────────────
-function TransferView({ data, salesLoading, callsLoading, costsLoading }: { data: DashData; salesLoading: boolean; callsLoading: boolean; costsLoading: boolean }) {
+function TransferView({ data, itdData, loading }: { data: DashData; itdData: DashData; loading: boolean }) {
   const [viewMode, setViewMode] = useState<ViewMode>("bylist");
   const lists     = data.allLists?.length ? data.allLists : Object.keys(data.byList);
   const crossData = data.aimByAgent ?? null;
   return (
     <div>
       <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
-      {viewMode === "bylist"  && <ByListView  data={data} salesLoading={salesLoading} callsLoading={callsLoading} costsLoading={costsLoading} />}
+      {viewMode === "bylist"  && <ByListView data={data} itdData={itdData} loading={loading} />}
       {viewMode === "byagent" && <ByAgentView agents={
-        // Build real agent stats from API data
         Object.entries(data.byAgent || {}).map(([name, ag]) => ({
           name,
           t: (ag as any).t ?? 0,
@@ -540,7 +497,7 @@ function TransferView({ data, salesLoading, callsLoading, costsLoading }: { data
           min: (ag as any).min ?? 0,
           cost: (ag as any).cost ?? 0,
         }))
-      } lists={lists} crossData={crossData} salesLoading={salesLoading} callsLoading={callsLoading} costsLoading={costsLoading} />}
+      } lists={lists} crossData={crossData} itdData={itdData} loading={loading} />}
     </div>
   );
 }
@@ -716,43 +673,35 @@ function AgentMappingView() {
     setAgents(prev => prev.map(a => a.name === name ? { ...a, campaign } : a));
   const campaignColor = (c: AgentAssignment["campaign"]) =>
     c==="transfer"?C.accent : c==="outbound"?C.amber : c==="inbound"?C.green : C.muted;
-  const groups: { id: AgentAssignment["campaign"]; label: string }[] = [
-    { id:"transfer", label:"Transfer" }, { id:"outbound", label:"Outbound" },
-    { id:"inbound",  label:"Inbound"  }, { id:"unassigned", label:"⚠ Unassigned" },
-  ];
+
   return (
-    <div style={{ padding:20 }}>
-      <div style={{ marginBottom:18, fontSize:12, color:C.muted }}>
-        Assign each AIM agent to a campaign. Metrics will roll up into the corresponding campaign tab.
-      </div>
-      {groups.map(group => {
-        const groupAgents = agents.filter(a => a.campaign === group.id);
-        if (groupAgents.length === 0) return null;
-        return (
-          <div key={group.id} style={{ marginBottom:24 }}>
-            <div style={{ fontSize:10, color:campaignColor(group.id), letterSpacing:".14em", textTransform:"uppercase", fontWeight:700, marginBottom:8, paddingBottom:6, borderBottom:`1px solid ${C.border}` }}>
-              {group.label} <span style={{ color:C.dim, fontWeight:400 }}>({groupAgents.length})</span>
-            </div>
-            <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
-              {groupAgents.map(a => (
-                <div key={a.name} style={{ display:"flex", alignItems:"center", gap:12, padding:"8px 12px", background:C.card, borderRadius:6, border:`1px solid ${C.border}` }}>
-                  <span style={{ flex:1, fontSize:13, color:C.text }}>{a.name}</span>
-                  <div style={{ display:"flex", gap:5 }}>
-                    {(["transfer","outbound","inbound","unassigned"] as AgentAssignment["campaign"][]).map(opt => (
-                      <button key={opt} onClick={() => setAgent(a.name, opt)} style={{
-                        padding:"3px 10px", borderRadius:4, fontSize:11, fontWeight:600, cursor:"pointer", textTransform:"capitalize",
-                        border:`1px solid ${a.campaign===opt?campaignColor(opt):C.dim}`,
-                        background:a.campaign===opt?`${campaignColor(opt)}22`:"transparent",
-                        color:a.campaign===opt?campaignColor(opt):C.muted,
-                      }}>{opt}</button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      })}
+    <div style={{ overflowX:"auto" }}>
+      <table style={{ borderCollapse:"collapse", width:"100%" }}>
+        <thead>
+          <tr>
+            <th style={{ background:C.surface, color:C.muted, fontSize:10, letterSpacing:".12em", textTransform:"uppercase", padding:"9px 14px", textAlign:"left", borderBottom:`1px solid ${C.border}`, whiteSpace:"nowrap" }}>Agent Name</th>
+            <th style={{ background:C.surface, color:C.muted, fontSize:10, letterSpacing:".12em", textTransform:"uppercase", padding:"9px 14px", textAlign:"left", borderBottom:`1px solid ${C.border}`, whiteSpace:"nowrap" }}>Campaign</th>
+          </tr>
+        </thead>
+        <tbody>
+          {agents.map(a => (
+            <tr key={a.name} onMouseEnter={e=>(e.currentTarget.style.background="rgba(0,212,184,.04)")} onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
+              <td style={{ padding:"9px 14px", fontSize:13, borderBottom:`1px solid ${C.dim}`, color:C.text }}>{a.name}</td>
+              <td style={{ padding:"9px 14px", fontSize:13, borderBottom:`1px solid ${C.dim}` }}>
+                <select value={a.campaign} onChange={e => setAgent(a.name, e.target.value as AgentAssignment["campaign"])} style={{
+                  padding:"4px 8px", borderRadius:4, border:`1px solid ${campaignColor(a.campaign)}`, background:"transparent", color:campaignColor(a.campaign),
+                  fontSize:12, fontWeight:600, cursor:"pointer", textTransform:"capitalize",
+                }}>
+                  <option value="transfer">Transfer</option>
+                  <option value="outbound">Outbound</option>
+                  <option value="inbound">Inbound</option>
+                  <option value="unassigned">Unassigned</option>
+                </select>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -763,15 +712,15 @@ function SourceHealthBar({ staleness }: { staleness: DashData["staleness"] }) {
   const sources = [
     { label: "AIM",  ts: staleness?.aim  },
     { label: "3CX",  ts: staleness?.cx   },
-    { label: "Moxy", ts: staleness?.moxy },
+    { label: "MOXY", ts: staleness?.moxy },
   ];
   const getColor = (ts: string | null | undefined) => {
-    if (!ts) return C.muted;
-    // Handle both ISO timestamps and date strings (YYYY-MM-DD)
+    if (!ts) return C.red;
+    // staleness contains dates (YYYY-MM-DD)
     const tsDate = ts.length === 10 ? ts + "T23:59:59Z" : ts;
     const hrs = (now - new Date(tsDate).getTime()) / 3600000;
     if (hrs <= 24)  return C.green;
-    if (hrs <= 48) return C.amber;
+    if (hrs <= 48)  return C.amber;
     return C.red;
   };
   const getAge = (ts: string | null | undefined) => {
@@ -802,11 +751,9 @@ function SourceHealthBar({ staleness }: { staleness: DashData["staleness"] }) {
 // ── MAIN PAGE ─────────────────────────────────────────────────────────────────
 export default function Home() {
   const [data, setData]               = useState<DashData>(DEMO);
+  const [itdData, setItdData]         = useState<DashData>(DEMO);
   const [isLive, setIsLive]           = useState(false);
   const [loading, setLoading]         = useState(true);
-  const [salesLoading, setSalesLoading] = useState(true);
-  const [callsLoading, setCallsLoading] = useState(false);
-  const [costsLoading, setCostsLoading] = useState(false);
   const [metaLoading, setMetaLoading] = useState(false);
   const [metaData, setMetaData]       = useState<MetaResponse | null>(null);
   const [lastRefresh, setLastRefresh] = useState<string>("");
@@ -818,94 +765,27 @@ export default function Home() {
 
   const loadData = useCallback(async (start: string | null, end: string | null) => {
     setLoading(true);
-    setSalesLoading(true);
-    setCallsLoading(true);
-    setCostsLoading(true);
     setMetaLoading(true);
-    // Clear previous data so spinners show (no stale numbers from cache)
     setData(DEMO);
     try {
-      // Waterfall: AIM → 3CX → Moxy
-      // This order ensures the triple gate has all phone sets before sales computation:
-      // Stage 1 loads AIM transfers + itdAimPhones + phoneToAgent
-      // Stage 2 loads 3CX opened + itdOpenedPhones (including today's live data)
-      // Stage 3 loads Moxy sales + runs triple gate (all phone sets ready)
+      // Single fetch for all data — full load every time
+      const q = new URLSearchParams();
+      if (start) q.set("start", start);
+      if (end)   q.set("end", end);
+      const qStr = q.toString() ? "?" + q.toString() : "";
 
-      // Stage 1: Costs (AIM — minutes, dial cost, transfer phones)
-      const qs1 = new URLSearchParams();
-      if (start) qs1.set("start", start);
-      if (end)   qs1.set("end", end);
-      qs1.set("stage", "costs");
-      const q1 = qs1.toString() ? "?" + qs1.toString() : "";
-      const res1 = await fetch(`/api/data${q1}`);
-      const json1 = await res1.json();
-      if (json1?.hasData) { setData(json1); setIsLive(true); }
-      else                { setData(DEMO); setIsLive(false); }
-      setLoading(false);
-      setCostsLoading(false);
+      const res = await fetch(`/api/data${qStr}`);
+      const json = await res.json();
+      if (json?.hasData) { setData(json); setIsLive(true); }
+      else               { setData(DEMO); setIsLive(false); }
       setLastRefresh(new Date().toLocaleTimeString());
 
-      // Stage 2: Calls (3CX — opened count, itdOpenedPhones for triple gate)
-      const qs2 = new URLSearchParams();
-      if (start) qs2.set("start", start);
-      if (end)   qs2.set("end", end);
-      qs2.set("stage", "calls");
-      const q2 = qs2.toString() ? "?" + qs2.toString() : "";
-      const res2 = await fetch(`/api/data${q2}`);
-      const json2 = await res2.json();
-      if (json2?.hasData) {
-        setData(prev => ({
-          ...prev,
-          byList: Object.fromEntries(
-            Object.entries(prev.byList).map(([li, stats]) => [li, {
-              ...stats,
-              o: json2.byList[li]?.o ?? stats.o,
-              t: json2.byList[li]?.t ?? stats.t,
-            }])
-          ),
-          staleness: {
-            cx: json2.staleness?.cx ?? prev.staleness?.cx ?? null,
-            aim: prev.staleness?.aim ?? null,
-            moxy: prev.staleness?.moxy ?? null,
-          },
-        }));
-        setIsLive(true);
-      }
-      setCallsLoading(false);
-      setLastRefresh(new Date().toLocaleTimeString());
+      // Fetch ITD data once (no date filter) for left panel
+      const resItd = await fetch('/api/data');
+      const itdJson = await resItd.json();
+      if (itdJson?.hasData) { setItdData(itdJson); }
 
-      // Stage 3: Sales (Moxy — triple gate now has AIM + 3CX phone sets)
-      const qs3 = new URLSearchParams();
-      if (start) qs3.set("start", start);
-      if (end)   qs3.set("end", end);
-      qs3.set("stage", "sales");
-      const q3 = qs3.toString() ? "?" + qs3.toString() : "";
-      const res3 = await fetch(`/api/data${q3}`);
-      const json3 = await res3.json();
-      if (json3?.hasData) {
-        setData(prev => ({
-          ...prev,
-          byList: Object.fromEntries(
-            Object.entries(prev.byList).map(([li, stats]) => [li, {
-              ...stats,
-              s: json3.byList[li]?.s ?? stats.s,
-            }])
-          ),
-          totalSales: json3.totalSales ?? prev.totalSales,
-          byAgent: json3.byAgent ?? prev.byAgent,
-          aimByAgent: json3.aimByAgent ?? prev.aimByAgent,
-          staleness: {
-            cx: prev.staleness?.cx ?? null,
-            aim: prev.staleness?.aim ?? null,
-            moxy: json3.staleness?.moxy ?? prev.staleness?.moxy ?? null,
-          },
-        }));
-        setIsLive(true);
-      }
-      setSalesLoading(false);
-      setLastRefresh(new Date().toLocaleTimeString());
-
-      // Load Meta data (in parallel with stages)
+      // Load Meta data
       const qsMeta = new URLSearchParams();
       if (start) qsMeta.set("start", start);
       if (end)   qsMeta.set("end", end);
@@ -913,12 +793,11 @@ export default function Home() {
       const resMeta = await fetch(`/api/meta${qMeta}`);
       const metaJson = await resMeta.json();
       setMetaData(metaJson);
-      setMetaLoading(false);
     } catch (e) {
       console.error('Data load error:', e);
       setIsLive(false);
     }
-    finally  { setLoading(false); setSalesLoading(false); setCallsLoading(false); setCostsLoading(false); setMetaLoading(false); }
+    finally { setLoading(false); setMetaLoading(false); }
   }, []);
 
   const handleApplyWithPreset = useCallback((p: DatePreset) => {
@@ -959,7 +838,12 @@ export default function Home() {
         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
           <div style={{ width:8, height:8, borderRadius:"50%", background:C.accent, boxShadow:`0 0 10px ${C.accent}`, animation:"pulse 2s infinite" }} />
           <div>
-            <div style={{ fontSize:16, fontWeight:700, color:C.text, letterSpacing:".06em", textTransform:"uppercase" }}>GPG — AI Voice Agent Dashboard</div>
+            <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+              <div style={{ fontSize:16, fontWeight:700, color:C.text, letterSpacing:".06em", textTransform:"uppercase" }}>GPG — AI Voice Agent Dashboard</div>
+              <button onClick={handleApply} disabled={loading} style={{ padding:"6px 12px", borderRadius:20, background:C.green, color:C.bg, border:"none", cursor:loading?"not-allowed":"pointer", fontSize:12, fontWeight:700, opacity:loading?0.5:1, display:"flex", alignItems:"center", gap:4 }}>
+                ↻ Refresh
+              </button>
+            </div>
             <SourceHealthBar staleness={data.staleness} />
           </div>
         </div>
@@ -994,13 +878,7 @@ export default function Home() {
             {!t.active && <span style={{ fontSize:8, marginLeft:5, opacity:.6 }}>SOON</span>}
           </button>
         ))}
-        <button onClick={handleApply} style={{ marginLeft:"auto", padding:"8px 16px", background:"transparent", border:"none", color:C.muted, cursor:"pointer", fontSize:12 }}>
-          ↻ Refresh
-        </button>
       </div>
-
-      {/* STALE BANNER */}
-      {isLive && <StaleBanner staleness={data.staleness} onRefresh={handleApply} />}
 
       {/* DATE FILTER BAR */}
       {campaign !== "agentmapping" && (
@@ -1015,7 +893,7 @@ export default function Home() {
       {/* MAIN CONTENT */}
       <div style={{ padding:"20px" }}>
         <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
-          {campaign === "transfer"     && <TransferView data={data} salesLoading={salesLoading} callsLoading={callsLoading} costsLoading={costsLoading} />}
+          {campaign === "transfer"     && <TransferView data={data} itdData={itdData} loading={loading} />}
           {campaign === "outbound"     && <ComingSoon label="Outbound" />}
           {campaign === "inbound"      && <ComingSoon label="Inbound" />}
           {campaign === "meta"         && <MetaView metaData={metaData} loading={metaLoading} />}
