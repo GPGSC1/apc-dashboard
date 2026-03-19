@@ -340,7 +340,7 @@ export async function GET(request: Request) {
         soldDate: toISO(d.soldDate ?? ""),
         homePhone: hp,
         mobilePhone: cp,
-        salesperson: String(d.salesperson ?? d.closer ?? ""),
+        salesperson: String(d.salesperson ?? d.salesRep ?? d.closer ?? ""),
       };
     };
 
