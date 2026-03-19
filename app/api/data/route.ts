@@ -328,6 +328,7 @@ export async function GET(request: Request) {
       homePhone: string;
       mobilePhone: string;
       salesperson: string;
+      customerId: string;
     }
     let salesRows: MoxySale[] = [];
     let moxyMaxDate: string | null = null;
@@ -341,6 +342,7 @@ export async function GET(request: Request) {
         homePhone: hp,
         mobilePhone: cp,
         salesperson: String(d.salesperson ?? d.salesRep ?? d.closer ?? ""),
+        customerId: String(d.customerId ?? d.contractNo ?? ""),
       };
     };
 
@@ -423,8 +425,8 @@ export async function GET(request: Request) {
     const seenSalesKeys = new Set<string>();
 
     for (const s of salesRows) {
-      // Dedup by phone pair
-      const key = `${s.homePhone}|${s.mobilePhone}`;
+      // Dedup by customerId (unique per deal, not per phone)
+      const key = s.customerId || `${s.homePhone}|${s.mobilePhone}`;
       if (seenSalesKeys.has(key)) continue;
       seenSalesKeys.add(key);
 
