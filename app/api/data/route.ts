@@ -342,6 +342,19 @@ export async function GET(request: Request) {
       };
     };
 
+    // Helper: add all non-empty IDs to seenDeals for cross-source dedup
+    const addDealIds = (d: any) => {
+      const cid = String(d.customerId ?? "").trim();
+      const cno = String(d.contractNo ?? "").trim();
+      if (cid) seenDeals.add(cid);
+      if (cno) seenDeals.add(cno);
+    };
+    const isDealSeen = (d: any): boolean => {
+      const cid = String(d.customerId ?? "").trim();
+      const cno = String(d.contractNo ?? "").trim();
+      return (cid !== "" && seenDeals.has(cid)) || (cno !== "" && seenDeals.has(cno));
+    };
+
     // Load seed
     try {
       const moxyPath = path.join(DATA_DIR, "moxy_seed.json");
@@ -352,13 +365,11 @@ export async function GET(request: Request) {
           if (!normalized.soldDate || normalized.soldDate < CAMPAIGN_START || !inRange(normalized.soldDate)) continue;
           if (String(d.dealStatus ?? d.status ?? "") !== "Sold") continue;
 
-          const cid = String(d.customerId ?? "");
-          if (cid && !seenDeals.has(cid)) {
-            seenDeals.add(cid);
-            salesRows.push(normalized);
-            if (!moxyMaxDate || normalized.soldDate > moxyMaxDate) {
-              moxyMaxDate = normalized.soldDate;
-            }
+          if (isDealSeen(d)) continue;
+          addDealIds(d);
+          salesRows.push(normalized);
+          if (!moxyMaxDate || normalized.soldDate > moxyMaxDate) {
+            moxyMaxDate = normalized.soldDate;
           }
         }
       }
@@ -375,10 +386,8 @@ export async function GET(request: Request) {
           if (!normalized.soldDate || normalized.soldDate < CAMPAIGN_START || !inRange(normalized.soldDate)) continue;
           if (String(d.dealStatus ?? d.status ?? "") !== "Sold") continue;
 
-          const cid = String(d.customerId ?? "");
-          if (cid && seenDeals.has(cid)) continue;
-          if (cid) seenDeals.add(cid);
-
+          if (isDealSeen(d)) continue;
+          addDealIds(d);
           salesRows.push(normalized);
           if (!moxyMaxDate || normalized.soldDate > moxyMaxDate) {
             moxyMaxDate = normalized.soldDate;
