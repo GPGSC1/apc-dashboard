@@ -198,11 +198,21 @@ export async function GET(request: Request) {
       }, '')
     : '';
 
+  // If the seed has rows for today, treat it as authoritative only through yesterday
+  // so the live API always provides fresh same-day data
+  const today = todayLocal();
+  const seedCutoff = seed && seedMaxDate
+    ? (seedMaxDate >= today
+        ? (() => { const d = new Date(seedMaxDate + 'T00:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })()
+        : seedMaxDate)
+    : '';
+
   const calls: CallRecord[] = [];
   let seedCount = 0;
 
   if (seed && seed.rows && seedMaxDate) {
-    const effectiveEnd = to <= seedMaxDate ? to : seedMaxDate;
+    const effectiveEnd = seedCutoff || seedMaxDate;
+    const endBound = to <= effectiveEnd ? to : effectiveEnd;
     for (const row of seed.rows) {
       const callId    = (row[0] ?? '') as string;
       const startTime = (row[1] ?? '') as string;
@@ -215,7 +225,7 @@ export async function GET(request: Request) {
       // Parse startTime date: "1/1/2026 0:35" → YYYY-MM-DD
       const callDate = parseDate(startTime) ?? '';
 
-      if (!callDate || callDate < from || callDate > effectiveEnd) continue;
+      if (!callDate || callDate < from || callDate > endBound) continue;
 
       const phoneNum = normalizePhone(phone);
       if (!phoneNum || phoneNum.length !== 10) continue;
@@ -239,13 +249,14 @@ export async function GET(request: Request) {
   }
 
   // ── 2. Live 3CX API for dates after the seed ────────────────────────────────
+  // Always live-fetch for today — the seed is only a snapshot and goes stale
   let liveCount = 0;
   let liveError: string | null = null;
 
-  const liveNeeded = !seed || !seedMaxDate || to > seedMaxDate;
+  const liveNeeded = !seed || !seedCutoff || to > seedCutoff;
   if (liveNeeded) {
-    const liveFrom = seed && seedMaxDate
-      ? new Date(new Date(seedMaxDate).getTime() + 86400000).toISOString().slice(0, 10)
+    const liveFrom = seed && seedCutoff
+      ? new Date(new Date(seedCutoff).getTime() + 86400000).toISOString().slice(0, 10)
       : from;
 
     if (liveFrom <= to) {
