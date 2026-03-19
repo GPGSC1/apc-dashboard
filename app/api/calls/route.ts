@@ -15,24 +15,18 @@ export interface CallRecord {
   opened:      boolean;  // passes all 4 opened rules
 }
 
-interface SeedCall {
-  phone:     string;
-  date:      string;
-  destName:  string;
-  queueName: string;
-}
-
 interface SeedFile {
   generatedAt: string;
   count:       number;
-  opened:      SeedCall[];
+  headers:     string[];
+  rows:        (string | number)[][];
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 const DATA_DIR = path.join(process.cwd(), 'data');
 
 function loadSeed(): SeedFile | null {
-  const seedPath = path.join(DATA_DIR, 'tcx_calls_seed.json');
+  const seedPath = path.join(DATA_DIR, 'tcx_seed.json');
   try {
     if (!fs.existsSync(seedPath)) return null;
     return JSON.parse(fs.readFileSync(seedPath, 'utf8')) as SeedFile;
@@ -198,30 +192,63 @@ export async function GET(request: Request) {
   const username = process.env.TCX_USERNAME ?? '1911';
   const password = process.env.TCX_PASSWORD;
 
-  // ── 1. Seed: historical 3CX opened calls ────────────────────────────────────
+  // ── 1. Seed: historical 3CX calls (parse compact array format & apply opened rules) ──
   const seed        = loadSeed();
-  const seedMaxDate = seed
-    ? seed.opened.reduce((max, c) => c.date > max ? c.date : max, '')
+  const seedMaxDate = seed && seed.rows && seed.rows.length > 0
+    ? seed.rows.reduce((max, row) => {
+        const startTime = (row[1] ?? '') as string;
+        const dateStr = startTime ? startTime.split(' ')[0] : '';
+        // Parse date: "1/1/2026" or "01/01/2026" → YYYY-MM-DD
+        const d = new Date(dateStr);
+        const iso = isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+        return iso > max ? iso : max;
+      }, '')
     : '';
 
   const calls: CallRecord[] = [];
   let seedCount = 0;
 
-  if (seed && seedMaxDate) {
+  if (seed && seed.rows && seedMaxDate) {
     const effectiveEnd = to <= seedMaxDate ? to : seedMaxDate;
-    for (const c of seed.opened) {
-      if (c.date < from || c.date > effectiveEnd) continue;
+    for (const row of seed.rows) {
+      const callId    = (row[0] ?? '') as string;
+      const startTime = (row[1] ?? '') as string;
+      const phone     = (row[2] ?? '') as string;
+      const destName  = (row[3] ?? '') as string;
+      const status    = ((row[4] ?? '') as string).toLowerCase();
+      const talkSec   = typeof row[5] === 'number' ? row[5] : parseInt(String(row[5])) || 0;
+      const queueName = (row[6] ?? '') as string;
+
+      // Parse startTime date: "1/1/2026 0:35" → YYYY-MM-DD
+      const dateStr = startTime ? startTime.split(' ')[0] : '';
+      let callDate = '';
+      try {
+        const d = new Date(dateStr);
+        if (!isNaN(d.getTime())) {
+          callDate = d.toISOString().slice(0, 10);
+        }
+      } catch { /* skip if unparseable */ }
+
+      if (!callDate || callDate < from || callDate > effectiveEnd) continue;
+
+      const phoneNum = normalizePhone(phone);
+      if (!phoneNum || phoneNum.length !== 10) continue;
+
+      // Apply opened rules at read time
+      const opened = isOpened(destName, status, talkSec, queueName);
+
       calls.push({
-        callId:      '',
-        startTime:   c.date,
-        phoneNumber: c.phone,
-        destName:    c.destName,
-        status:      'answered',
-        talkTimeSec: 1,      // > 0 (actual value not needed downstream)
-        queueName:   c.queueName,
-        opened:      true,   // pre-filtered: only opened calls stored in seed
+        callId,
+        startTime: dateStr,
+        phoneNumber: phoneNum,
+        destName,
+        status,
+        talkTimeSec: talkSec,
+        queueName,
+        opened,
       });
-      seedCount++;
+
+      if (opened) seedCount++;
     }
   }
 

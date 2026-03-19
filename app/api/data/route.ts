@@ -191,7 +191,7 @@ export async function GET(request: Request) {
     const itdPhoneToAgent = new Map<string, string>(); // ITD phone→agent for agent attribution
 
     try {
-      const aimSeedPath = path.join(DATA_DIR, "aim_transfers_seed.json");
+      const aimSeedPath = path.join(DATA_DIR, "aim_seed.json");
       if (fs.existsSync(aimSeedPath)) {
         const aimSeed = JSON.parse(fs.readFileSync(aimSeedPath, "utf8"));
         for (const t of (aimSeed.transfers ?? [])) {
@@ -213,11 +213,25 @@ export async function GET(request: Request) {
 
 
     try {
-      const tcxSeedPath = path.join(DATA_DIR, "tcx_calls_seed.json");
+      const tcxSeedPath = path.join(DATA_DIR, "tcx_seed.json");
       if (fs.existsSync(tcxSeedPath)) {
         const tcxSeed = JSON.parse(fs.readFileSync(tcxSeedPath, "utf8"));
-        for (const o of (tcxSeed.opened ?? [])) {
-          if (o.phone?.length === 10) itdOpenedPhones.add(o.phone);
+        // Parse compact array format: rows[i] = [callId, startTime, phone, destName, status, talkSec, queueName, inOut]
+        for (const row of (tcxSeed.rows ?? [])) {
+          const phone     = (row[2] ?? '') as string;
+          const status    = ((row[4] ?? '') as string).toLowerCase();
+          const destName  = (row[3] ?? '') as string;
+          const talkSec   = typeof row[5] === 'number' ? row[5] : parseInt(String(row[5])) || 0;
+          const queueName = (row[6] ?? '') as string;
+
+          // Apply opened rules at read time
+          if (status === 'answered' &&
+              destName && !destName.toUpperCase().startsWith('AI F') &&
+              talkSec > 0 &&
+              queueName.toLowerCase().includes('mail 4') &&
+              phone?.length === 10) {
+            itdOpenedPhones.add(phone);
+          }
         }
       }
     } catch (e) {
@@ -245,15 +259,15 @@ export async function GET(request: Request) {
     // Load AIM daily phone sets for Gate 2 (phone in AIM on same day, any outcome)
     let aimDailyPhones: Record<string, Set<string>> = {};
     try {
-      const dailyPath = path.join(DATA_DIR, "aim_daily_phones.json");
-      if (fs.existsSync(dailyPath)) {
-        const raw = JSON.parse(fs.readFileSync(dailyPath, "utf8"));
-        for (const [date, phones] of Object.entries(raw.dailyPhones ?? {})) {
+      const aimSeedPath = path.join(DATA_DIR, "aim_seed.json");
+      if (fs.existsSync(aimSeedPath)) {
+        const aimSeed = JSON.parse(fs.readFileSync(aimSeedPath, "utf8"));
+        for (const [date, phones] of Object.entries(aimSeed.dailyPhones ?? {})) {
           aimDailyPhones[date] = new Set(phones as string[]);
         }
       }
     } catch (e) {
-      console.error("[data/route] aim_daily_phones.json read failed:", e);
+      console.error("[data/route] aim_seed.json dailyPhones read failed:", e);
     }
 
     // 3CX: process pre-fetched response
@@ -324,50 +338,96 @@ export async function GET(request: Request) {
     // even when the live AIM API wasn't called (stage="sales" skips it to avoid timeout).
     for (const p of openedPhones) itdAimPhones.add(p);
 
-    // ── 4. FETCH MOXY SALES ──────────────────────────────────────────────────
-    // Moxy REST API: toDate is exclusive upper bound (tomorrowISO).
-    // When we pass end=YYYY-MM-DD, the inRange() filter uses <= comparison to include that date.
+    // ── 4. LOAD MOXY SALES (seed + live API) ─────────────────────────────────
+    // Load from seed for historical data (instant), call live API for today's deals only
     let salesRows: {
       soldDate: string | null; lastName: string; firstName: string;
       promoCode: string; homePhone: string; mobilePhone: string;
       dealStatus: string; salesperson: string; campaign: string;
     }[] = [];
     let moxyMaxDate: string | null = null;  // Track max date from Moxy data
+    const seenDeals = new Set<string>();   // Dedup by customerId across seed + live
 
-    // Moxy: process pre-fetched response
+    // Helper to normalize Moxy deal
+    const normalizeMoxyDeal = (d: any) => {
+      const hp = cleanPhone(d.homePhone ?? "");
+      const cp = cleanPhone(d.mobilePhone ?? d.cellphone ?? "");
+      const bestPhone = hp || cp;
+      return {
+        customerId:   String(d.customerId ?? ""),
+        soldDate:     toISO(d.soldDate ?? ""),
+        lastName:     String(d.lastName ?? ""),
+        firstName:    String(d.firstName ?? ""),
+        promoCode:    String(d.promoCode ?? ""),
+        homePhone:    hp,
+        mobilePhone:  cp,
+        dealStatus:   String(d.dealStatus ?? d.status ?? ""),
+        salesperson:  String(d.salesperson ?? d.closer ?? ""),
+        campaign:     String(d.campaign ?? d.campaignName ?? ""),
+      };
+    };
+
+    // 4a. Load from seed
+    const moxyMaxSeedDate = (() => {
+      try {
+        const moxyPath = path.join(DATA_DIR, "moxy_seed.json");
+        if (!fs.existsSync(moxyPath)) return null;
+        const moxySeed = JSON.parse(fs.readFileSync(moxyPath, "utf8"));
+        let maxDate = null;
+        for (const deal of (moxySeed.deals ?? [])) {
+          const normalized = normalizeMoxyDeal(deal);
+          if (!normalized.soldDate || normalized.soldDate < CAMPAIGN_START) continue;
+          if (!inRange(normalized.soldDate)) continue;
+          if (normalized.dealStatus !== "Sold") continue;
+
+          const cid = normalized.customerId;
+          if (cid && !seenDeals.has(cid)) {
+            seenDeals.add(cid);
+            salesRows.push(normalized);
+            if (!maxDate || normalized.soldDate > maxDate) {
+              maxDate = normalized.soldDate;
+            }
+          }
+        }
+        return maxDate;
+      } catch (e) {
+        console.error("[data/route] Moxy seed read failed:", e);
+        return null;
+      }
+    })();
+
+    if (moxyMaxSeedDate) {
+      moxyMaxDate = moxyMaxSeedDate;
+    }
+
+    // 4b. Load live API for dates after seed
     try {
       const moxyResp = moxyRespRaw;
       if (moxyResp?.ok) {
         const moxyData = await moxyResp.json();
-        salesRows = (moxyData.sales ?? [])
-          .filter((s: { status: string }) => (s.status ?? "").trim() === "Sold")
-          .map((s: {
-            soldDate: string; lastName: string; firstName: string;
-            promoCode: string; homePhone: string; cellPhone: string;
-            status: string; salesRep: string; campaign: string;
-          }) => ({
-            soldDate:    toISO(s.soldDate ?? ""),
-            lastName:    s.lastName  ?? "",
-            firstName:   s.firstName ?? "",
-            promoCode:   s.promoCode ?? "",
-            homePhone:   cleanPhone(s.homePhone ?? ""),
-            mobilePhone: cleanPhone(s.cellPhone ?? ""),
-            dealStatus:  s.status    ?? "",
-            salesperson: s.salesRep  ?? "",
-            campaign:    s.campaign  ?? "",
-          }))
-          .filter((s: { soldDate: string | null }) =>
-            s.soldDate && s.soldDate >= CAMPAIGN_START && inRange(s.soldDate)
-          );
-        // Track max date from Moxy
-        for (const s of salesRows) {
-          if (s.soldDate && (!moxyMaxDate || s.soldDate > moxyMaxDate)) {
-            moxyMaxDate = s.soldDate;
+        for (const d of (moxyData.sales ?? [])) {
+          const normalized = normalizeMoxyDeal(d);
+          if (!normalized.soldDate || normalized.soldDate < CAMPAIGN_START) continue;
+          if (!inRange(normalized.soldDate)) continue;
+
+          // Skip if already in seed
+          const cid = normalized.customerId;
+          if (cid && seenDeals.has(cid)) continue;
+          if (cid) seenDeals.add(cid);
+
+          // Only include live deals for dates after seed (or if no seed)
+          if (moxyMaxSeedDate && normalized.soldDate <= moxyMaxSeedDate) continue;
+
+          if (normalized.dealStatus === "Sold") {
+            salesRows.push(normalized);
+            if (!moxyMaxDate || normalized.soldDate > moxyMaxDate) {
+              moxyMaxDate = normalized.soldDate;
+            }
           }
         }
       }
     } catch (e) {
-      console.error("[data/route] Moxy fetch failed:", e);
+      console.error("[data/route] Moxy live fetch failed:", e);
     }
 
     // ── 4b. LOAD QUEUE RULES (guardrail for non-same-day sales) ──────────────
@@ -414,7 +474,7 @@ export async function GET(request: Request) {
     // Build ITD AIM transfer date lookup: phone → Set of dates transferred
     const aimPhoneDates = new Map<string, Set<string>>();
     try {
-      const aimSeedPath = path.join(DATA_DIR, "aim_transfers_seed.json");
+      const aimSeedPath = path.join(DATA_DIR, "aim_seed.json");
       if (fs.existsSync(aimSeedPath)) {
         const aimSeed = JSON.parse(fs.readFileSync(aimSeedPath, "utf8"));
         for (const t of (aimSeed.transfers ?? [])) {

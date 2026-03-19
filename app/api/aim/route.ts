@@ -105,7 +105,7 @@ function mergeTransfer(
 
 // ─── Seed loader ───────────────────────────────────────────────────────────────
 function loadSeed(): SeedFile | null {
-  const seedPath = path.join(DATA_DIR, "aim_transfers_seed.json");
+  const seedPath = path.join(DATA_DIR, "aim_seed.json");
   try {
     if (!fs.existsSync(seedPath)) return null;
     return JSON.parse(fs.readFileSync(seedPath, "utf8")) as SeedFile;
