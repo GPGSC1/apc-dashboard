@@ -295,7 +295,7 @@ export async function GET(request: Request) {
       console.error("[data/route] AIM fetch failed:", e);
     }
 
-    // ─── 7. PROCESS 3CX CALLS (opened filter, list attribution) ────────
+    // ─── 7. PROCESS 3CX CALLS (update ITD gates + opened counts) ──────
     const openedByList: Record<string, number> = {};
     let totalOpenedCalls = 0;
 
@@ -303,12 +303,28 @@ export async function GET(request: Request) {
       if (callsRespRaw?.ok) {
         const callsData = await callsRespRaw.json();
         for (const call of (callsData.calls ?? [])) {
-          if (!call.opened || !call.phoneNumber || call.phoneNumber.length !== 10) continue;
-
-          totalOpenedCalls++;
           const phone = call.phoneNumber;
-          const listKey = attributeToList(phone, phoneToLists, aimPhoneHistory);
+          if (!phone || phone.length !== 10) continue;
 
+          // Update Mail 4 ITD set and queue recency from live 3CX data
+          // (seed only covers historical dates; live API covers today)
+          const queueName = (call.queueName ?? "").toLowerCase();
+          const callDate = call.startTime ?? "";
+          if (queueName.includes("mail 4")) {
+            mail4Phones.add(phone);
+          }
+          const isSalesQueue = SALES_QUEUES.some(q => queueName.includes(q));
+          if (isSalesQueue && callDate) {
+            const existing = phoneLastQueue.get(phone);
+            if (!existing || callDate > existing.date) {
+              phoneLastQueue.set(phone, { queue: queueName, date: callDate });
+            }
+          }
+
+          // Count opened calls for attribution
+          if (!call.opened) continue;
+          totalOpenedCalls++;
+          const listKey = attributeToList(phone, phoneToLists, aimPhoneHistory);
           if (listKey) {
             openedByList[listKey] = (openedByList[listKey] ?? 0) + 1;
           }
