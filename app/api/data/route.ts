@@ -153,10 +153,17 @@ export async function GET(request: Request) {
     let aimByAgent: Record<string, { t: number; min: number; cost: number }> = {};
     let aimMaxDate: string | null = null;  // Track max date from AIM data
 
-    // AIM API: always fetch for full load
+    // Fire ALL three API calls in PARALLEL (saves ~6 seconds vs sequential)
+    const [aimRespRaw, callsRespRaw, moxyRespRaw] = await Promise.all([
+      fetch(`${origin}/api/aim?start=${fromDate}&end=${toDate}`).catch(() => null),
+      fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`).catch(() => null),
+      fetch(`${origin}/api/moxy`).catch(() => null),
+    ]);
+
+    // AIM API: process response
     try {
-      const aimResp = await fetch(`${origin}/api/aim?start=${fromDate}&end=${toDate}`);
-      if (aimResp.ok) {
+      const aimResp = aimRespRaw;
+      if (aimResp?.ok) {
         const aimData = await aimResp.json();
         if (aimData.ok) {
           aimByList  = aimData.byList  ?? {};
@@ -249,10 +256,10 @@ export async function GET(request: Request) {
       console.error("[data/route] aim_daily_phones.json read failed:", e);
     }
 
-    // Fetch 3CX: always fetch for full load
+    // 3CX: process pre-fetched response
     try {
-      const callsResp = await fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`);
-      if (callsResp.ok) {
+      const callsResp = callsRespRaw;
+      if (callsResp?.ok) {
         const callsData = await callsResp.json();
         for (const call of (callsData.calls ?? [])) {
           const phone = call.phoneNumber;
@@ -327,10 +334,10 @@ export async function GET(request: Request) {
     }[] = [];
     let moxyMaxDate: string | null = null;  // Track max date from Moxy data
 
-    // Moxy API: always fetch for full load
+    // Moxy: process pre-fetched response
     try {
-      const moxyResp = await fetch(`${origin}/api/moxy`);
-      if (moxyResp.ok) {
+      const moxyResp = moxyRespRaw;
+      if (moxyResp?.ok) {
         const moxyData = await moxyResp.json();
         salesRows = (moxyData.sales ?? [])
           .filter((s: { status: string }) => (s.status ?? "").trim() === "Sold")
