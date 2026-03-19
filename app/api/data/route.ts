@@ -415,8 +415,8 @@ export async function GET(request: Request) {
           if (cid && seenDeals.has(cid)) continue;
           if (cid) seenDeals.add(cid);
 
-          // Only include live deals for dates after seed (or if no seed)
-          if (moxyMaxSeedDate && normalized.soldDate <= moxyMaxSeedDate) continue;
+          // Don't skip live deals — seed may have incomplete days
+          // customerId dedup above prevents double-counting
 
           if (normalized.dealStatus === "Sold") {
             salesRows.push(normalized);
