@@ -215,12 +215,16 @@ export async function GET(request: Request) {
           // Track most recent sales queue call
           const isSalesQueue = SALES_QUEUES.some(q => queueName.includes(q));
           if (isSalesQueue) {
-            const dateStr = startTime.slice(0, 10);
-            const existing = phoneLastQueue.get(phone);
-            if (!existing || dateStr > existing.date) {
-              phoneLastQueue.set(phone, { queue: queueName, date: dateStr });
-              if (!tcxMaxDate || dateStr > tcxMaxDate) {
-                tcxMaxDate = dateStr;
+            // Parse date to YYYY-MM-DD for correct comparison (raw format is "M/D/YYYY H:MM")
+            let dateStr = "";
+            try { const d = new Date(startTime); if (!isNaN(d.getTime())) dateStr = d.toISOString().slice(0, 10); } catch {}
+            if (dateStr) {
+              const existing = phoneLastQueue.get(phone);
+              if (!existing || dateStr > existing.date) {
+                phoneLastQueue.set(phone, { queue: queueName, date: dateStr });
+                if (!tcxMaxDate || dateStr > tcxMaxDate) {
+                  tcxMaxDate = dateStr;
+                }
               }
             }
           }
