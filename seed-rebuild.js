@@ -186,7 +186,28 @@ function rebuild3cx() {
     }
   }
 
-  console.log(`[3CX] Pre-computed: ${mail4Phones.size} mail4Phones, ${Object.keys(phoneLastQueue).length} phoneLastQueue entries, maxDate=${maxDate}`);
+  // Only keep phoneLastQueue entries for phones in mail4Phones (used for queue recency gate)
+  const filteredPLQ = {};
+  for (const phone of mail4Phones) {
+    if (phoneLastQueue[phone]) filteredPLQ[phone] = phoneLastQueue[phone];
+  }
+
+  // Pre-compute opened call stats per date (for data/route — avoids loading full seed at runtime)
+  // openedByDate[date] = { phones: [phone1, phone2, ...] }
+  const openedByDate = {};
+  for (const row of rows) {
+    const [callId, startTime, phone, destName, status, talkSec, queueName, inOut] = row;
+    if (status !== "answered") continue;
+    if (!destName || destName.toUpperCase().startsWith("AI F")) continue;
+    if (talkSec <= 0) continue;
+    if (!queueName.toLowerCase().includes("mail 4")) continue;
+    const dt = parseDate(startTime);
+    if (!dt) continue;
+    if (!openedByDate[dt]) openedByDate[dt] = [];
+    openedByDate[dt].push(phone);
+  }
+
+  console.log(`[3CX] Pre-computed: ${mail4Phones.size} mail4Phones, ${Object.keys(filteredPLQ).length} phoneLastQueue (filtered), ${Object.keys(openedByDate).length} opened dates, maxDate=${maxDate}`);
 
   const seed = {
     generatedAt: new Date().toISOString(),
@@ -207,11 +228,13 @@ function rebuild3cx() {
     generatedAt: new Date().toISOString(),
     maxDate,
     mail4Phones: Array.from(mail4Phones),
-    phoneLastQueue,
+    phoneLastQueue: filteredPLQ,
+    openedByDate,
   };
   fs.writeFileSync(gatePath + ".tmp", JSON.stringify(gateData));
   fs.renameSync(gatePath + ".tmp", gatePath);
-  console.log(`[3CX] Wrote tcx_gate.json (${mail4Phones.size} mail4, ${Object.keys(phoneLastQueue).length} queues)`);
+  const gateSize = fs.statSync(gatePath).size;
+  console.log(`[3CX] Wrote tcx_gate.json (${(gateSize / 1024).toFixed(0)}KB — ${mail4Phones.size} mail4, ${Object.keys(filteredPLQ).length} queues, ${Object.keys(openedByDate).length} dates)`);
 }
 
 // ─── 2. Rebuild AIM Seed ──────────────────────────────────────────────────

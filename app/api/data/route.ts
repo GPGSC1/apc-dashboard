@@ -189,6 +189,7 @@ export async function GET(request: Request) {
     const mail4Phones: Set<string> = new Set();
     const phoneLastQueue: Map<string, { queue: string; date: string }> = new Map();
     let tcxMaxDate: string | null = null;
+    let seedOpenedByDate: Record<string, string[]> = {};
 
     try {
       const gatePath = path.join(DATA_DIR, "tcx_gate.json");
@@ -201,6 +202,8 @@ export async function GET(request: Request) {
           phoneLastQueue.set(phone, entry as { queue: string; date: string });
         }
         tcxMaxDate = gate.maxDate ?? null;
+        // Load pre-computed opened calls per date (avoids parsing full tcx_seed at runtime)
+        seedOpenedByDate = gate.openedByDate ?? {};
       }
     } catch (e) {
       console.error("[data/route] tcx_gate.json read failed:", e);
@@ -236,11 +239,17 @@ export async function GET(request: Request) {
       console.error("[data/route] aim_seed.json transfers read failed:", e);
     }
 
-    // ─── 5. FETCH DATA IN PARALLEL (AIM, 3CX, Moxy) ──────────────────────
-    const [aimRespRaw, callsRespRaw, moxyRespRaw] = await Promise.all([
+    // ─── 5. FETCH DATA IN PARALLEL (AIM + Moxy — 3CX uses pre-computed gate) ──
+    // No longer fetches /api/calls (was parsing 12MB seed on each request).
+    // Opened calls come from tcx_gate.json for seed dates, live 3CX API for today.
+    const today = todayLocal();
+    const needLive3cx = toDate >= today;
+    const [aimRespRaw, moxyRespRaw, live3cxRespRaw] = await Promise.all([
       fetch(`${origin}/api/aim?start=${fromDate}&end=${toDate}`).catch(() => null),
-      fetch(`${origin}/api/calls?from=${fromDate}&to=${toDate}`).catch(() => null),
       fetch(`${origin}/api/moxy`).catch(() => null),
+      needLive3cx
+        ? fetch(`${origin}/api/calls?from=${today}&to=${today}`).catch(() => null)
+        : Promise.resolve(null),
     ]);
 
     // ─── 6. PROCESS AIM RESPONSE (minutes, costs, live transfers) ────────
@@ -283,19 +292,32 @@ export async function GET(request: Request) {
       console.error("[data/route] AIM fetch failed:", e);
     }
 
-    // ─── 7. PROCESS 3CX CALLS (update ITD gates + opened counts) ──────
+    // ─── 7. PROCESS 3CX OPENED CALLS (gate data + live for today) ─────
     const openedByList: Record<string, number> = {};
     let totalOpenedCalls = 0;
 
+    // A) Use pre-computed opened calls from tcx_gate.json for seed dates
+    for (const [date, phones] of Object.entries(seedOpenedByDate)) {
+      if (date < fromDate || date > toDate) continue;
+      if (date >= today) continue; // today uses live data
+      for (const phone of (phones as string[])) {
+        totalOpenedCalls++;
+        const listKey = attributeToList(phone, phoneToLists, aimPhoneHistory);
+        if (listKey) {
+          openedByList[listKey] = (openedByList[listKey] ?? 0) + 1;
+        }
+      }
+    }
+
+    // B) Use live 3CX API for today only
     try {
-      if (callsRespRaw?.ok) {
-        const callsData = await callsRespRaw.json();
+      if (live3cxRespRaw?.ok) {
+        const callsData = await live3cxRespRaw.json();
         for (const call of (callsData.calls ?? [])) {
           const phone = call.phoneNumber;
           if (!phone || phone.length !== 10) continue;
 
           // Update Mail 4 ITD set and queue recency from live 3CX data
-          // (seed only covers historical dates; live API covers today)
           const queueName = (call.queueName ?? "").toLowerCase();
           const callDate = call.startTime ?? "";
           if (queueName.includes("mail 4")) {
@@ -319,7 +341,7 @@ export async function GET(request: Request) {
         }
       }
     } catch (e) {
-      console.error("[data/route] 3CX fetch failed:", e);
+      console.error("[data/route] live 3CX fetch failed:", e);
     }
 
     // ─── 8. PROCESS MOXY SALES (seed + live, dedup by customerId) ──────
