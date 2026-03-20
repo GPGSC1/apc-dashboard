@@ -46,8 +46,6 @@ data/opened.csv
 data/sales.xls
 data/Call Summary Report*.csv
 
-# Seed scripts (run locally, not needed on Vercel)
-seed-*.js
 # typescript
 *.tsbuildinfo
 next-env.d.ts
