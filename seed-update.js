@@ -131,12 +131,19 @@ async function updateAimSeed(targetDate) {
     "Outbound Jr. Closer to TO Agent with Moxy Tools": "Jr Closer",
   };
 
+  // Extract customer phone based on call direction
+  function customerPhoneFromCall(c) {
+    const dir = (c.direction || "").toLowerCase();
+    const raw = dir === "inbound" ? (c.from || "") : (c.to || "");
+    return raw.replace(/\D/g, "").slice(-10);
+  }
+
   let added = 0;
   for (const call of allCalls) {
     const callId = call.id || call.callId || "";
     if (existingIds.has(callId)) continue;
 
-    const phone = (call.to || "").replace(/\D/g, "").slice(-10);
+    const phone = customerPhoneFromCall(call);
     if (phone.length !== 10) continue;
 
     const campaignName = call.campaign?.name || "";
@@ -203,7 +210,7 @@ async function updateAimSeed(targetDate) {
       agentCost[agent] = (agentCost[agent] || 0) + cost;
 
       // Track most recent agent for each phone (ALL calls, not just transfers)
-      const phone = (call.to || "").replace(/\D/g, "").slice(-10);
+      const phone = customerPhoneFromCall(call);
       const callDate = call.startedAt || "";
       if (phone.length === 10 && agent && agent !== "Unknown") {
         const existing = seed.phoneToAgentAll?.[phone];

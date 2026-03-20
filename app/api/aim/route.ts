@@ -116,6 +116,14 @@ function loadSeed(): SeedFile | null {
   }
 }
 
+// ─── Customer phone extraction ──────────────────────────────────────────────
+// For outbound calls, the customer is in `to`. For inbound, the customer is in `from`.
+function customerPhone(call: any): string {
+  const dir = (call.direction ?? "").toLowerCase();
+  const raw = dir === "inbound" ? (call.from ?? "") : (call.to ?? "");
+  return raw.replace(/\D/g, "").slice(-10);
+}
+
 // ─── REST API helper with bearer token auth ─────────────────────────────────
 const AIM_REST = 'https://dash.aimnow.ai/api';
 
@@ -291,7 +299,7 @@ export async function GET(request: Request) {
             const list = detectListKey(campaignName);
             if (!list || !Object.prototype.hasOwnProperty.call(KNOWN_LISTS, list)) continue;
 
-            const phone    = (call.to ?? "").replace(/\D/g, "").slice(-10);
+            const phone    = customerPhone(call);
             const agent    = shortAgent(call.agent?.name ?? "Unknown");
             const callDate = call.startedAt ? call.startedAt.slice(0, 10) : "unknown";
 
@@ -325,7 +333,7 @@ export async function GET(request: Request) {
             liveAgentCost[agent] = (liveAgentCost[agent] ?? 0) + cost;
 
             // Track most recent agent that called each phone (any outcome)
-            const phone = (call.to ?? "").replace(/\D/g, "").slice(-10);
+            const phone = customerPhone(call);
             const callDate = call.startedAt ?? "";
             if (phone.length === 10 && agent && agent !== "Unknown") {
               const existing = allCallPhoneAgent[phone];
