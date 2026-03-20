@@ -184,50 +184,26 @@ export async function GET(request: Request) {
       console.error("[data/route] aim_seed.json history build failed:", e);
     }
 
-    // ─── 3. LOAD 3CX ITD DATA FOR SALES GATE (tcx_seed.json) ─────────────
-    // Build mail4Phones: all phones ever in Mail 4 Inbound
-    // Build phoneLastQueue: most recent Inbound sales queue call per phone
+    // ─── 3. LOAD 3CX ITD GATE DATA (pre-computed by seed-rebuild.js) ──────
+    // Uses tcx_gate.json (small, fast) instead of parsing 121K rows from tcx_seed.json
     const mail4Phones: Set<string> = new Set();
     const phoneLastQueue: Map<string, { queue: string; date: string }> = new Map();
     let tcxMaxDate: string | null = null;
 
     try {
-      const tcxSeedPath = path.join(DATA_DIR, "tcx_seed.json");
-      if (fs.existsSync(tcxSeedPath)) {
-        const tcxSeed = JSON.parse(fs.readFileSync(tcxSeedPath, "utf8"));
-        // rows[i] = [callId, startTime, phone, destName, status, talkSec, queueName, inOut]
-        for (const row of (tcxSeed.rows ?? [])) {
-          const phone = (row[2] ?? "") as string;
-          const inOut = (row[7] ?? "") as string;
-          const queueName = ((row[6] ?? "") as string).toLowerCase();
-          const startTime = (row[1] ?? "") as string;
-
-          if (phone.length !== 10 || inOut.toLowerCase() !== "inbound") continue;
-
-          // Track Mail 4 Inbound calls
-          if (queueName.includes("mail 4")) {
-            mail4Phones.add(phone);
-          }
-
-          // Track most recent sales queue call
-          const isSalesQueue = SALES_QUEUES.some(q => queueName.includes(q));
-          if (isSalesQueue) {
-            // Parse date to YYYY-MM-DD for correct comparison (raw format is "M/D/YYYY H:MM")
-            const dateStr = parseDate(startTime) ?? "";
-            if (dateStr) {
-              const existing = phoneLastQueue.get(phone);
-              if (!existing || dateStr > existing.date) {
-                phoneLastQueue.set(phone, { queue: queueName, date: dateStr });
-                if (!tcxMaxDate || dateStr > tcxMaxDate) {
-                  tcxMaxDate = dateStr;
-                }
-              }
-            }
-          }
+      const gatePath = path.join(DATA_DIR, "tcx_gate.json");
+      if (fs.existsSync(gatePath)) {
+        const gate = JSON.parse(fs.readFileSync(gatePath, "utf8"));
+        for (const phone of (gate.mail4Phones ?? [])) {
+          mail4Phones.add(phone);
         }
+        for (const [phone, entry] of Object.entries(gate.phoneLastQueue ?? {})) {
+          phoneLastQueue.set(phone, entry as { queue: string; date: string });
+        }
+        tcxMaxDate = gate.maxDate ?? null;
       }
     } catch (e) {
-      console.error("[data/route] tcx_seed.json read failed:", e);
+      console.error("[data/route] tcx_gate.json read failed:", e);
     }
 
     // ─── 4. LOAD AIM SEED FOR AGENT & TRANSFER ATTRIBUTION ──────────────

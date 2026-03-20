@@ -156,6 +156,38 @@ function rebuild3cx() {
     seenIds.add(callId);
   }
 
+  // Pre-compute mail4Phones, phoneLastQueue, and per-date stats for fast loading
+  const mail4Phones = new Set();
+  const phoneLastQueue = {};  // phone → { queue, date }
+  let maxDate = "";
+
+  // Per-list per-date stats for the calls route
+  // listStats[listKey][date] = { total, opened, minutes }
+  // We need phone→list mapping to do this, but we don't have list CSVs here.
+  // Instead, pre-compute the ITD gate data that data/route.ts needs.
+
+  for (const row of rows) {
+    const [callId, startTime, phone, destName, status, talkSec, queueName, inOut] = row;
+    if (phone.length !== 10 || inOut.toLowerCase() !== "inbound") continue;
+
+    const qLower = queueName.toLowerCase();
+    if (qLower.includes("mail 4")) {
+      mail4Phones.add(phone);
+    }
+
+    // Track most recent sales queue call
+    const dateStr = parseDate(startTime);
+    if (dateStr) {
+      const existing = phoneLastQueue[phone];
+      if (!existing || dateStr > existing.date) {
+        phoneLastQueue[phone] = { queue: qLower, date: dateStr };
+      }
+      if (dateStr > maxDate) maxDate = dateStr;
+    }
+  }
+
+  console.log(`[3CX] Pre-computed: ${mail4Phones.size} mail4Phones, ${Object.keys(phoneLastQueue).length} phoneLastQueue entries, maxDate=${maxDate}`);
+
   const seed = {
     generatedAt: new Date().toISOString(),
     count: rows.length,
@@ -163,10 +195,23 @@ function rebuild3cx() {
     rows,
   };
 
+  // Write full seed (still needed by calls route)
   const outPath = path.join(DATA_DIR, "tcx_seed.json");
   fs.writeFileSync(outPath + ".tmp", JSON.stringify(seed));
   fs.renameSync(outPath + ".tmp", outPath);
   console.log(`[3CX] Wrote ${rows.length} rows to tcx_seed.json`);
+
+  // Write pre-computed ITD gate data (used by data/route.ts instead of parsing 121K rows)
+  const gatePath = path.join(DATA_DIR, "tcx_gate.json");
+  const gateData = {
+    generatedAt: new Date().toISOString(),
+    maxDate,
+    mail4Phones: Array.from(mail4Phones),
+    phoneLastQueue,
+  };
+  fs.writeFileSync(gatePath + ".tmp", JSON.stringify(gateData));
+  fs.renameSync(gatePath + ".tmp", gatePath);
+  console.log(`[3CX] Wrote tcx_gate.json (${mail4Phones.size} mail4, ${Object.keys(phoneLastQueue).length} queues)`);
 }
 
 // ─── 2. Rebuild AIM Seed ──────────────────────────────────────────────────
