@@ -561,7 +561,10 @@ export async function GET(request: Request) {
       if (!attributedPhone) continue;
 
       const agent = phoneToAgent.get(attributedPhone);
-      if (agent && byAgent[agent]) {
+      if (agent) {
+        if (!byAgent[agent]) {
+          byAgent[agent] = { calls: 0, min: 0, cost: 0, t: 0, deals: 0 };
+        }
         byAgent[agent].deals++;
       }
     }
