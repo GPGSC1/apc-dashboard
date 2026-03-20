@@ -270,6 +270,8 @@ export async function GET(request: Request) {
     // ─── 6. PROCESS AIM RESPONSE (minutes, costs, live transfers) ────────
     let aimByList: Record<string, { min: number; cost: number }> = {};
     let aimByAgent: Record<string, { min: number; cost: number; t: number }> = {};
+    // Date-filtered phones per list from AIM API (for agent grid — NOT the ITD set)
+    const aimRangePhonesByList: Record<string, string[]> = {};
 
     try {
       if (aimRespRaw?.ok) {
@@ -279,12 +281,15 @@ export async function GET(request: Request) {
           aimByAgent = (aimData.byAgent ?? {}) as Record<string, { min: number; cost: number; t: number }>;
 
           // Also add live transfer phones and phone→agent mappings
-          for (const v of Object.values(aimByList)) {
+          for (const [listKey, v] of Object.entries(aimByList)) {
             const phones = (v as any).phones ?? [];
             if (Array.isArray(phones)) {
               phones.forEach((phone: any) => {
                 if (typeof phone === "string" && phone.length === 10) {
                   aimTransferPhones.add(phone);
+                  // Also store date-filtered phones per list for the agent grid
+                  if (!aimRangePhonesByList[listKey]) aimRangePhonesByList[listKey] = [];
+                  aimRangePhonesByList[listKey].push(phone);
                 }
               });
             }
@@ -560,15 +565,15 @@ export async function GET(request: Request) {
       }
     }
 
-    // Transfer counts
-    for (const [listKey, phones] of Object.entries(listPhones)) {
-      phones.forEach(phone => {
-        if (!aimTransferPhones.has(phone)) return;
+    // Transfer counts — use date-filtered AIM phones (not the ITD set)
+    // This ensures the grid shows transfers for the selected date range only
+    for (const [listKey, phones] of Object.entries(aimRangePhonesByList)) {
+      for (const phone of phones) {
         const agent = phoneToAgent.get(phone);
         if (agent && matrix[agent]?.[listKey]) {
           matrix[agent][listKey].t++;
         }
-      });
+      }
     }
 
     // Deal counts
