@@ -222,54 +222,85 @@ export async function GET(request: Request) {
             return d.toISOString();
           })();
 
-          // Fetch transfer phones with outcome filter (outcomes[] = 89 for transferred)
-          const callsResp = await aimFetch('/calls', {
-            'startedAt[]': [liveFromISO, liveToISO],
-            'outcomes[]': '89',
-            'perPage': '500',
-            'page': '1',
-          });
-
-          if (callsResp && callsResp.data) {
-            const allCalls = [...(callsResp.data ?? [])];
-            const totalCount: number = callsResp.count ?? 0;
-
-            // Paginate if needed (perPage=500, max calls)
-            const totalPages = Math.ceil(totalCount / 500);
+          // Helper: paginate an AIM /calls request
+          async function fetchAllAimCalls(params: Record<string, string | string[]>): Promise<any[]> {
+            const firstPage = await aimFetch('/calls', { ...params, perPage: '500', page: '1' });
+            if (!firstPage?.data) return [];
+            const results = [...firstPage.data];
+            const totalPages = Math.ceil((firstPage.count ?? 0) / 500);
             if (totalPages > 1) {
-              const pagePromises = [];
-              for (let p = 2; p <= totalPages; p++) {
-                pagePromises.push(aimFetch('/calls', {
-                  'startedAt[]': [liveFromISO, liveToISO],
-                  'outcomes[]': '89',
-                  'perPage': '500',
-                  'page': String(p),
-                }));
-              }
-              const remainingPages = await Promise.all(pagePromises);
-              for (const page of remainingPages) {
-                if (page?.data) allCalls.push(...page.data);
-              }
+              const pages = await Promise.all(
+                Array.from({ length: totalPages - 1 }, (_, i) =>
+                  aimFetch('/calls', { ...params, perPage: '500', page: String(i + 2) })
+                )
+              );
+              for (const p of pages) { if (p?.data) results.push(...p.data); }
             }
+            return results;
+          }
 
-            for (const call of allCalls) {
-              const campaignName = call.campaign?.name ?? "";
-              const list = detectListKey(campaignName);
-              if (!list || !Object.prototype.hasOwnProperty.call(KNOWN_LISTS, list)) continue;
+          // Fetch both transfer calls AND all calls in parallel
+          const [transferCalls, allDialCalls] = await Promise.all([
+            // Transfer calls (outcome 89) — for phone attribution & agent mapping
+            fetchAllAimCalls({ 'startedAt[]': [liveFromISO, liveToISO], 'outcomes[]': '89' }),
+            // ALL calls (no outcome filter) — for total minutes & cost (charged at $0.29/min)
+            fetchAllAimCalls({ 'startedAt[]': [liveFromISO, liveToISO] }),
+          ]);
 
-              const phone       = (call.to ?? "").replace(/\D/g, "").slice(-10);
-              const agent       = shortAgent(call.agent?.name ?? "Unknown");
-              const callDate    = call.startedAt ? call.startedAt.slice(0, 10) : "unknown";
-              const durationSec = call.endedAt && call.startedAt
-                ? (new Date(call.endedAt).getTime() - new Date(call.startedAt).getTime()) / 1000
-                : 0;
-              const cost = call.price ?? 0;
+          // 1. Process transfer calls — build phone attribution, agent maps, transfer counts
+          for (const call of transferCalls) {
+            const campaignName = call.campaign?.name ?? "";
+            const list = detectListKey(campaignName);
+            if (!list || !Object.prototype.hasOwnProperty.call(KNOWN_LISTS, list)) continue;
 
-              if (!phone || phone.length !== 10) continue;
+            const phone    = (call.to ?? "").replace(/\D/g, "").slice(-10);
+            const agent    = shortAgent(call.agent?.name ?? "Unknown");
+            const callDate = call.startedAt ? call.startedAt.slice(0, 10) : "unknown";
 
-              mergeTransfer(byList, byAgent, list, phone, agent, callDate, durationSec, cost);
-              liveCount++;
+            if (!phone || phone.length !== 10) continue;
+
+            // Add phone/agent/transfer data (min & cost set to 0 — overwritten below)
+            mergeTransfer(byList, byAgent, list, phone, agent, callDate, 0, 0);
+            liveCount++;
+          }
+
+          // 2. Process ALL calls — accumulate total minutes & cost per list and agent
+          //    This includes every dial (answered, voicemail, no-answer, transferred, etc.)
+          const liveListMin:  Record<string, number> = {};
+          const liveListCost: Record<string, number> = {};
+          const liveAgentMin:  Record<string, number> = {};
+          const liveAgentCost: Record<string, number> = {};
+
+          for (const call of allDialCalls) {
+            const campaignName = call.campaign?.name ?? "";
+            const list = detectListKey(campaignName);
+            if (!list || !Object.prototype.hasOwnProperty.call(KNOWN_LISTS, list)) continue;
+
+            const agent       = shortAgent(call.agent?.name ?? "Unknown");
+            const durationSec = call.endedAt && call.startedAt
+              ? (new Date(call.endedAt).getTime() - new Date(call.startedAt).getTime()) / 1000
+              : 0;
+            const cost = call.price ?? 0;
+
+            liveListMin[list]    = (liveListMin[list] ?? 0) + durationSec / 60;
+            liveListCost[list]   = (liveListCost[list] ?? 0) + cost;
+            liveAgentMin[agent]  = (liveAgentMin[agent] ?? 0) + durationSec / 60;
+            liveAgentCost[agent] = (liveAgentCost[agent] ?? 0) + cost;
+          }
+
+          // Apply total min/cost to byList
+          for (const [li, min] of Object.entries(liveListMin)) {
+            if (byList[li]) {
+              byList[li].min  = (byList[li].min ?? 0) + min;
+              byList[li].cost = (byList[li].cost ?? 0) + (liveListCost[li] ?? 0);
             }
+          }
+
+          // Apply total min/cost to byAgent
+          for (const [agent, min] of Object.entries(liveAgentMin)) {
+            if (!byAgent[agent]) byAgent[agent] = { t: 0, min: 0, cost: 0 };
+            byAgent[agent].min  += min;
+            byAgent[agent].cost += (liveAgentCost[agent] ?? 0);
           }
         } catch (e) {
           liveError = String(e);
