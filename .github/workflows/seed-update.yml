@@ -1,0 +1,48 @@
+name: Seed Update
+
+on:
+  schedule:
+    # Central Time = UTC-5 (CDT) or UTC-6 (CST)
+    # 4am CT = 10:00 UTC (CDT) / 09:00 UTC (CST) — using 10:00 for CDT
+    - cron: '0 10 * * 1-5'   # 4am CT weekdays
+    - cron: '0 14 * * 1-5'   # 8am CT weekdays
+    - cron: '0 18 * * 1-5'   # 12pm CT weekdays
+    - cron: '0 22 * * 1-5'   # 4pm CT weekdays
+    - cron: '0 2 * * 2-6'    # 8pm CT weekdays (next UTC day for Mon-Fri)
+  workflow_dispatch:           # Allow manual trigger
+
+jobs:
+  update-seeds:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run seed update
+        env:
+          AIM_BEARER_TOKEN: ${{ secrets.AIM_BEARER_TOKEN }}
+          TCX_DOMAIN: ${{ secrets.TCX_DOMAIN }}
+          TCX_USERNAME: ${{ secrets.TCX_USERNAME }}
+          TCX_PASSWORD: ${{ secrets.TCX_PASSWORD }}
+          MOXY_BEARER: ${{ secrets.MOXY_BEARER }}
+        run: node seed-update.js
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "No seed changes to commit"
+          else
+            git commit -m "chore: auto seed update $(date -u +%Y-%m-%dT%H:%M)"
+            git push
+          fi

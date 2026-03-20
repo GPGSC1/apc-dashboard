@@ -265,15 +265,11 @@ export async function GET(request: Request) {
             return results;
           }
 
-          // Fetch transfer calls only (outcome 89) — all-calls fetch was timing out
-          // Minutes/cost for ALL dials is fetched separately with a single summary call
-          const COST_PER_MIN = parseFloat(process.env.AIM_COST_PER_MIN ?? "0.29");
-
-          const [transferCalls, allCallsSummary] = await Promise.all([
-            // Transfer calls (outcome 89) — for phone attribution & agent mapping
+          // Fetch transfer calls AND all calls in parallel
+          // With 4-hour seed updates, live window is small (~2K calls max)
+          const [transferCalls, allDialCalls] = await Promise.all([
             fetchAllAimCalls({ 'startedAt[]': [liveFromISO, liveToISO], 'outcomes[]': '89' }),
-            // Single page of ALL calls — just to get the count and we'll use page 1 data
-            aimFetch('/calls', { 'startedAt[]': [liveFromISO, liveToISO], perPage: '500', page: '1' }).catch(() => null),
+            fetchAllAimCalls({ 'startedAt[]': [liveFromISO, liveToISO] }),
           ]);
 
           // Process transfer calls — build phone attribution, agent maps, transfer counts
@@ -292,24 +288,7 @@ export async function GET(request: Request) {
             liveCount++;
           }
 
-          // Process ALL calls for minutes/cost — paginate but cap at reasonable limit
-          // Process page 1 we already have, then fetch remaining pages with concurrency limit
-          const allDialCalls: any[] = allCallsSummary?.data ?? [];
-          const totalAllCalls = allCallsSummary?.count ?? 0;
-          const totalPages = Math.ceil(totalAllCalls / 500);
-
-          // Fetch remaining pages (cap at 20 pages = 10K calls to avoid timeout)
-          const maxPages = Math.min(totalPages, 20);
-          if (maxPages > 1) {
-            const pages = await Promise.all(
-              Array.from({ length: maxPages - 1 }, (_, i) =>
-                aimFetch('/calls', { 'startedAt[]': [liveFromISO, liveToISO], perPage: '500', page: String(i + 2) }).catch(() => null)
-              )
-            );
-            for (const p of pages) { if (p?.data) allDialCalls.push(...p.data); }
-          }
-
-          // Accumulate total minutes & cost per list and agent
+          // Accumulate total minutes & cost per list and agent from ALL calls
           const liveListMin:  Record<string, number> = {};
           const liveListCost: Record<string, number> = {};
           const liveAgentMin:  Record<string, number> = {};
@@ -324,7 +303,7 @@ export async function GET(request: Request) {
             const durationSec = call.endedAt && call.startedAt
               ? (new Date(call.endedAt).getTime() - new Date(call.startedAt).getTime()) / 1000
               : 0;
-            const cost = durationSec > 0 ? (durationSec / 60) * COST_PER_MIN : 0;
+            const cost = call.price ?? 0;
 
             liveListMin[list]    = (liveListMin[list] ?? 0) + durationSec / 60;
             liveListCost[list]   = (liveListCost[list] ?? 0) + cost;
