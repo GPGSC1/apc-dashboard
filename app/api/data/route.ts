@@ -386,8 +386,8 @@ export async function GET(request: Request) {
         for (const d of (moxySeed.deals ?? [])) {
           const normalized = normalizeMoxyDeal(d);
           if (!normalized.soldDate || normalized.soldDate < CAMPAIGN_START || !inRange(normalized.soldDate)) continue;
-          const dealSt = String(d.dealStatus ?? d.status ?? "");
-          if (dealSt !== "Sold" && dealSt !== "Cancelled") continue;
+          const dealSt = String(d.dealStatus ?? d.status ?? "").toLowerCase();
+          if (dealSt === "back out" || dealSt === "void" || !dealSt) continue;
 
           if (isDealSeen(d)) continue;
           addDealIds(d);
@@ -408,8 +408,8 @@ export async function GET(request: Request) {
         for (const d of (moxyData.sales ?? [])) {
           const normalized = normalizeMoxyDeal(d);
           if (!normalized.soldDate || normalized.soldDate < CAMPAIGN_START || !inRange(normalized.soldDate)) continue;
-          const dealSt = String(d.dealStatus ?? d.status ?? "");
-          if (dealSt !== "Sold" && dealSt !== "Cancelled") continue;
+          const dealSt = String(d.dealStatus ?? d.status ?? "").toLowerCase();
+          if (dealSt === "back out" || dealSt === "void" || !dealSt) continue;
 
           if (isDealSeen(d)) continue;
           addDealIds(d);
