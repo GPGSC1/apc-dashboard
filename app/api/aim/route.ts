@@ -54,6 +54,7 @@ interface SeedFile {
   transfers:   SeedTransfer[];
   listCosts?:  Record<string, { min: number; cost: number; calls: number }>;
   dailyCosts?: Record<string, Record<string, { min: number; cost: number }>>;
+  agentDailyCosts?: Record<string, Record<string, { min: number; cost: number }>>;
 }
 
 // ─── Aggregation structure ────────────────────────────────────────────────────
@@ -161,9 +162,17 @@ export async function GET(request: Request) {
 
     for (const li of Object.keys(KNOWN_LISTS)) byList[li] = makeListData(li);
 
+    // Compute seed cutoff early so we can use it for seed loop bounds
+    const today = todayLocal();
+    const seedEffectiveMax = seed && seedMaxDate
+      ? (seedMaxDate >= today
+          ? (() => { const d = new Date(seedMaxDate + 'T00:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })()
+          : seedMaxDate)
+      : '';
+
     let seedCount = 0;
     if (seed && seedMaxDate) {
-      const effectiveEnd = toDate <= seedMaxDate ? toDate : seedMaxDate;
+      const effectiveEnd = seedEffectiveMax ? (toDate <= seedEffectiveMax ? toDate : seedEffectiveMax) : (toDate <= seedMaxDate ? toDate : seedMaxDate);
       for (const t of seed.transfers) {
         if (t.date < fromDate || t.date > effectiveEnd) continue;
         mergeTransfer(byList, byAgent, t.listKey, t.phone, t.agent, t.date, t.dSec, t.cost);
@@ -176,7 +185,7 @@ export async function GET(request: Request) {
         for (const [li, dateCosts] of Object.entries(seed.dailyCosts)) {
           if (!byList[li]) continue;
           let totalMin = 0, totalCost = 0;
-          const effectiveEnd2 = toDate <= seedMaxDate ? toDate : seedMaxDate;
+          const effectiveEnd2 = seedEffectiveMax ? (toDate <= seedEffectiveMax ? toDate : seedEffectiveMax) : (toDate <= seedMaxDate ? toDate : seedMaxDate);
           for (const [date, stats] of Object.entries(dateCosts)) {
             if (date >= fromDate && date <= effectiveEnd2) {
               totalMin += stats.min;
@@ -196,18 +205,35 @@ export async function GET(request: Request) {
           }
         }
       }
+
+      // Load agent-level ALL-call minutes/cost from agentDailyCosts
+      // This overrides the transfer-only min/cost accumulated by mergeTransfer
+      if (seed.agentDailyCosts && fromDate <= seedMaxDate) {
+        const effectiveEnd2 = toDate <= seedMaxDate ? toDate : seedMaxDate;
+        for (const [agent, dateCosts] of Object.entries(seed.agentDailyCosts)) {
+          let totalMin = 0, totalCost = 0;
+          for (const [date, stats] of Object.entries(dateCosts)) {
+            if (date >= fromDate && date <= effectiveEnd2) {
+              totalMin += stats.min;
+              totalCost += stats.cost;
+            }
+          }
+          if (!byAgent[agent]) byAgent[agent] = { t: 0, min: 0, cost: 0 };
+          byAgent[agent].min = Math.round(totalMin);
+          byAgent[agent].cost = Math.round(totalCost * 100) / 100;
+        }
+      }
     }
 
     // ── 2. Live AIM API for dates after the seed ─────────────────────────────
     let liveCount = 0;
     let liveError: string | null = null;
 
-    // Call live API if the requested range extends beyond the seed
-    const liveNeeded = !seed || !seedMaxDate || toDate > seedMaxDate;
+    // Always live-fetch for today — seed is only a snapshot and goes stale
+    const liveNeeded = !seed || !seedEffectiveMax || toDate > seedEffectiveMax;
     if (liveNeeded) {
-      // Live API covers from the day after seed cutoff (or fromDate if no seed)
-      const liveFromDate = seed && seedMaxDate
-        ? (new Date(new Date(seedMaxDate).getTime() + 86400000).toISOString().slice(0, 10))
+      const liveFromDate = seed && seedEffectiveMax
+        ? (new Date(new Date(seedEffectiveMax).getTime() + 86400000).toISOString().slice(0, 10))
         : fromDate;
 
       // Only call live API if the live range is within the requested range
