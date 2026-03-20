@@ -118,7 +118,8 @@ export async function GET(request: Request) {
         const moxyData = await moxyRes.json();
         if (moxyData.sales && Array.isArray(moxyData.sales)) {
           for (const s of moxyData.sales) {
-            if (s.status !== 'Sold') continue;
+            const st = (s.status || '').toLowerCase();
+            if (st === 'back out' || st === 'void' || !st) continue;
             for (const raw of [s.phone, s.homePhone, s.cellPhone]) {
               const p = normalizePhone(raw || '');
               if (p) soldPhones.add(p);

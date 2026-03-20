@@ -176,7 +176,10 @@ export async function GET(request: Request) {
       if (moxyResp.ok) {
         const moxyData = await moxyResp.json();
         salesRows = (moxyData.sales ?? [])
-          .filter((s: { status: string }) => (s.status ?? "").trim() === "Sold")
+          .filter((s: { status: string }) => {
+            const st = (s.status ?? "").trim().toLowerCase();
+            return st !== "" && st !== "back out" && st !== "void";
+          })
           .map((s: {
             soldDate: string; lastName: string; firstName: string;
             promoCode: string; homePhone: string; cellPhone: string;
