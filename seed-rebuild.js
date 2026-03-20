@@ -100,21 +100,30 @@ function rebuild3cx() {
     if (lines[i].toLowerCase().includes("callid")) { headerIdx = i; break; }
   }
 
-  const headers = parseCsvLine(lines[headerIdx]).map(h => h.trim().toLowerCase());
-  const find = (...names) => {
-    for (const n of names) { const i = headers.findIndex(h => h === n); if (i >= 0) return i; }
-    for (const n of names) { const i = headers.findIndex(h => h.includes(n)); if (i >= 0) return i; }
-    return -1;
-  };
+  // 3CX CSV header sometimes has extra empty columns that don't match data layout.
+  // Auto-detect the correct Status column by scanning the first few data rows for
+  // "answered" or "unanswered" — that gives us the true column alignment.
+  let SSI = -1;
+  for (let probe = headerIdx + 1; probe < Math.min(headerIdx + 100, lines.length); probe++) {
+    const pc = parseCsvLine(lines[probe].trim());
+    for (let j = 10; j < 16; j++) {
+      const v = (pc[j] || "").trim().toLowerCase();
+      if (v === "answered" || v === "unanswered") { SSI = j; break; }
+    }
+    if (SSI >= 0) break;
+  }
+  if (SSI < 0) SSI = 12; // fallback
 
-  const CI = find("callid") >= 0 ? find("callid") : 0;
-  const STI = find("start time") >= 0 ? find("start time") : 1;
-  const PHI = find("originated by") >= 0 ? find("originated by") : 8;
-  const DNI = find("destination name") >= 0 ? find("destination name") : 11;
-  const SSI = find("status") >= 0 ? find("status") : 12;
-  const TTI = find("talk time (sec)") >= 0 ? find("talk time (sec)") : 14;
-  const QI = find("queue name") >= 0 ? find("queue name") : 19;
-  const IOI = find("in/out") >= 0 ? find("in/out") : find("direction") >= 0 ? find("direction") : 3;
+  // All other columns are relative to Status position (which is always after Destination Name)
+  const CI  = 0;                // CallID
+  const STI = 1;                // Start Time
+  const IOI = 3;                // In/Out
+  const PHI = 8;                // Originated By (phone)
+  const DNI = SSI - 1;          // Destination Name (always right before Status)
+  const TTI = SSI + 2;          // Talk Time (sec) (Status + 2)
+  const QI  = SSI + 7;          // Queue Name (Status + 7)
+
+  console.log("[3CX] Auto-detected Status at col", SSI, "→ DNI=%d SSI=%d TTI=%d QI=%d", DNI, SSI, TTI, QI);
 
   const SALES_QUEUES = ["mail 1", "mail 2", "mail 3", "mail 4", "mail 5", "mail 6", "home 1", "home 2", "home 4", "home 5"];
 
