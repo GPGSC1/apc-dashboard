@@ -265,15 +265,18 @@ export async function GET(request: Request) {
             return results;
           }
 
-          // Fetch both transfer calls AND all calls in parallel
-          const [transferCalls, allDialCalls] = await Promise.all([
+          // Fetch transfer calls only (outcome 89) — all-calls fetch was timing out
+          // Minutes/cost for ALL dials is fetched separately with a single summary call
+          const COST_PER_MIN = parseFloat(process.env.AIM_COST_PER_MIN ?? "0.29");
+
+          const [transferCalls, allCallsSummary] = await Promise.all([
             // Transfer calls (outcome 89) — for phone attribution & agent mapping
             fetchAllAimCalls({ 'startedAt[]': [liveFromISO, liveToISO], 'outcomes[]': '89' }),
-            // ALL calls (no outcome filter) — for total minutes & cost (charged at $0.29/min)
-            fetchAllAimCalls({ 'startedAt[]': [liveFromISO, liveToISO] }),
+            // Single page of ALL calls — just to get the count and we'll use page 1 data
+            aimFetch('/calls', { 'startedAt[]': [liveFromISO, liveToISO], perPage: '500', page: '1' }).catch(() => null),
           ]);
 
-          // 1. Process transfer calls — build phone attribution, agent maps, transfer counts
+          // Process transfer calls — build phone attribution, agent maps, transfer counts
           for (const call of transferCalls) {
             const campaignName = call.campaign?.name ?? "";
             const list = detectListKey(campaignName);
@@ -285,13 +288,28 @@ export async function GET(request: Request) {
 
             if (!phone || phone.length !== 10) continue;
 
-            // Add phone/agent/transfer data (min & cost set to 0 — overwritten below)
             mergeTransfer(byList, byAgent, list, phone, agent, callDate, 0, 0);
             liveCount++;
           }
 
-          // 2. Process ALL calls — accumulate total minutes & cost per list and agent
-          //    This includes every dial (answered, voicemail, no-answer, transferred, etc.)
+          // Process ALL calls for minutes/cost — paginate but cap at reasonable limit
+          // Process page 1 we already have, then fetch remaining pages with concurrency limit
+          const allDialCalls: any[] = allCallsSummary?.data ?? [];
+          const totalAllCalls = allCallsSummary?.count ?? 0;
+          const totalPages = Math.ceil(totalAllCalls / 500);
+
+          // Fetch remaining pages (cap at 20 pages = 10K calls to avoid timeout)
+          const maxPages = Math.min(totalPages, 20);
+          if (maxPages > 1) {
+            const pages = await Promise.all(
+              Array.from({ length: maxPages - 1 }, (_, i) =>
+                aimFetch('/calls', { 'startedAt[]': [liveFromISO, liveToISO], perPage: '500', page: String(i + 2) }).catch(() => null)
+              )
+            );
+            for (const p of pages) { if (p?.data) allDialCalls.push(...p.data); }
+          }
+
+          // Accumulate total minutes & cost per list and agent
           const liveListMin:  Record<string, number> = {};
           const liveListCost: Record<string, number> = {};
           const liveAgentMin:  Record<string, number> = {};
@@ -306,7 +324,7 @@ export async function GET(request: Request) {
             const durationSec = call.endedAt && call.startedAt
               ? (new Date(call.endedAt).getTime() - new Date(call.startedAt).getTime()) / 1000
               : 0;
-            const cost = call.price ?? 0;
+            const cost = durationSec > 0 ? (durationSec / 60) * COST_PER_MIN : 0;
 
             liveListMin[list]    = (liveListMin[list] ?? 0) + durationSec / 60;
             liveListCost[list]   = (liveListCost[list] ?? 0) + cost;
