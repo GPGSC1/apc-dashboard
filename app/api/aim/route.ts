@@ -159,6 +159,8 @@ export async function GET(request: Request) {
 
     const byList:  Record<string, ListData> = {};
     const byAgent: Record<string, { t: number; min: number; cost: number }> = {};
+    // Track most recent agent for each phone from ALL calls (not just transfers)
+    const allCallPhoneAgent: Record<string, { agent: string; date: string }> = {};
 
     for (const li of Object.keys(KNOWN_LISTS)) byList[li] = makeListData(li);
 
@@ -169,6 +171,17 @@ export async function GET(request: Request) {
           ? (() => { const d = new Date(seedMaxDate + 'T00:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })()
           : seedMaxDate)
       : '';
+
+    // Load all-call phone→agent from seed (fallback for deal attribution)
+    if (seed && (seed as any).phoneToAgentAll) {
+      for (const [phone, entry] of Object.entries((seed as any).phoneToAgentAll)) {
+        const e = entry as { agent: string; date: string };
+        const existing = allCallPhoneAgent[phone];
+        if (!existing || e.date > existing.date) {
+          allCallPhoneAgent[phone] = e;
+        }
+      }
+    }
 
     let seedCount = 0;
     if (seed && seedMaxDate) {
@@ -289,6 +302,7 @@ export async function GET(request: Request) {
           }
 
           // Accumulate total minutes & cost per list and agent from ALL calls
+          // Also build phone→agent from ALL calls (not just transfers) for deal attribution
           const liveListMin:  Record<string, number> = {};
           const liveListCost: Record<string, number> = {};
           const liveAgentMin:  Record<string, number> = {};
@@ -309,6 +323,16 @@ export async function GET(request: Request) {
             liveListCost[list]   = (liveListCost[list] ?? 0) + cost;
             liveAgentMin[agent]  = (liveAgentMin[agent] ?? 0) + durationSec / 60;
             liveAgentCost[agent] = (liveAgentCost[agent] ?? 0) + cost;
+
+            // Track most recent agent that called each phone (any outcome)
+            const phone = (call.to ?? "").replace(/\D/g, "").slice(-10);
+            const callDate = call.startedAt ?? "";
+            if (phone.length === 10 && agent && agent !== "Unknown") {
+              const existing = allCallPhoneAgent[phone];
+              if (!existing || callDate > existing.date) {
+                allCallPhoneAgent[phone] = { agent, date: callDate };
+              }
+            }
           }
 
           // Apply total min/cost to byList
@@ -356,6 +380,12 @@ export async function GET(request: Request) {
       };
     }
 
+    // Flatten allCallPhoneAgent to simple phone→agent map
+    const allCallPhoneToAgent: Record<string, string> = {};
+    for (const [phone, entry] of Object.entries(allCallPhoneAgent)) {
+      allCallPhoneToAgent[phone] = entry.agent;
+    }
+
     return NextResponse.json({
       ok:          true,
       dateRange:   { from: fromDate, to: toDate },
@@ -364,6 +394,7 @@ export async function GET(request: Request) {
       ...(liveError ? { liveError } : {}),
       byList:      byListOut,
       byAgent,
+      allCallPhoneToAgent,
       lastUpdated: new Date().toISOString(),
     });
 

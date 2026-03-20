@@ -201,6 +201,17 @@ async function updateAimSeed(targetDate) {
       listCost[listKey] = (listCost[listKey] || 0) + cost;
       agentMin[agent] = (agentMin[agent] || 0) + dSec / 60;
       agentCost[agent] = (agentCost[agent] || 0) + cost;
+
+      // Track most recent agent for each phone (ALL calls, not just transfers)
+      const phone = (call.to || "").replace(/\D/g, "").slice(-10);
+      const callDate = call.startedAt || "";
+      if (phone.length === 10 && agent && agent !== "Unknown") {
+        const existing = seed.phoneToAgentAll?.[phone];
+        if (!existing || callDate > existing.date) {
+          if (!seed.phoneToAgentAll) seed.phoneToAgentAll = {};
+          seed.phoneToAgentAll[phone] = { agent, date: callDate };
+        }
+      }
     }
 
     // Write per-list dailyCosts

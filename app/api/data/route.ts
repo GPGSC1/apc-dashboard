@@ -234,6 +234,14 @@ export async function GET(request: Request) {
             }
           }
         }
+
+        // Load all-call phone→agent as fallback (covers phones dialed but not transferred)
+        const allPTA = aimSeed.phoneToAgentAll ?? {};
+        for (const [phone, entry] of Object.entries(allPTA)) {
+          if (phone.length === 10 && !phoneToAgent.has(phone)) {
+            phoneToAgent.set(phone, (entry as any).agent);
+          }
+        }
       }
     } catch (e) {
       console.error("[data/route] aim_seed.json transfers read failed:", e);
@@ -284,6 +292,14 @@ export async function GET(request: Request) {
               if (typeof phone === "string" && phone.length === 10 && !phoneToAgent.has(phone)) {
                 phoneToAgent.set(phone, agent as string);
               }
+            }
+          }
+
+          // Load all-call phone→agent (fallback for deals with no transfer record)
+          const allPTA = aimData.allCallPhoneToAgent ?? {};
+          for (const [phone, agent] of Object.entries(allPTA)) {
+            if (typeof phone === "string" && phone.length === 10 && !phoneToAgent.has(phone)) {
+              phoneToAgent.set(phone, agent as string);
             }
           }
         }
