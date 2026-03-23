@@ -10,10 +10,15 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 export async function GET(request: NextRequest) {
-  // ─── 1. Auth check (Vercel cron sends CRON_SECRET) ────────────────────────
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // ─── 1. Auth check ─────────────────────────────────────────────────────────
+  // Vercel cron sets CRON_SECRET in Authorization header on Pro plan.
+  // Also accept requests without auth for Hobby plan cron (no secret injected).
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret) {
+    const authHeader = request.headers.get("authorization");
+    if (authHeader !== `Bearer ${cronSecret}`) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
   }
 
   const config = await getConfig();
