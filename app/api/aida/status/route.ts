@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getState, getConfig, getLog } from "../../../../lib/aida/kv-schema";
-import { todayCentral, isBusinessHours, nowCentral } from "../../../../lib/aida/time";
+import { todayCentral, isBusinessHours, nowCentralDisplay } from "../../../../lib/aida/time";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +11,6 @@ export async function GET() {
     getLog(todayCentral()),
   ]);
 
-  const now = nowCentral();
   const recentActions = todayLog.slice(-20); // last 20 entries
 
   return NextResponse.json({
@@ -40,7 +39,7 @@ export async function GET() {
       businessHours: config.businessHours,
     },
     isBusinessHours: isBusinessHours(config),
-    currentTimeCT: now.toLocaleString("en-US", { timeZone: "America/Chicago" }),
+    currentTimeCT: nowCentralDisplay(),
     recentActions,
   });
 }
