@@ -202,9 +202,9 @@ function ByListView({ data, itdData, loading }: { data: DashData; itdData: DashD
           <div style={{ fontSize:11, fontWeight:700, color:C.text, marginBottom:4 }}>TOTAL</div>
           <div style={{ fontFamily:"monospace", fontSize:12, color:C.text, marginBottom:4 }}>{fc(totals.listCost)}</div>
           <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>ITD Deal Count</div>
-          <div style={{ fontFamily:"monospace", fontSize:12, color:C.text, marginBottom:4 }}>{Object.values(itdData.byList).reduce((a, r) => a + (r.s || 0), 0)}</div>
+          <div style={{ fontFamily:"monospace", fontSize:12, color:C.text, marginBottom:4 }}>{(() => { const itdDeals = Object.values(itdData.byList).reduce((a: number, r: any) => a + (r.s || 0), 0); return itdDeals; })()}</div>
           <div style={{ fontSize:9, color:C.muted, marginBottom:2 }}>Cost/Deal</div>
-          <div style={{ fontFamily:"monospace", fontSize:12, color:C.amber }}>{totals.s>0?fc(totals.listCost/totals.s):"—"}</div>
+          <div style={{ fontFamily:"monospace", fontSize:12, color:C.amber }}>{(() => { const itdDeals = Object.values(itdData.byList).reduce((a: number, r: any) => a + (r.s || 0), 0); return itdDeals > 0 ? fc(totals.listCost / itdDeals) : "—"; })()}</div>
         </div>
       </div>
 
