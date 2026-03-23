@@ -87,7 +87,7 @@ async function login(): Promise<string[]> {
   const viewStateGen = extractField(r2.body, "__VIEWSTATEGENERATOR");
   const eventVal = extractField(r2.body, "__EVENTVALIDATION");
 
-  if (!viewState) throw new Error("3CX wallboard: could not extract ViewState");
+  if (!viewState) throw new Error(`3CX wallboard: could not extract ViewState from ${loginUrl} (status=${r2.status}, bodyLen=${r2.body.length}, cookies=${allCookies.length})`);
 
   // Step 2: POST credentials
   const formData = new URLSearchParams({
@@ -96,8 +96,8 @@ async function login(): Promise<string[]> {
     __EVENTVALIDATION: eventVal,
     txtUsername: username,
     txtPassword: password,
-    "imgBtnLogin.x": "28",
-    "imgBtnLogin.y": "8",
+    "x": "28",
+    "y": "8",
   });
 
   const r3 = await httpReq(loginUrl, {
@@ -111,7 +111,7 @@ async function login(): Promise<string[]> {
 
   // Verify we got auth cookie
   const hasAuth = allCookies.some((c) => c.includes(".ASPXAUTH"));
-  if (!hasAuth) throw new Error("3CX wallboard: login failed — no auth cookie");
+  if (!hasAuth) throw new Error(`3CX wallboard: login failed — no auth cookie. Status=${r3.status}, location=${r3.location}, cookies=${r3.cookies.join(',')}, bodySnippet=${r3.body.slice(0,200)}`);
 
   // Follow redirect to establish session
   if (r3.location) {
