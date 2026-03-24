@@ -2,14 +2,19 @@ name: Seed Update
 
 on:
   schedule:
-    # Central Time = UTC-5 (CDT) or UTC-6 (CST)
-    # 4am CT = 10:00 UTC (CDT) / 09:00 UTC (CST) — using 10:00 for CDT
-    - cron: '0 10 * * 1-5'   # 4am CT weekdays
-    - cron: '0 14 * * 1-5'   # 8am CT weekdays
-    - cron: '0 18 * * 1-5'   # 12pm CT weekdays
-    - cron: '0 22 * * 1-5'   # 4pm CT weekdays
-    - cron: '0 2 * * 2-6'    # 8pm CT weekdays (next UTC day for Mon-Fri)
-  workflow_dispatch:           # Allow manual trigger
+    # Central Time = UTC-5 (CDT currently)
+    # 4am CT = 09:00 UTC — full update (all 3 seeds, yesterday + catch-up)
+    - cron: '0 9 * * 1-5'
+    # 8am, 12pm, 4pm CT = 13, 17, 21 UTC — AIM intra-day only
+    - cron: '0 13 * * 1-5'
+    - cron: '0 17 * * 1-5'
+    - cron: '0 21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode: full (default) or aim-today'
+        required: false
+        default: 'full'
 
 jobs:
   update-seeds:
@@ -26,6 +31,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Determine run mode
+        id: mode
+        run: |
+          # Manual dispatch uses the input; scheduled uses the hour
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode || 'full' }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +%H)
+            if [ "$HOUR" = "09" ]; then
+              echo "mode=full" >> $GITHUB_OUTPUT
+            else
+              echo "mode=aim-today" >> $GITHUB_OUTPUT
+            fi
+          fi
+
       - name: Run seed update
         env:
           AIM_BEARER_TOKEN: ${{ secrets.AIM_BEARER_TOKEN }}
@@ -33,7 +53,14 @@ jobs:
           TCX_USERNAME: ${{ secrets.TCX_USERNAME }}
           TCX_PASSWORD: ${{ secrets.TCX_PASSWORD }}
           MOXY_BEARER: ${{ secrets.MOXY_BEARER }}
-        run: node seed-update.js
+        run: |
+          if [ "${{ steps.mode.outputs.mode }}" = "aim-today" ]; then
+            echo "Running AIM intra-day update..."
+            node seed-update.js --aim-today
+          else
+            echo "Running full seed update..."
+            node seed-update.js
+          fi
 
       - name: Commit and push if changed
         run: |

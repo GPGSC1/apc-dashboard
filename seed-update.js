@@ -44,9 +44,21 @@ function parseDate(raw) {
   return null;
 }
 
-function yesterdayCentral() {
+function centralNow() {
   const now = new Date();
-  const ct = new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
+  return new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
+}
+
+function todayCentral() {
+  const ct = centralNow();
+  const y = ct.getFullYear();
+  const m = String(ct.getMonth() + 1).padStart(2, "0");
+  const d = String(ct.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function yesterdayCentral() {
+  const ct = centralNow();
   ct.setDate(ct.getDate() - 1);
   const y = ct.getFullYear();
   const m = String(ct.getMonth() + 1).padStart(2, "0");
@@ -542,6 +554,19 @@ function addDays(dateStr, n) {
 
 // ─── Main ───────────────────────────────────────────────────────────────────
 async function main() {
+  // --aim-today: Intra-day AIM-only update (appends today's data to shrink live API window)
+  if (process.argv.includes("--aim-today")) {
+    const today = todayCentral();
+    console.log(`\n=== AIM Intra-day Update: ${today} ===\n`);
+    try {
+      await updateAimSeed(today);
+    } catch (e) {
+      console.error("Error:", e);
+    }
+    console.log("\n=== Done ===\n");
+    return;
+  }
+
   // If --date is specified, run for that single date
   const idx = process.argv.indexOf("--date");
   if (idx >= 0 && process.argv[idx + 1]) {
