@@ -341,7 +341,12 @@ export async function GET(request: Request) {
       const allPhonesHaveRecencyCheck = phones.every((p) => {
         const lastQueue = phoneLastQueue.get(p);
         if (!lastQueue) return true;
-        return lastQueue.queue.includes("mail 4") || lastQueue.queue.includes("home");
+        // Only block if most recent queue is a competing mail queue (not mail 4)
+        const q = lastQueue.queue;
+        if (!q) return true; // empty queue name = pass
+        if (q.includes("mail 4")) return true; // our queue = pass
+        if (q.includes("mail")) return false; // other mail queues (1,2,3,5,6) = block
+        return true; // CS, Collections, Home, CB, etc = pass
       });
 
       if (!allPhonesHaveRecencyCheck) {
@@ -397,7 +402,12 @@ export async function GET(request: Request) {
       const allPhonesOk = phones.every((p) => {
         const lastQueue = phoneLastQueue.get(p);
         if (!lastQueue) return true;
-        return lastQueue.queue.includes("mail 4") || lastQueue.queue.includes("home");
+        // Only block if most recent queue is a competing mail queue (not mail 4)
+        const q = lastQueue.queue;
+        if (!q) return true; // empty queue name = pass
+        if (q.includes("mail 4")) return true; // our queue = pass
+        if (q.includes("mail")) return false; // other mail queues (1,2,3,5,6) = block
+        return true; // CS, Collections, Home, CB, etc = pass
       });
       if (!allPhonesOk) continue;
 
@@ -446,7 +456,12 @@ export async function GET(request: Request) {
       const allPhonesOk = phones.every((p) => {
         const lastQueue = phoneLastQueue.get(p);
         if (!lastQueue) return true;
-        return lastQueue.queue.includes("mail 4") || lastQueue.queue.includes("home");
+        // Only block if most recent queue is a competing mail queue (not mail 4)
+        const q = lastQueue.queue;
+        if (!q) return true; // empty queue name = pass
+        if (q.includes("mail 4")) return true; // our queue = pass
+        if (q.includes("mail")) return false; // other mail queues (1,2,3,5,6) = block
+        return true; // CS, Collections, Home, CB, etc = pass
       });
       if (!allPhonesOk) continue;
       const attributedPhone = phones.find((p) =>
