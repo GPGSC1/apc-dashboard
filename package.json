@@ -10,10 +10,12 @@
     "seed-update": "node seed-update.js"
   },
   "dependencies": {
+    "@types/pg": "^8.20.0",
     "@upstash/redis": "^1.36.4",
     "adm-zip": "^0.5.16",
     "next": "16.1.6",
     "papaparse": "^5.5.3",
+    "pg": "^8.20.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "xlsx": "^0.18.5"
