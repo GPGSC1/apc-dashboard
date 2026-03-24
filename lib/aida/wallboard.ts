@@ -3,15 +3,20 @@ import { WallboardSnapshot } from "./types";
 
 // ─── Queue filter IDs (discovered from WallboardService.svc/GetWallboardFilters)
 const QUEUE_FILTERS: Record<string, string> = {
-  CS: "628",        // Q: CS (queue 8004)
+  CS: "628",          // Q: CS (queue 8004)
   Collections: "623", // Q: Collections (queue 8005)
-  Home1: "640",      // Q: Home 1 (queue 8006)
-  Home2: "642",      // Q: Home 2 (queue 8022)
-  Home3: "644",      // Q: Home 3 (queue 8039)
-  Home4: "648",      // Q: Home 4 (queue 8045)
-  Home5: "650",      // Q: Home 5 (queue 8048)
-  CB: "633",         // Q: CB (queue 8001)
-  // Mail queues — discover filter IDs on first deploy and update
+  Home1: "640",       // Q: Home 1 (queue 8006)
+  Home2: "642",       // Q: Home 2 (queue 8022)
+  Home3: "644",       // Q: Home 3 (queue 8039)
+  Home4: "648",       // Q: Home 4 (queue 8045)
+  Home5: "650",       // Q: Home 5 (queue 8048)
+  CB: "633",          // Q: CB (queue 8001)
+  Mail1: "626",       // Q: Mail 1 (queue 8023)
+  Mail2: "638",       // Q: Mail 2
+  Mail3: "639",       // Q: Mail 3
+  Mail4: "647",       // Q: Mail 4 (queue 8043)
+  Mail5: "649",       // Q: Mail 5
+  Mail6: "652",       // Q: Mail 6
 };
 
 const BASE_URL = "https://gpgsc.innicom.com";
