@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import * as fs from "fs";
 import * as path from "path";
 import { parseDate, todayLocal } from "../../../lib/date-utils";
+import { fetchTodayLiveCalls } from "../../../lib/tcx-live";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const CAMPAIGN_START = "2026-02-25";
@@ -247,16 +248,16 @@ export async function GET(request: Request) {
       console.error("[data/route] aim_seed.json transfers read failed:", e);
     }
 
-    // ─── 5. FETCH DATA IN PARALLEL (AIM + Moxy — 3CX uses pre-computed gate) ──
-    // No longer fetches /api/calls (was parsing 12MB seed on each request).
-    // Opened calls come from tcx_gate.json for seed dates, live 3CX API for today.
+    // ─── 5. FETCH DATA IN PARALLEL (AIM + Moxy + live 3CX inline) ─────────
+    // 3CX historical data comes from tcx_gate.json (pre-computed, 452KB).
+    // Today's live 3CX calls are fetched directly (not via /api/calls which loads 12MB seed).
     const today = todayLocal();
     const needLive3cx = toDate >= today;
-    const [aimRespRaw, moxyRespRaw, live3cxRespRaw] = await Promise.all([
+    const [aimRespRaw, moxyRespRaw, live3cxResult] = await Promise.all([
       fetch(`${origin}/api/aim?start=${fromDate}&end=${toDate}`).catch(() => null),
       fetch(`${origin}/api/moxy`).catch(() => null),
       needLive3cx
-        ? fetch(`${origin}/api/calls?from=${today}&to=${today}`).catch(() => null)
+        ? fetchTodayLiveCalls().catch((e) => ({ calls: [] as any[], error: String(e) }))
         : Promise.resolve(null),
     ]);
 
@@ -325,39 +326,37 @@ export async function GET(request: Request) {
       }
     }
 
-    // B) Use live 3CX API for today only
+    // B) Use inline live 3CX fetch for today (no /api/calls, no 12MB seed load)
     try {
-      if (live3cxRespRaw?.ok) {
-        const callsData = await live3cxRespRaw.json();
-        for (const call of (callsData.calls ?? [])) {
-          const phone = call.phoneNumber;
-          if (!phone || phone.length !== 10) continue;
+      const liveCalls = (live3cxResult as any)?.calls ?? [];
+      for (const call of liveCalls) {
+        const phone = call.phoneNumber;
+        if (!phone || phone.length !== 10) continue;
 
-          // Update Mail 4 ITD set and queue recency from live 3CX data
-          const queueName = (call.queueName ?? "").toLowerCase();
-          const callDate = call.startTime ?? "";
-          if (queueName.includes("mail 4")) {
-            mail4Phones.add(phone);
+        // Update Mail 4 ITD set and queue recency from live 3CX data
+        const queueName = (call.queueName ?? "").toLowerCase();
+        const callDate = call.startTime ?? "";
+        if (queueName.includes("mail 4")) {
+          mail4Phones.add(phone);
+        }
+        const isSalesQueue = SALES_QUEUES.some(q => queueName.includes(q));
+        if (isSalesQueue && callDate) {
+          const existing = phoneLastQueue.get(phone);
+          if (!existing || callDate > existing.date) {
+            phoneLastQueue.set(phone, { queue: queueName, date: callDate });
           }
-          const isSalesQueue = SALES_QUEUES.some(q => queueName.includes(q));
-          if (isSalesQueue && callDate) {
-            const existing = phoneLastQueue.get(phone);
-            if (!existing || callDate > existing.date) {
-              phoneLastQueue.set(phone, { queue: queueName, date: callDate });
-            }
-          }
+        }
 
-          // Count opened calls for attribution
-          if (!call.opened) continue;
-          totalOpenedCalls++;
-          const listKey = attributeToList(phone, phoneToLists, aimPhoneHistory);
-          if (listKey) {
-            openedByList[listKey] = (openedByList[listKey] ?? 0) + 1;
-          }
+        // Count opened calls for attribution
+        if (!call.opened) continue;
+        totalOpenedCalls++;
+        const listKey = attributeToList(phone, phoneToLists, aimPhoneHistory);
+        if (listKey) {
+          openedByList[listKey] = (openedByList[listKey] ?? 0) + 1;
         }
       }
     } catch (e) {
-      console.error("[data/route] live 3CX fetch failed:", e);
+      console.error("[data/route] live 3CX processing failed:", e);
     }
 
     // ─── 8. PROCESS MOXY SALES (seed + live, dedup by customerId) ──────
