@@ -1,5 +1,12 @@
 import { redis } from "./kv-schema";
 import { todayCentral } from "./time";
+import pg from "pg";
+
+function getPool() {
+  const url = process.env.POSTGRES_URL || process.env.DATABASE_URL;
+  if (!url) throw new Error("No POSTGRES_URL");
+  return new pg.Pool({ connectionString: url, ssl: { rejectUnauthorized: false }, max: 2 });
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -96,143 +103,150 @@ function monthStartDate(): string {
   return `${p.year}-${pad(p.month)}-01`;
 }
 
-// ─── Fetch dashboard data ───────────────────────────────────────────────────
+// ─── Fetch stats directly from Postgres ─────────────────────────────────────
 
-async function fetchDashboardData(start: string, end: string): Promise<any> {
-  const base = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : "http://localhost:3000";
+async function fetchPeriodStats(pool: pg.Pool, start: string, end: string): Promise<{
+  listStats: Record<string, PeriodStats>;
+  agentStats: Record<string, { transfers: number; deals: number; cost: number; min: number }>;
+}> {
+  // List-level: daily costs + opened calls + sales (simplified — no full attribution, just aggregates)
+  const dcResult = await pool.query(
+    "SELECT list_key, SUM(minutes) as min, SUM(cost) as cost FROM aim_daily_costs WHERE call_date BETWEEN $1 AND $2 GROUP BY list_key",
+    [start, end]
+  );
 
-  const res = await fetch(`${base}/api/data?start=${start}&end=${end}`, {
-    cache: "no-store",
-  });
-  if (!res.ok) return null;
-  return res.json();
-}
+  const openedResult = await pool.query(
+    "SELECT COUNT(*) as cnt FROM opened_calls WHERE call_date BETWEEN $1 AND $2",
+    [start, end]
+  );
 
-// ─── Build performance from API response ────────────────────────────────────
+  // Transfer counts per list
+  const tResult = await pool.query(
+    "SELECT list_key, COUNT(*) as cnt FROM aim_transfers WHERE call_date BETWEEN $1 AND $2 GROUP BY list_key",
+    [start, end]
+  );
 
-function extractListStats(data: any): Record<string, PeriodStats> {
-  const result: Record<string, PeriodStats> = {};
-  if (!data?.byList) return result;
+  // Sales count per list (simplified: count moxy deals in mail4 + on list)
+  const salesResult = await pool.query(`
+    SELECT lp.list_key, COUNT(DISTINCT m.contract_no) as cnt
+    FROM moxy_deals m
+    INNER JOIN mail4_phones mp ON mp.phone = m.home_phone OR mp.phone = m.mobile_phone
+    INNER JOIN list_phones lp ON lp.phone = m.home_phone OR lp.phone = m.mobile_phone
+    WHERE m.sold_date BETWEEN $1 AND $2
+      AND m.deal_status NOT IN ('Back Out', 'VOID', '')
+      AND (m.salesperson IS NULL OR m.salesperson NOT ILIKE '%fishbein%')
+    GROUP BY lp.list_key
+  `, [start, end]);
 
-  for (const [listKey, v] of Object.entries(data.byList as Record<string, any>)) {
-    const sales = v.s ?? 0;
-    const calls = v.o ?? 0; // opened calls
-    result[listKey] = {
-      sales,
-      calls,
-      closeRate: calls > 0 ? sales / calls : 0,
-      costPerSale: sales > 0 ? (v.cost ?? 0) / sales : null,
-      dialCost: v.cost ?? 0,
-      minutes: v.min ?? 0,
-    };
+  const listStats: Record<string, PeriodStats> = {};
+  for (const row of dcResult.rows) {
+    const lk = row.list_key.trim();
+    const min = Math.round(parseFloat(row.min));
+    const cost = Math.round(parseFloat(row.cost) * 100) / 100;
+    listStats[lk] = { sales: 0, calls: 0, closeRate: 0, costPerSale: null, dialCost: cost, minutes: min };
   }
-  return result;
-}
-
-function extractAgentListGrid(data: any): AgentListPerformance[] {
-  const results: AgentListPerformance[] = [];
-  const grid = data?.aimByAgent;
-  if (!grid) return results;
-
-  for (const [agent, lists] of Object.entries(grid as Record<string, Record<string, any>>)) {
-    for (const [listKey, cell] of Object.entries(lists)) {
-      results.push({
-        agent,
-        listKey,
-        transfers: cell.t ?? 0,
-        sales: cell.s ?? 0,
-        closeRate: (cell.t ?? 0) > 0 ? (cell.s ?? 0) / (cell.t ?? 0) : 0,
-        minutes: cell.min ?? 0,
-        cost: cell.cost ?? 0,
-      });
-    }
+  for (const row of tResult.rows) {
+    const lk = row.list_key.trim();
+    if (!listStats[lk]) listStats[lk] = { sales: 0, calls: 0, closeRate: 0, costPerSale: null, dialCost: 0, minutes: 0 };
+    listStats[lk].calls = parseInt(row.cnt);
   }
-  return results;
+  for (const row of salesResult.rows) {
+    const lk = row.list_key.trim();
+    if (!listStats[lk]) listStats[lk] = { sales: 0, calls: 0, closeRate: 0, costPerSale: null, dialCost: 0, minutes: 0 };
+    listStats[lk].sales = parseInt(row.cnt);
+  }
+  // Compute close rate and cost/sale
+  for (const s of Object.values(listStats)) {
+    s.closeRate = s.calls > 0 ? s.sales / s.calls : 0;
+    s.costPerSale = s.sales > 0 ? s.dialCost / s.sales : null;
+  }
+
+  // Agent-level stats
+  const agentResult = await pool.query(
+    "SELECT agent, SUM(minutes) as min, SUM(cost) as cost FROM aim_agent_daily_costs WHERE call_date BETWEEN $1 AND $2 GROUP BY agent",
+    [start, end]
+  );
+  const agentTResult = await pool.query(
+    "SELECT agent, COUNT(*) as cnt FROM aim_transfers WHERE call_date BETWEEN $1 AND $2 AND agent IS NOT NULL GROUP BY agent",
+    [start, end]
+  );
+
+  const agentStats: Record<string, { transfers: number; deals: number; cost: number; min: number }> = {};
+  for (const row of agentResult.rows) {
+    const a = row.agent.trim();
+    agentStats[a] = { transfers: 0, deals: 0, cost: Math.round(parseFloat(row.cost) * 100) / 100, min: Math.round(parseFloat(row.min)) };
+  }
+  for (const row of agentTResult.rows) {
+    const a = row.agent.trim();
+    if (!agentStats[a]) agentStats[a] = { transfers: 0, deals: 0, cost: 0, min: 0 };
+    agentStats[a].transfers = parseInt(row.cnt);
+  }
+
+  return { listStats, agentStats };
 }
 
 // ─── Main: refresh performance data ─────────────────────────────────────────
 
 export async function refreshPerformance(): Promise<PerformanceData> {
-  const today = todayCentral();
-  const yesterday = yesterdayDate();
-  const weekStart = weekStartDate();
-  const monthStart = monthStartDate();
+  const pool = getPool();
+  try {
+    const today = todayCentral();
+    const yesterday = yesterdayDate();
+    const weekStart = weekStartDate();
+    const monthStart = monthStartDate();
 
-  // Fetch all three ranges in parallel
-  const [yesterdayData, wtdData, mtdData] = await Promise.all([
-    fetchDashboardData(yesterday, yesterday),
-    fetchDashboardData(weekStart, today),
-    fetchDashboardData(monthStart, today),
-  ]);
+    // Query Postgres directly (no self-fetch) for all three periods
+    const [yesterdayPeriod, wtdPeriod, mtdPeriod] = await Promise.all([
+      fetchPeriodStats(pool, yesterday, yesterday),
+      fetchPeriodStats(pool, weekStart, today),
+      fetchPeriodStats(pool, monthStart, today),
+    ]);
 
-  // Build list performance
-  const yesterdayStats = extractListStats(yesterdayData);
-  const wtdStats = extractListStats(wtdData);
-  const mtdStats = extractListStats(mtdData);
+    // Build list performance
+    const emptyStats: PeriodStats = { sales: 0, calls: 0, closeRate: 0, costPerSale: null, dialCost: 0, minutes: 0 };
+    const allListKeys = new Set([
+      ...Object.keys(yesterdayPeriod.listStats),
+      ...Object.keys(wtdPeriod.listStats),
+      ...Object.keys(mtdPeriod.listStats),
+    ]);
 
-  const emptyStats: PeriodStats = { sales: 0, calls: 0, closeRate: 0, costPerSale: null, dialCost: 0, minutes: 0 };
-  const allListKeys = new Set([
-    ...Object.keys(yesterdayStats),
-    ...Object.keys(wtdStats),
-    ...Object.keys(mtdStats),
-  ]);
-
-  const lists: Record<string, ListPerformance> = {};
-  for (const listKey of allListKeys) {
-    const mtd = mtdStats[listKey] ?? emptyStats;
-    lists[listKey] = {
-      listKey,
-      yesterday: yesterdayStats[listKey] ?? emptyStats,
-      wtd: wtdStats[listKey] ?? emptyStats,
-      mtd,
-      // Score: close rate * 100, scaled. MTD is the primary signal.
-      score: Math.round(mtd.closeRate * 1000) / 10, // e.g. 0.08 → 8.0
-    };
-  }
-
-  // Build agent performance from MTD data (most meaningful period)
-  const agentGrid = extractAgentListGrid(mtdData);
-  const agentByAgent = (mtdData?.byAgent ?? {}) as Record<string, any>;
-
-  const agents: Record<string, AgentPerformance> = {};
-  for (const [agentName, agentData] of Object.entries(agentByAgent)) {
-    const byList: Record<string, AgentListPerformance> = {};
-    let totalTransfers = 0;
-    let totalSales = 0;
-
-    // Find this agent's per-list data from the grid
-    for (const cell of agentGrid) {
-      if (cell.agent !== agentName) continue;
-      if (cell.transfers > 0 || cell.sales > 0) {
-        byList[cell.listKey] = cell;
-        totalTransfers += cell.transfers;
-        totalSales += cell.sales;
-      }
+    const lists: Record<string, ListPerformance> = {};
+    for (const listKey of allListKeys) {
+      const mtd = mtdPeriod.listStats[listKey] ?? emptyStats;
+      lists[listKey] = {
+        listKey,
+        yesterday: yesterdayPeriod.listStats[listKey] ?? emptyStats,
+        wtd: wtdPeriod.listStats[listKey] ?? emptyStats,
+        mtd,
+        score: Math.round(mtd.closeRate * 1000) / 10,
+      };
     }
 
-    agents[agentName] = {
-      agent: agentName,
-      totalTransfers: agentData.t ?? totalTransfers,
-      totalSales: agentData.deals ?? totalSales,
-      overallCloseRate: totalTransfers > 0 ? totalSales / totalTransfers : 0,
-      totalCost: agentData.cost ?? 0,
-      byList,
-      score: Math.round((totalTransfers > 0 ? totalSales / totalTransfers : 0) * 1000) / 10,
+    // Build agent performance from MTD
+    const agents: Record<string, AgentPerformance> = {};
+    for (const [agentName, stats] of Object.entries(mtdPeriod.agentStats)) {
+      agents[agentName] = {
+        agent: agentName,
+        totalTransfers: stats.transfers,
+        totalSales: stats.deals,
+        overallCloseRate: stats.transfers > 0 ? stats.deals / stats.transfers : 0,
+        totalCost: stats.cost,
+        byList: {},
+        score: Math.round((stats.transfers > 0 ? stats.deals / stats.transfers : 0) * 1000) / 10,
+      };
+    }
+
+    const perf: PerformanceData = {
+      lists,
+      agents,
+      lastUpdated: new Date().toISOString(),
     };
+
+    await redis().set(KV_KEY, perf, { ex: 86400 });
+    return perf;
+  } finally {
+    await pool.end();
   }
-
-  const perf: PerformanceData = {
-    lists,
-    agents,
-    lastUpdated: new Date().toISOString(),
-  };
-
-  // Store in KV
-  await redis().set(KV_KEY, perf, { ex: 86400 }); // 24h TTL
-
-  return perf;
 }
 
 // ─── Read cached performance ────────────────────────────────────────────────
