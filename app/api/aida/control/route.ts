@@ -99,6 +99,8 @@ export async function POST(request: NextRequest) {
           minConcurrentCalls: existing?.minConcurrentCalls ?? 1,
           status: c.status as any,
           agentId: c.agentId,
+          callsTotal: c.callsTotal,
+          callsCompleted: c.callsCompleted,
         };
       }
       await setState(state);

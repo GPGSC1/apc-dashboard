@@ -28,6 +28,8 @@ export async function GET() {
             concurrentCalls: c.currentConcurrentCalls,
             max: c.maxConcurrentCalls,
             status: c.status,
+            callsTotal: c.callsTotal ?? 0,
+            callsCompleted: c.callsCompleted ?? 0,
           })),
         }
       : null,

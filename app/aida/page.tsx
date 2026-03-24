@@ -9,6 +9,8 @@ interface StatusCampaign {
   concurrentCalls: number;
   max: number;
   status: "in_progress" | "paused" | "completed" | "not_launched";
+  callsTotal: number;
+  callsCompleted: number;
 }
 
 interface LogEntry {
@@ -302,7 +304,7 @@ export default function AidaPage() {
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead>
                     <tr style={{ background: C.surface }}>
-                      {["List", "Campaign", "Status", "Calls", "Max", "Util"].map(h => (
+                      {["List", "Campaign", "Status", "Calls", "Max", "List Progress"].map(h => (
                         <th key={h} style={{
                           padding: "8px 12px", fontSize: 10, color: C.muted, textTransform: "uppercase",
                           letterSpacing: ".12em", textAlign: h === "Campaign" ? "left" : "center",
@@ -315,7 +317,6 @@ export default function AidaPage() {
                     {[...campaigns]
                       .sort((a, b) => a.listKey.localeCompare(b.listKey) || a.name.localeCompare(b.name))
                       .map(c => {
-                        const pct = c.max > 0 ? (c.concurrentCalls / c.max) * 100 : 0;
                         const statusColor = c.status === "in_progress" ? C.green : c.status === "paused" ? C.amber : C.dim;
                         return (
                           <tr key={c.id} style={{ borderBottom: `1px solid ${C.dim}` }}>
@@ -340,12 +341,23 @@ export default function AidaPage() {
                               {c.max}
                             </td>
                             <td style={{ padding: "7px 12px", textAlign: "center" }}>
-                              <div style={{ width: 50, height: 6, background: C.dim, borderRadius: 3, display: "inline-block", position: "relative" }}>
-                                <div style={{
-                                  height: "100%", borderRadius: 3, width: `${Math.min(pct, 100)}%`,
-                                  background: pct >= 90 ? C.green : pct >= 50 ? C.accent : C.amber,
-                                }} />
-                              </div>
+                              {c.callsTotal > 0 ? (
+                                <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                  <div style={{ width: 60, height: 6, background: C.dim, borderRadius: 3, position: "relative" }}>
+                                    <div style={{
+                                      height: "100%", borderRadius: 3,
+                                      width: `${Math.min((c.callsCompleted / c.callsTotal) * 100, 100)}%`,
+                                      background: (c.callsCompleted / c.callsTotal) >= 0.9 ? C.red
+                                        : (c.callsCompleted / c.callsTotal) >= 0.7 ? C.amber : C.accent,
+                                    }} />
+                                  </div>
+                                  <span style={{ fontFamily: "monospace", fontSize: 10, color: C.muted }}>
+                                    {Math.round((c.callsCompleted / c.callsTotal) * 100)}%
+                                  </span>
+                                </div>
+                              ) : (
+                                <span style={{ color: C.dim, fontSize: 10 }}>—</span>
+                              )}
                             </td>
                           </tr>
                         );

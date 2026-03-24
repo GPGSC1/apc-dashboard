@@ -10,6 +10,8 @@ export interface AidaCampaign {
   minConcurrentCalls: number;
   status: "in_progress" | "paused" | "completed" | "not_launched";
   agentId: string;
+  callsTotal: number;      // total leads in campaign
+  callsCompleted: number;  // leads already called
 }
 
 /** AIDA operational mode */

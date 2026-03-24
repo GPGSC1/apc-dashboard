@@ -39,6 +39,8 @@ export async function GET(request: NextRequest) {
         minConcurrentCalls: 1,
         status: c.status as any,
         agentId: c.agentId,
+        callsTotal: c.callsTotal,
+        callsCompleted: c.callsCompleted,
       };
     }
     state = {

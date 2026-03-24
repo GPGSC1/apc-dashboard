@@ -91,7 +91,7 @@ export async function getCampaign(
 
 /** List all active/paused campaigns */
 export async function listActiveCampaigns(): Promise<
-  Array<{ id: number; name: string; status: string; concurrentCalls: number; agentId: string }>
+  Array<{ id: number; name: string; status: string; concurrentCalls: number; agentId: string; callsTotal: number; callsCompleted: number }>
 > {
   const res = await fetch(`${AIM_REST}/campaigns?perPage=100&page=1`, {
     headers: { Authorization: `Bearer ${token()}` },
@@ -107,5 +107,7 @@ export async function listActiveCampaigns(): Promise<
       status: c.status,
       concurrentCalls: c.concurrentCalls,
       agentId: c.agentId,
+      callsTotal: c.calls?.total ?? 0,
+      callsCompleted: c.calls?.completed ?? 0,
     }));
 }
