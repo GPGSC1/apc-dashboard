@@ -516,17 +516,31 @@ function rebuildListGate() {
     console.log(`[Lists]   ${file} → ${listKey}: ${count} phones`);
   }
 
+  // Filter to only phones in Mail 4 (others can never match a deal)
+  const tcxGatePath = path.join(DATA_DIR, "tcx_gate.json");
+  let mail4Set = new Set();
+  if (fs.existsSync(tcxGatePath)) {
+    const tcxGate = JSON.parse(fs.readFileSync(tcxGatePath, "utf8"));
+    mail4Set = new Set(tcxGate.mail4Phones || []);
+  }
+
+  const filtered = {};
+  for (const [phone, lists] of Object.entries(phoneToLists)) {
+    if (mail4Set.has(phone)) filtered[phone] = lists;
+  }
+
+  const filteredCount = Object.keys(filtered).length;
   const totalPhones = Object.keys(phoneToLists).length;
   const gatePath = path.join(DATA_DIR, "list_gate.json");
   const gateData = {
     generatedAt: new Date().toISOString(),
-    totalPhones,
-    phoneToLists,
+    totalPhones: filteredCount,
+    phoneToLists: filtered,
   };
   fs.writeFileSync(gatePath + ".tmp", JSON.stringify(gateData));
   fs.renameSync(gatePath + ".tmp", gatePath);
   const gateSize = fs.statSync(gatePath).size;
-  console.log(`[Lists] Wrote list_gate.json (${(gateSize / 1024 / 1024).toFixed(1)}MB — ${totalPhones} unique phones)`);
+  console.log(`[Lists] Wrote list_gate.json (${(gateSize / 1024).toFixed(0)}KB — ${filteredCount} phones from ${totalPhones} total, filtered to Mail 4 only)`);
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────
