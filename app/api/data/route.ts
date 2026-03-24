@@ -346,7 +346,7 @@ export async function GET(request: Request) {
         const q = lastQueue.queue;
         if (!q) return true; // empty queue name = pass
         if (q.includes("mail 4")) return true; // our queue = pass
-        if (q.includes("mail") && lastQueue.date <= s.soldDate) return false; // competing mail queue BEFORE sale = block
+        if (q.includes("mail") && s.soldDate && lastQueue.date <= s.soldDate) return false; // competing mail queue BEFORE sale = block
         return true; // everything else = pass (including competing mail AFTER sale)
       });
 
@@ -408,7 +408,7 @@ export async function GET(request: Request) {
         const q = lastQueue.queue;
         if (!q) return true; // empty queue name = pass
         if (q.includes("mail 4")) return true; // our queue = pass
-        if (q.includes("mail") && lastQueue.date <= s.soldDate) return false; // competing mail queue BEFORE sale = block
+        if (q.includes("mail") && s.soldDate && lastQueue.date <= s.soldDate) return false; // competing mail queue BEFORE sale = block
         return true; // everything else = pass (including competing mail AFTER sale)
       });
       if (!allPhonesOk) continue;
@@ -463,7 +463,7 @@ export async function GET(request: Request) {
         const q = lastQueue.queue;
         if (!q) return true; // empty queue name = pass
         if (q.includes("mail 4")) return true; // our queue = pass
-        if (q.includes("mail") && lastQueue.date <= s.soldDate) return false; // competing mail queue BEFORE sale = block
+        if (q.includes("mail") && s.soldDate && lastQueue.date <= s.soldDate) return false; // competing mail queue BEFORE sale = block
         return true; // everything else = pass (including competing mail AFTER sale)
       });
       if (!allPhonesOk) continue;
