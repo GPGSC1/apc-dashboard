@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import * as fs from "fs";
 import * as path from "path";
 import https from "https";
+import { query } from "../../../lib/db/connection";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -630,6 +631,139 @@ async function refreshMoxySeed(dates: string[]): Promise<{ addedDeals: number }>
   return { addedDeals };
 }
 
+// ─── Postgres Sync ───────────────────────────────────────────────────────────
+
+async function syncToPostgres(dates: string[]): Promise<void> {
+  console.log(`[seed-refresh/PG] Syncing ${dates.join(", ")} to Postgres...`);
+
+  try {
+    // 1. Sync AIM transfers for these dates
+    const aimSeed = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "aim_seed.json"), "utf8"));
+    for (const date of dates) {
+      const dayTransfers = (aimSeed.transfers ?? []).filter((t: any) => t.date === date);
+      if (dayTransfers.length > 0) {
+        for (let i = 0; i < dayTransfers.length; i += 100) {
+          const batch = dayTransfers.slice(i, i + 100);
+          const vals: any[] = [];
+          const placeholders = batch.map((t: any, j: number) => {
+            const off = j * 7;
+            vals.push(t.callId, t.phone, t.listKey, t.agent, t.date, t.dSec || 0, t.cost || 0);
+            return `($${off+1},$${off+2},$${off+3},$${off+4},$${off+5},$${off+6},$${off+7})`;
+          }).join(",");
+          await query(`INSERT INTO aim_transfers (call_id,phone,list_key,agent,call_date,duration_sec,cost) VALUES ${placeholders} ON CONFLICT DO NOTHING`, vals);
+        }
+      }
+
+      // 2. Sync AIM dailyCosts — REPLACE for this date
+      for (const [li, dateCosts] of Object.entries(aimSeed.dailyCosts ?? {})) {
+        const dc = (dateCosts as any)[date];
+        if (dc) {
+          await query(
+            `INSERT INTO aim_daily_costs (list_key,call_date,minutes,cost) VALUES ($1,$2,$3,$4) ON CONFLICT (list_key,call_date) DO UPDATE SET minutes=$3, cost=$4`,
+            [li, date, dc.min, dc.cost]
+          );
+        }
+      }
+
+      // 3. Sync AIM agentDailyCosts — REPLACE for this date
+      for (const [agent, dateCosts] of Object.entries(aimSeed.agentDailyCosts ?? {})) {
+        const dc = (dateCosts as any)[date];
+        if (dc) {
+          await query(
+            `INSERT INTO aim_agent_daily_costs (agent,call_date,minutes,cost) VALUES ($1,$2,$3,$4) ON CONFLICT (agent,call_date) DO UPDATE SET minutes=$3, cost=$4`,
+            [agent, date, dc.min, dc.cost]
+          );
+        }
+      }
+    }
+
+    // 4. Sync phoneToAgentAll
+    const ptaAll = aimSeed.phoneToAgentAll ?? {};
+    const ptaEntries = Object.entries(ptaAll);
+    for (let i = 0; i < ptaEntries.length; i += 100) {
+      const batch = ptaEntries.slice(i, i + 100);
+      const vals: any[] = [];
+      const placeholders = batch.map(([phone, entry]: [string, any], j: number) => {
+        const off = j * 3;
+        vals.push(phone, entry.agent, entry.date?.slice(0, 10) || dates[0]);
+        return `($${off+1},$${off+2},$${off+3})`;
+      }).join(",");
+      if (placeholders) {
+        await query(`INSERT INTO aim_phone_agent (phone,agent,last_call_date) VALUES ${placeholders} ON CONFLICT (phone) DO UPDATE SET agent=EXCLUDED.agent, last_call_date=EXCLUDED.last_call_date`, vals);
+      }
+    }
+
+    // 5. Sync 3CX gate data
+    const gatePath = path.join(DATA_DIR, "tcx_gate.json");
+    if (fs.existsSync(gatePath)) {
+      const gate = JSON.parse(fs.readFileSync(gatePath, "utf8"));
+
+      // Mail 4 phones
+      const m4 = gate.mail4Phones ?? [];
+      for (let i = 0; i < m4.length; i += 200) {
+        const batch = m4.slice(i, i + 200);
+        const vals: any[] = [];
+        const placeholders = batch.map((p: string, j: number) => { vals.push(p); return `($${j+1})`; }).join(",");
+        if (placeholders) await query(`INSERT INTO mail4_phones (phone) VALUES ${placeholders} ON CONFLICT DO NOTHING`, vals);
+      }
+
+      // Phone last queue
+      const plq = Object.entries(gate.phoneLastQueue ?? {});
+      for (let i = 0; i < plq.length; i += 100) {
+        const batch = plq.slice(i, i + 100);
+        const vals: any[] = [];
+        const placeholders = batch.map(([phone, entry]: [string, any], j: number) => {
+          const off = j * 3;
+          vals.push(phone, entry.queue, entry.date);
+          return `($${off+1},$${off+2},$${off+3})`;
+        }).join(",");
+        if (placeholders) await query(`INSERT INTO phone_last_queue (phone,queue,call_date) VALUES ${placeholders} ON CONFLICT (phone) DO UPDATE SET queue=EXCLUDED.queue, call_date=EXCLUDED.call_date`, vals);
+      }
+
+      // Opened calls by date (only for refreshed dates)
+      for (const date of dates) {
+        const phones = (gate.openedByDate ?? {})[date];
+        if (phones && phones.length > 0) {
+          const vals: any[] = [];
+          const placeholders = phones.map((p: string, j: number) => {
+            const off = j * 2;
+            vals.push(date, p);
+            return `($${off+1},$${off+2})`;
+          }).join(",");
+          await query(`INSERT INTO opened_calls (call_date,phone) VALUES ${placeholders} ON CONFLICT DO NOTHING`, vals);
+        }
+      }
+    }
+
+    // 6. Sync Moxy deals for these dates
+    const moxySeed = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "moxy_seed.json"), "utf8"));
+    for (const date of dates) {
+      const dayDeals = (moxySeed.deals ?? []).filter((d: any) => {
+        const sd = parseDate(d.soldDate);
+        return sd === date;
+      });
+      for (let i = 0; i < dayDeals.length; i += 50) {
+        const batch = dayDeals.slice(i, i + 50);
+        for (const d of batch) {
+          await query(
+            `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+             ON CONFLICT DO NOTHING`,
+            [d.customerId, d.contractNo, parseDate(d.soldDate), d.firstName, d.lastName, d.homePhone, d.mobilePhone, d.salesperson, d.dealStatus, d.promoCode, d.campaign, d.source, d.cancelReason, d.make, d.model, d.state, parseFloat(d.admin) || 0]
+          );
+        }
+      }
+    }
+
+    // 7. Update metadata
+    await query(`INSERT INTO seed_metadata (source, max_date, updated_at) VALUES ('refresh', $1, NOW()) ON CONFLICT (source) DO UPDATE SET max_date=$1, updated_at=NOW()`, [dates[dates.length - 1]]);
+
+    console.log(`[seed-refresh/PG] Postgres sync complete for ${dates.join(", ")}`);
+  } catch (e) {
+    console.error(`[seed-refresh/PG] Postgres sync error:`, e);
+  }
+}
+
 // ─── Main Route Handler ───────────────────────────────────────────────────────
 
 export const maxDuration = 60;
@@ -684,6 +818,9 @@ export async function GET() {
     for (const r of results) {
       if (r.status === "rejected") console.error("[seed-refresh] Error:", r.reason);
     }
+
+    // Sync updated seed data to Postgres
+    await syncToPostgres(datesToFetch);
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`[seed-refresh] Complete in ${elapsed}s — AIM: ${JSON.stringify(aimResult)}, 3CX: ${JSON.stringify(tcxResult)}, Moxy: ${JSON.stringify(moxyResult)}`);
