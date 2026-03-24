@@ -94,9 +94,9 @@ export async function listActiveCampaigns(): Promise<
   Array<{ id: number; name: string; status: string; concurrentCalls: number; agentId: string; callsTotal: number; callsCompleted: number }>
 > {
   const allCampaigns: any[] = [];
-  const maxPages = 5; // 500 campaigns max
+  const maxPages = 10; // 500 campaigns max (50 per page)
   for (let page = 1; page <= maxPages; page++) {
-    const res = await fetch(`${AIM_REST}/campaigns?perPage=100&page=${page}`, {
+    const res = await fetch(`${AIM_REST}/campaigns?perPage=50&page=${page}`, {
       headers: { Authorization: `Bearer ${token()}` },
       cache: "no-store",
     });
@@ -104,7 +104,7 @@ export async function listActiveCampaigns(): Promise<
     const data = await res.json();
     if (!data.data?.length) break;
     allCampaigns.push(...data.data);
-    if (data.data.length < 100) break; // last page
+    if (data.data.length < 50) break; // last page
   }
   return allCampaigns
     .filter((c: any) => c.status === "in_progress" || c.status === "paused" || c.status === "completed")
