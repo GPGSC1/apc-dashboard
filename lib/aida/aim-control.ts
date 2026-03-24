@@ -91,7 +91,7 @@ export async function getCampaign(
 
 /** List all active/paused/completed campaigns (paginated) */
 export async function listActiveCampaigns(): Promise<
-  Array<{ id: number; name: string; status: string; concurrentCalls: number; agentId: string; callsTotal: number; callsCompleted: number }>
+  Array<{ id: number; name: string; status: string; concurrentCalls: number; agentId: string; agentName: string; callsTotal: number; callsCompleted: number }>
 > {
   const allCampaigns: any[] = [];
   const maxPages = 10; // 500 campaigns max (50 per page)
@@ -124,6 +124,7 @@ export async function listActiveCampaigns(): Promise<
       status: c.status,
       concurrentCalls: c.concurrentCalls,
       agentId: c.agentId,
+      agentName: c.agent?.name ?? "Unknown",
       callsTotal: c.calls?.total ?? 0,
       callsCompleted: c.calls?.completed ?? 0,
     }));

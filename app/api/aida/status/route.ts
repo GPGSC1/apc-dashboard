@@ -28,6 +28,7 @@ export async function GET() {
             concurrentCalls: c.currentConcurrentCalls,
             max: c.maxConcurrentCalls,
             status: c.status,
+            agentName: (c as any).agentName ?? "Unknown",
             callsTotal: c.callsTotal ?? 0,
             callsCompleted: c.callsCompleted ?? 0,
           })),

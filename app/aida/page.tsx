@@ -9,6 +9,7 @@ interface StatusCampaign {
   concurrentCalls: number;
   max: number;
   status: "in_progress" | "paused" | "completed" | "not_launched";
+  agentName: string;
   callsTotal: number;
   callsCompleted: number;
 }
@@ -324,10 +325,10 @@ export default function AidaPage() {
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead>
                     <tr style={{ background: C.surface }}>
-                      {["List", "Campaign", campaignTab === "completed" ? "" : "Calls", campaignTab === "completed" ? "" : "Max", "List Progress"].filter(Boolean).map(h => (
+                      {["List", "Campaign", "Agent", campaignTab === "completed" ? "" : "Calls", campaignTab === "completed" ? "" : "Max", "List Progress"].filter(Boolean).map(h => (
                         <th key={h} style={{
                           padding: "8px 12px", fontSize: 10, color: C.muted, textTransform: "uppercase",
-                          letterSpacing: ".12em", textAlign: h === "Campaign" ? "left" : "center",
+                          letterSpacing: ".12em", textAlign: (h === "Campaign" || h === "Agent") ? "left" : "center",
                           borderBottom: `1px solid ${C.border}`,
                         }}>{h}</th>
                       ))}
@@ -345,6 +346,9 @@ export default function AidaPage() {
                             </td>
                             <td style={{ padding: "7px 12px", fontSize: 11, color: C.text, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                               {c.name}
+                            </td>
+                            <td style={{ padding: "7px 12px", fontSize: 10, color: C.muted, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {c.agentName ?? "—"}
                             </td>
                             {campaignTab !== "completed" && (
                               <td style={{ padding: "7px 12px", fontFamily: "monospace", fontSize: 13, textAlign: "center", fontWeight: 600, color: C.text }}>
