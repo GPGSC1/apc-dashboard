@@ -96,16 +96,26 @@ export async function listActiveCampaigns(): Promise<
   const allCampaigns: any[] = [];
   const maxPages = 10; // 500 campaigns max (50 per page)
   for (let page = 1; page <= maxPages; page++) {
-    const res = await fetch(`${AIM_REST}/campaigns?perPage=50&page=${page}`, {
-      headers: { Authorization: `Bearer ${token()}` },
-      cache: "no-store",
-    });
-    if (!res.ok) break;
-    const data = await res.json();
-    if (!data.data?.length) break;
-    allCampaigns.push(...data.data);
-    if (data.data.length < 50) break; // last page
+    try {
+      const res = await fetch(`${AIM_REST}/campaigns?perPage=50&page=${page}`, {
+        headers: { Authorization: `Bearer ${token()}` },
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        console.error(`[AIM] campaigns page ${page} failed: ${res.status} ${res.statusText}`);
+        break;
+      }
+      const data = await res.json();
+      if (!data.data?.length) break;
+      allCampaigns.push(...data.data);
+      console.log(`[AIM] page ${page}: ${data.data.length} campaigns (total so far: ${allCampaigns.length})`);
+      if (data.data.length < 50) break; // last page
+    } catch (e) {
+      console.error(`[AIM] campaigns page ${page} error:`, e);
+      break;
+    }
   }
+  console.log(`[AIM] discovered ${allCampaigns.length} total campaigns`);
   return allCampaigns
     .filter((c: any) => c.status === "in_progress" || c.status === "paused" || c.status === "completed")
     .map((c: any) => ({
