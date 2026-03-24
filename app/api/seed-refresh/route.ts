@@ -317,11 +317,25 @@ async function refreshAim(dates: string[]): Promise<{ addedTransfers: number; up
     const phoneHistoryRows: any[][] = [];
 
     for (const call of allDialCalls) {
+      const agent = shortAgent(call.agent?.name ?? "Unknown");
+      const phone = customerPhone(call);
+      const callDate = call.startedAt ?? "";
+
+      // Phone→agent mapping: track ALL calls regardless of campaign
+      // This ensures inbound callbacks and non-tracked campaigns still
+      // get agent attribution for deal counting
+      if (phone.length === 10 && agent && agent !== "Unknown") {
+        const existing = phoneAgentMap.get(phone);
+        if (!existing || callDate > existing.date) {
+          phoneAgentMap.set(phone, { agent, date: callDate });
+        }
+      }
+
+      // List-specific metrics: only for known campaign lists
       const campaignName = call.campaign?.name ?? "";
       const listKey = detectListKey(campaignName);
       if (!listKey || !KNOWN_LISTS.includes(listKey)) continue;
 
-      const agent = shortAgent(call.agent?.name ?? "Unknown");
       const durationSec = call.endedAt && call.startedAt
         ? (new Date(call.endedAt).getTime() - new Date(call.startedAt).getTime()) / 1000
         : 0;
@@ -332,17 +346,7 @@ async function refreshAim(dates: string[]): Promise<{ addedTransfers: number; up
       agentMin[agent] = (agentMin[agent] ?? 0) + durationSec / 60;
       agentCost[agent] = (agentCost[agent] ?? 0) + cost;
 
-      // Track phone→agent for deal attribution (ALL calls, not just transfers)
-      const phone = customerPhone(call);
-      const callDate = call.startedAt ?? "";
-      if (phone.length === 10 && agent && agent !== "Unknown") {
-        const existing = phoneAgentMap.get(phone);
-        if (!existing || callDate > existing.date) {
-          phoneAgentMap.set(phone, { agent, date: callDate });
-        }
-      }
-
-      // Track phone history for tiebreaker
+      // Track phone history for list tiebreaker
       if (phone.length === 10) {
         const dateOnly = callDate.slice(0, 10) || targetDate;
         phoneHistoryRows.push([phone, listKey, dateOnly]);
