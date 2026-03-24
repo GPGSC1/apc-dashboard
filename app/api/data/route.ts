@@ -342,11 +342,12 @@ export async function GET(request: Request) {
         const lastQueue = phoneLastQueue.get(p);
         if (!lastQueue) return true;
         // Only block if most recent queue is a competing mail queue (not mail 4)
+        // AND that competing queue call was on or before the sale date
         const q = lastQueue.queue;
         if (!q) return true; // empty queue name = pass
         if (q.includes("mail 4")) return true; // our queue = pass
-        if (q.includes("mail")) return false; // other mail queues (1,2,3,5,6) = block
-        return true; // CS, Collections, Home, CB, etc = pass
+        if (q.includes("mail") && lastQueue.date <= s.soldDate) return false; // competing mail queue BEFORE sale = block
+        return true; // everything else = pass (including competing mail AFTER sale)
       });
 
       if (!allPhonesHaveRecencyCheck) {
@@ -403,11 +404,12 @@ export async function GET(request: Request) {
         const lastQueue = phoneLastQueue.get(p);
         if (!lastQueue) return true;
         // Only block if most recent queue is a competing mail queue (not mail 4)
+        // AND that competing queue call was on or before the sale date
         const q = lastQueue.queue;
         if (!q) return true; // empty queue name = pass
         if (q.includes("mail 4")) return true; // our queue = pass
-        if (q.includes("mail")) return false; // other mail queues (1,2,3,5,6) = block
-        return true; // CS, Collections, Home, CB, etc = pass
+        if (q.includes("mail") && lastQueue.date <= s.soldDate) return false; // competing mail queue BEFORE sale = block
+        return true; // everything else = pass (including competing mail AFTER sale)
       });
       if (!allPhonesOk) continue;
 
@@ -457,11 +459,12 @@ export async function GET(request: Request) {
         const lastQueue = phoneLastQueue.get(p);
         if (!lastQueue) return true;
         // Only block if most recent queue is a competing mail queue (not mail 4)
+        // AND that competing queue call was on or before the sale date
         const q = lastQueue.queue;
         if (!q) return true; // empty queue name = pass
         if (q.includes("mail 4")) return true; // our queue = pass
-        if (q.includes("mail")) return false; // other mail queues (1,2,3,5,6) = block
-        return true; // CS, Collections, Home, CB, etc = pass
+        if (q.includes("mail") && lastQueue.date <= s.soldDate) return false; // competing mail queue BEFORE sale = block
+        return true; // everything else = pass (including competing mail AFTER sale)
       });
       if (!allPhonesOk) continue;
       const attributedPhone = phones.find((p) =>
