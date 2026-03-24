@@ -341,7 +341,7 @@ export async function GET(request: Request) {
       const allPhonesHaveRecencyCheck = phones.every((p) => {
         const lastQueue = phoneLastQueue.get(p);
         if (!lastQueue) return true;
-        return lastQueue.queue.includes("mail 4");
+        return lastQueue.queue.includes("mail 4") || lastQueue.queue.includes("home");
       });
 
       if (!allPhonesHaveRecencyCheck) {
@@ -397,7 +397,7 @@ export async function GET(request: Request) {
       const allPhonesOk = phones.every((p) => {
         const lastQueue = phoneLastQueue.get(p);
         if (!lastQueue) return true;
-        return lastQueue.queue.includes("mail 4");
+        return lastQueue.queue.includes("mail 4") || lastQueue.queue.includes("home");
       });
       if (!allPhonesOk) continue;
 
@@ -446,7 +446,7 @@ export async function GET(request: Request) {
       const allPhonesOk = phones.every((p) => {
         const lastQueue = phoneLastQueue.get(p);
         if (!lastQueue) return true;
-        return lastQueue.queue.includes("mail 4");
+        return lastQueue.queue.includes("mail 4") || lastQueue.queue.includes("home");
       });
       if (!allPhonesOk) continue;
       const attributedPhone = phones.find((p) =>
