@@ -97,19 +97,22 @@ export async function GET(request: NextRequest) {
   }
 
   // ─── 4. Poll wallboard ────────────────────────────────────────────────────
+  // ─── 4. Refresh performance data first (independent of wallboard)
+  try {
+    await refreshPerformance();
+  } catch (e) {
+    console.error("[AIDA tick] Performance refresh failed:", e);
+  }
+
+  // ─── 4.5 Poll wallboard
   let snapshot;
   try {
     snapshot = await pollAllQueues();
   } catch (e) {
     console.error("[AIDA tick] Wallboard poll failed:", e);
+    // Still save state + log the error, don't bail entirely
+    await setState(state);
     return NextResponse.json({ action: "ERROR", error: String(e) }, { status: 500 });
-  }
-
-  // ─── 4.5 Refresh performance data (non-blocking — don't fail tick if this errors)
-  try {
-    await refreshPerformance();
-  } catch (e) {
-    console.error("[AIDA tick] Performance refresh failed:", e);
   }
 
   // ─── 5. Evaluate throttle ────────────────────────────────────────────────
