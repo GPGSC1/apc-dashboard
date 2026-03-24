@@ -123,40 +123,27 @@ export async function GET(request: Request) {
       return true;
     };
 
-    // ─── 1. LOAD SOURCE LIST CSV FILES (phone → list mapping) ────────────
+    // ─── 1. LOAD LIST GATE (pre-computed phone → list mappings) ────────────
     const listPhones: Record<string, Set<string>> = {};
     const phoneToLists: Map<string, string[]> = new Map();
     const listCosts = loadListCosts();
     const loadedFiles: string[] = [];
 
-    if (fs.existsSync(DATA_DIR)) {
-      for (const file of fs.readdirSync(DATA_DIR)) {
-        const lower = file.toLowerCase();
-        if (lower === ".gitkeep" || !lower.match(/\.(csv|xls|xlsx)$/i)) continue;
-
-        const baseName = file.replace(/\.(csv|xls|xlsx)$/i, "");
-        const listKey = DEFAULT_LISTS[baseName.toUpperCase()] !== undefined
-          ? baseName.toUpperCase()
-          : detectListKey(baseName);
-        if (!listKey) continue;
-
-        let text: string;
-        try {
-          text = fs.readFileSync(path.join(DATA_DIR, file), "utf8");
-        } catch {
-          text = fs.readFileSync(path.join(DATA_DIR, file), "latin1");
+    try {
+      const listGatePath = path.join(DATA_DIR, "list_gate.json");
+      if (fs.existsSync(listGatePath)) {
+        const listGate = JSON.parse(fs.readFileSync(listGatePath, "utf8"));
+        for (const [phone, lists] of Object.entries(listGate.phoneToLists ?? {})) {
+          phoneToLists.set(phone, lists as string[]);
+          for (const listKey of (lists as string[])) {
+            if (!listPhones[listKey]) listPhones[listKey] = new Set();
+            listPhones[listKey].add(phone);
+          }
         }
-
-        const phones = parseListFile(text);
-        listPhones[listKey] = phones;
-        loadedFiles.push(file);
-
-        for (const phone of phones) {
-          const lists = phoneToLists.get(phone) || [];
-          if (!lists.includes(listKey)) lists.push(listKey);
-          phoneToLists.set(phone, lists);
-        }
+        loadedFiles.push("list_gate.json");
       }
+    } catch (e) {
+      console.error("[data/route] list_gate.json read failed:", e);
     }
 
     // ─── 2. BUILD AIM PHONE HISTORY FOR TIEBREAKER ────────────────────────

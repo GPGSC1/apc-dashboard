@@ -451,6 +451,84 @@ function rebuildMoxy() {
   console.log(`[Moxy] Wrote ${deals.length} deals to moxy_seed.json`);
 }
 
+// ─── 4. Build list_gate.json (phone → list mappings from CSVs) ────────────
+function rebuildListGate() {
+  console.log("[Lists] Building list_gate.json from CSV files...");
+
+  const phoneToLists = {};  // phone → [listKey1, listKey2, ...]
+  const listPhoneCount = {};
+
+  const KNOWN = ["RT", "JL021926LP", "BL021926BO", "JH022326MN", "JL021926CR", "DG021726SC", "JL022526RS"];
+
+  for (const file of fs.readdirSync(DATA_DIR)) {
+    const lower = file.toLowerCase();
+    if (lower === ".gitkeep" || !lower.match(/\.csv$/i)) continue;
+
+    const baseName = file.replace(/\.csv$/i, "");
+    // Determine list key
+    let listKey = null;
+    if (KNOWN.includes(baseName.toUpperCase())) {
+      listKey = baseName.toUpperCase();
+    } else if (baseName.toLowerCase().includes("respond")) {
+      listKey = "RT";
+    } else {
+      const m10 = baseName.match(/([A-Za-z]{2})(\d{6})([A-Za-z]{2})/);
+      if (m10) listKey = (m10[1] + m10[2] + m10[3]).toUpperCase();
+      else {
+        const m8 = baseName.match(/([A-Za-z]{2})(\d{6})/);
+        if (m8) listKey = (m8[1] + m8[2]).toUpperCase();
+      }
+    }
+    if (!listKey) continue;
+
+    const filePath = path.join(DATA_DIR, file);
+    let text;
+    try { text = fs.readFileSync(filePath, "utf8"); }
+    catch { text = fs.readFileSync(filePath, "latin1"); }
+
+    const lines = text.split(/\r?\n/);
+    if (lines.length < 2) continue;
+
+    // Parse headers to find phone columns
+    const headers = parseCsvLine(lines[0]).map(h => h.trim().toLowerCase());
+    const phoneColIndices = headers
+      .map((h, i) => ({ h, i }))
+      .filter(({ h }) => h.includes("phone") || h.includes("number") || h.includes("cell") || h.includes("mobile") || h.includes("home"))
+      .map(({ i }) => i);
+    const colsToCheck = phoneColIndices.length > 0 ? phoneColIndices : headers.map((_, i) => i);
+
+    let count = 0;
+    for (let i = 1; i < lines.length; i++) {
+      const l = lines[i].trim();
+      if (!l) continue;
+      const c = parseCsvLine(l);
+      for (const idx of colsToCheck) {
+        let p = (c[idx] || "").replace(/\D/g, "");
+        if (p.length === 11 && p.startsWith("1")) p = p.slice(1);
+        if (p.length === 10) {
+          if (!phoneToLists[p]) phoneToLists[p] = [];
+          if (!phoneToLists[p].includes(listKey)) phoneToLists[p].push(listKey);
+          count++;
+        }
+      }
+    }
+    listPhoneCount[listKey] = count;
+    console.log(`[Lists]   ${file} → ${listKey}: ${count} phones`);
+  }
+
+  const totalPhones = Object.keys(phoneToLists).length;
+  const gatePath = path.join(DATA_DIR, "list_gate.json");
+  const gateData = {
+    generatedAt: new Date().toISOString(),
+    totalPhones,
+    phoneToLists,
+  };
+  fs.writeFileSync(gatePath + ".tmp", JSON.stringify(gateData));
+  fs.renameSync(gatePath + ".tmp", gatePath);
+  const gateSize = fs.statSync(gatePath).size;
+  console.log(`[Lists] Wrote list_gate.json (${(gateSize / 1024 / 1024).toFixed(1)}MB — ${totalPhones} unique phones)`);
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────
 function main() {
   console.log("\n=== Seed Rebuild from CSV/XLS exports ===\n");
@@ -460,6 +538,8 @@ function main() {
   rebuildAim();
   console.log("");
   rebuildMoxy();
+  console.log("");
+  rebuildListGate();
 
   console.log("\n=== Done ===\n");
 }
