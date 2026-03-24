@@ -77,7 +77,7 @@ export async function GET(request: Request) {
     const phoneToLists: Map<string, string[]> = new Map();
     const listPhones: Record<string, Set<string>> = {};
 
-    const listResult = await query("SELECT phone, list_key FROM list_phones");
+    const listResult = await query("SELECT lp.phone, lp.list_key FROM list_phones lp INNER JOIN mail4_phones m ON lp.phone = m.phone");
     for (const row of listResult.rows) {
       const phone = row.phone.trim();
       const listKey = row.list_key.trim();
@@ -93,7 +93,7 @@ export async function GET(request: Request) {
 
     // Get all phones that appear in transfers for the history lookup
     const historyResult = await query(
-      "SELECT phone, list_key FROM aim_phone_history ORDER BY call_date DESC"
+      "SELECT h.phone, h.list_key FROM aim_phone_history h INNER JOIN mail4_phones m ON h.phone = m.phone ORDER BY h.call_date DESC"
     );
     for (const row of historyResult.rows) {
       const phone = row.phone.trim();
@@ -116,7 +116,7 @@ export async function GET(request: Request) {
 
     // Then: all-call agents as fallback
     const allAgentsResult = await query(
-      "SELECT phone, agent FROM aim_phone_agent"
+      "SELECT a.phone, a.agent FROM aim_phone_agent a INNER JOIN mail4_phones m ON a.phone = m.phone"
     );
     for (const row of allAgentsResult.rows) {
       const phone = row.phone.trim();
