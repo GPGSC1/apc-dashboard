@@ -823,7 +823,7 @@ export default function Home() {
                 ↻ Refresh
               </button>
             </div>
-            <SourceHealthBar staleness={data.staleness} />
+            {/* Seed indicators removed — data now served from Neon Postgres */}
           </div>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
