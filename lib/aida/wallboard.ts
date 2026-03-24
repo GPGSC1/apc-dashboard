@@ -61,7 +61,20 @@ async function httpReq(
   });
 
   const body = await res.text();
-  const setCookies = res.headers.getSetCookie?.() ?? [];
+  // getSetCookie() may not work on all runtimes — fallback to raw header parsing
+  let setCookies: string[] = [];
+  if (typeof res.headers.getSetCookie === "function") {
+    setCookies = res.headers.getSetCookie();
+  }
+  if (setCookies.length === 0) {
+    // Fallback: parse from raw headers
+    const raw = res.headers.get("set-cookie");
+    if (raw) {
+      // Multiple set-cookie values may be comma-separated (but cookie values can contain commas)
+      // Split on patterns like ", name=" to handle this
+      setCookies = raw.split(/,\s*(?=[A-Za-z_.]+=)/).filter(Boolean);
+    }
+  }
   const cookies = setCookies.map((c) => c.split(";")[0]);
   const location = res.headers.get("location");
 
@@ -116,7 +129,8 @@ async function login(): Promise<string[]> {
 
   // Verify we got auth cookie
   const hasAuth = allCookies.some((c) => c.includes(".ASPXAUTH"));
-  if (!hasAuth) throw new Error(`3CX wallboard: login failed — no auth cookie. Status=${r3.status}, location=${r3.location}, cookies=${r3.cookies.join(',')}, bodySnippet=${r3.body.slice(0,200)}`);
+  console.log(`[Wallboard login] POST status=${r3.status}, location=${r3.location}, cookies=${allCookies.length}, hasAuth=${hasAuth}, cookieNames=${allCookies.map(c=>c.split('=')[0]).join(',')}`);
+  if (!hasAuth) throw new Error(`3CX wallboard: login failed — no auth cookie. Status=${r3.status}, location=${r3.location}, r3cookies=${r3.cookies.length}, allCookies=${allCookies.length}, names=${allCookies.map(c=>c.split('=')[0]).join(',')}`);
 
   // Follow redirect to establish session
   if (r3.location) {
