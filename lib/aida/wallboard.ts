@@ -148,7 +148,12 @@ async function login(): Promise<string[]> {
 async function getAuthCookies(): Promise<string[]> {
   // Try cached session first
   const cached = await getWbSession();
-  if (cached) return JSON.parse(cached);
+  if (cached && cached.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    } catch { /* corrupted cache, fall through to fresh login */ }
+  }
 
   // Login fresh
   const cookies = await login();
