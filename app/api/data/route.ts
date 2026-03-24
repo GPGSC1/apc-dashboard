@@ -2,11 +2,19 @@ import { NextResponse } from "next/server";
 import * as fs from "fs";
 import * as path from "path";
 import { parseDate, todayLocal } from "../../../lib/date-utils";
-import { fetchTodayLiveCalls } from "../../../lib/tcx-live";
+
+/**
+ * DATA ROUTE — Pure computation on local seed JSON files.
+ *
+ * NO live API calls. Seeds are refreshed every 15 min by /api/seed-refresh.
+ * Sources:
+ *   aim_seed.json   → transfers, dailyCosts, agentDailyCosts, phoneToAgentAll
+ *   tcx_gate.json   → mail4Phones, phoneLastQueue, openedByDate
+ *   moxy_seed.json  → deals
+ */
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const CAMPAIGN_START = "2026-02-25";
-const AIM_COST_PER_MIN = parseFloat(process.env.AIM_COST_PER_MIN ?? "0.29");
 
 const DEFAULT_LISTS: Record<string, number> = {
   RT: 0,
@@ -18,8 +26,6 @@ const DEFAULT_LISTS: Record<string, number> = {
   JL022526RS: 6000,
 };
 
-const SALES_QUEUES = ["mail 1", "mail 2", "mail 3", "mail 4", "mail 5", "mail 6", "home 1", "home 2", "home 4", "home 5"];
-
 // ─── UTILITIES ───────────────────────────────────────────────────────────
 function cleanPhone(raw: unknown): string {
   let s = String(raw || "").replace(/^=/, "").replace(/^"/, "").replace(/"$/, "");
@@ -27,8 +33,6 @@ function cleanPhone(raw: unknown): string {
   if (d.length === 11 && d.startsWith("1")) return d.slice(1);
   return d.length === 10 ? d : "";
 }
-
-// toISO replaced by parseDate from lib/date-utils
 
 function detectListKey(text: string): string | null {
   if (!text) return null;
@@ -107,7 +111,8 @@ function attributeToList(
 // ─── MAIN ROUTE HANDLER ──────────────────────────────────────────────────
 export async function GET(request: Request) {
   try {
-    const { searchParams, origin } = new URL(request.url);
+    const startMs = Date.now();
+    const { searchParams } = new URL(request.url);
     const fromDate = searchParams.get("start") ?? CAMPAIGN_START;
     const toDate = searchParams.get("end") ?? todayLocal();
 
@@ -120,7 +125,7 @@ export async function GET(request: Request) {
 
     // ─── 1. LOAD SOURCE LIST CSV FILES (phone → list mapping) ────────────
     const listPhones: Record<string, Set<string>> = {};
-    const phoneToLists: Map<string, string[]> = new Map(); // phone → [list1, list2, ...]
+    const phoneToLists: Map<string, string[]> = new Map();
     const listCosts = loadListCosts();
     const loadedFiles: string[] = [];
 
@@ -155,38 +160,115 @@ export async function GET(request: Request) {
     }
 
     // ─── 2. BUILD AIM PHONE HISTORY FOR TIEBREAKER ────────────────────────
-    // From aim_seed.json transfers: phone → [listKey1, listKey2, ...]
-    // (sorted by date desc, so first entry is most recent)
     const aimPhoneHistory: Map<string, string[]> = new Map();
+    const phoneToAgent: Map<string, string> = new Map();
+    const aimTransferPhones: Set<string> = new Set();
+    let aimMaxDate: string | null = null;
+
+    // AIM seed aggregate data for byList / byAgent
+    let aimByList: Record<string, { min: number; cost: number }> = {};
+    let aimByAgent: Record<string, { min: number; cost: number; t: number }> = {};
+    const aimRangePhonesByList: Record<string, string[]> = {};
+
     try {
       const aimSeedPath = path.join(DATA_DIR, "aim_seed.json");
       if (fs.existsSync(aimSeedPath)) {
         const aimSeed = JSON.parse(fs.readFileSync(aimSeedPath, "utf8"));
+
+        // Build phone history for tiebreaker
         const phoneHistory: Record<string, Array<{ date: string; listKey: string }>> = {};
 
         for (const t of (aimSeed.transfers ?? [])) {
           const phone = t.phone as string;
+          const agent = t.agent as string;
           const date = t.date as string;
-          const listKey = detectListKey(t.campaign || t.description || "");
+          const listKey = t.listKey as string;
 
-          if (phone && date && listKey) {
-            if (!phoneHistory[phone]) phoneHistory[phone] = [];
-            phoneHistory[phone].push({ date, listKey });
+          if (phone && phone.length === 10) {
+            aimTransferPhones.add(phone);
+            if (agent && !phoneToAgent.has(phone)) {
+              phoneToAgent.set(phone, agent);
+            }
+            if (date && (!aimMaxDate || date > aimMaxDate)) {
+              aimMaxDate = date;
+            }
+
+            // Build tiebreaker history
+            if (date && listKey) {
+              if (!phoneHistory[phone]) phoneHistory[phone] = [];
+              phoneHistory[phone].push({ date, listKey });
+            }
+
+            // Date-filtered transfers for agent grid
+            if (date >= fromDate && date <= toDate) {
+              if (!aimRangePhonesByList[listKey]) aimRangePhonesByList[listKey] = [];
+              aimRangePhonesByList[listKey].push(phone);
+            }
           }
         }
 
-        // Sort by date desc and extract listKeys
+        // Sort by date desc for tiebreaker
         for (const [phone, history] of Object.entries(phoneHistory)) {
           history.sort((a, b) => b.date.localeCompare(a.date));
           aimPhoneHistory.set(phone, history.map(h => h.listKey));
         }
+
+        // Load dailyCosts for byList (sum within date range)
+        if (aimSeed.dailyCosts) {
+          for (const [li, dateCosts] of Object.entries(aimSeed.dailyCosts as Record<string, Record<string, { min: number; cost: number }>>)) {
+            let totalMin = 0, totalCost = 0;
+            for (const [date, stats] of Object.entries(dateCosts)) {
+              if (date >= fromDate && date <= toDate) {
+                totalMin += stats.min;
+                totalCost += stats.cost;
+              }
+            }
+            if (totalMin > 0 || totalCost > 0) {
+              aimByList[li] = { min: Math.round(totalMin), cost: Math.round(totalCost * 100) / 100 };
+            }
+          }
+        }
+
+        // Load agentDailyCosts for byAgent (sum within date range)
+        if (aimSeed.agentDailyCosts) {
+          for (const [agent, dateCosts] of Object.entries(aimSeed.agentDailyCosts as Record<string, Record<string, { min: number; cost: number }>>)) {
+            let totalMin = 0, totalCost = 0;
+            for (const [date, stats] of Object.entries(dateCosts)) {
+              if (date >= fromDate && date <= toDate) {
+                totalMin += stats.min;
+                totalCost += stats.cost;
+              }
+            }
+            // Count transfers for this agent in range
+            let agentTransfers = 0;
+            for (const t of (aimSeed.transfers ?? [])) {
+              if (t.agent === agent && t.date >= fromDate && t.date <= toDate) {
+                agentTransfers++;
+              }
+            }
+            if (totalMin > 0 || totalCost > 0 || agentTransfers > 0) {
+              aimByAgent[agent] = {
+                min: Math.round(totalMin),
+                cost: Math.round(totalCost * 100) / 100,
+                t: agentTransfers,
+              };
+            }
+          }
+        }
+
+        // Load all-call phone→agent as fallback (covers phones dialed but not transferred)
+        const allPTA = aimSeed.phoneToAgentAll ?? {};
+        for (const [phone, entry] of Object.entries(allPTA)) {
+          if (phone.length === 10 && !phoneToAgent.has(phone)) {
+            phoneToAgent.set(phone, (entry as any).agent);
+          }
+        }
       }
     } catch (e) {
-      console.error("[data/route] aim_seed.json history build failed:", e);
+      console.error("[data/route] aim_seed.json read failed:", e);
     }
 
-    // ─── 3. LOAD 3CX ITD GATE DATA (pre-computed by seed-rebuild.js) ──────
-    // Uses tcx_gate.json (small, fast) instead of parsing 121K rows from tcx_seed.json
+    // ─── 3. LOAD 3CX ITD GATE DATA (pre-computed by seed-refresh) ────────
     const mail4Phones: Set<string> = new Set();
     const phoneLastQueue: Map<string, { queue: string; date: string }> = new Map();
     let tcxMaxDate: string | null = null;
@@ -203,120 +285,18 @@ export async function GET(request: Request) {
           phoneLastQueue.set(phone, entry as { queue: string; date: string });
         }
         tcxMaxDate = gate.maxDate ?? null;
-        // Load pre-computed opened calls per date (avoids parsing full tcx_seed at runtime)
         seedOpenedByDate = gate.openedByDate ?? {};
       }
     } catch (e) {
       console.error("[data/route] tcx_gate.json read failed:", e);
     }
 
-    // ─── 4. LOAD AIM SEED FOR AGENT & TRANSFER ATTRIBUTION ──────────────
-    const phoneToAgent: Map<string, string> = new Map();
-    const aimTransferPhones: Set<string> = new Set();
-    let aimMaxDate: string | null = null;
-
-    try {
-      const aimSeedPath = path.join(DATA_DIR, "aim_seed.json");
-      if (fs.existsSync(aimSeedPath)) {
-        const aimSeed = JSON.parse(fs.readFileSync(aimSeedPath, "utf8"));
-
-        for (const t of (aimSeed.transfers ?? [])) {
-          const phone = t.phone as string;
-          const agent = t.agent as string;
-          const date = t.date as string;
-
-          if (phone && phone.length === 10) {
-            aimTransferPhones.add(phone);
-            if (agent && !phoneToAgent.has(phone)) {
-              phoneToAgent.set(phone, agent);
-            }
-            if (date && (!aimMaxDate || date > aimMaxDate)) {
-              aimMaxDate = date;
-            }
-          }
-        }
-
-        // Load all-call phone→agent as fallback (covers phones dialed but not transferred)
-        const allPTA = aimSeed.phoneToAgentAll ?? {};
-        for (const [phone, entry] of Object.entries(allPTA)) {
-          if (phone.length === 10 && !phoneToAgent.has(phone)) {
-            phoneToAgent.set(phone, (entry as any).agent);
-          }
-        }
-      }
-    } catch (e) {
-      console.error("[data/route] aim_seed.json transfers read failed:", e);
-    }
-
-    // ─── 5. FETCH DATA IN PARALLEL (AIM + Moxy + live 3CX inline) ─────────
-    // 3CX historical data comes from tcx_gate.json (pre-computed, 452KB).
-    // Today's live 3CX calls are fetched directly (not via /api/calls which loads 12MB seed).
-    const today = todayLocal();
-    const needLive3cx = toDate >= today;
-    const [aimRespRaw, moxyRespRaw, live3cxResult] = await Promise.all([
-      fetch(`${origin}/api/aim?start=${fromDate}&end=${toDate}`).catch(() => null),
-      fetch(`${origin}/api/moxy`).catch(() => null),
-      needLive3cx
-        ? fetchTodayLiveCalls().catch((e) => ({ calls: [] as any[], error: String(e) }))
-        : Promise.resolve(null),
-    ]);
-
-    // ─── 6. PROCESS AIM RESPONSE (minutes, costs, live transfers) ────────
-    let aimByList: Record<string, { min: number; cost: number }> = {};
-    let aimByAgent: Record<string, { min: number; cost: number; t: number }> = {};
-    // Date-filtered phones per list from AIM API (for agent grid — NOT the ITD set)
-    const aimRangePhonesByList: Record<string, string[]> = {};
-
-    try {
-      if (aimRespRaw?.ok) {
-        const aimData = await aimRespRaw.json();
-        if (aimData.ok) {
-          aimByList = (aimData.byList ?? {}) as Record<string, { min: number; cost: number }>;
-          aimByAgent = (aimData.byAgent ?? {}) as Record<string, { min: number; cost: number; t: number }>;
-
-          // Also add live transfer phones and phone→agent mappings
-          for (const [listKey, v] of Object.entries(aimByList)) {
-            const phones = (v as any).phones ?? [];
-            if (Array.isArray(phones)) {
-              phones.forEach((phone: any) => {
-                if (typeof phone === "string" && phone.length === 10) {
-                  aimTransferPhones.add(phone);
-                  // Also store date-filtered phones per list for the agent grid
-                  if (!aimRangePhonesByList[listKey]) aimRangePhonesByList[listKey] = [];
-                  aimRangePhonesByList[listKey].push(phone);
-                }
-              });
-            }
-            // Update phoneToAgent from live AIM data
-            const pa = (v as any).phoneToAgent ?? {};
-            for (const [phone, agent] of Object.entries(pa)) {
-              if (typeof phone === "string" && phone.length === 10 && !phoneToAgent.has(phone)) {
-                phoneToAgent.set(phone, agent as string);
-              }
-            }
-          }
-
-          // Load all-call phone→agent (fallback for deals with no transfer record)
-          const allPTA = aimData.allCallPhoneToAgent ?? {};
-          for (const [phone, agent] of Object.entries(allPTA)) {
-            if (typeof phone === "string" && phone.length === 10 && !phoneToAgent.has(phone)) {
-              phoneToAgent.set(phone, agent as string);
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.error("[data/route] AIM fetch failed:", e);
-    }
-
-    // ─── 7. PROCESS 3CX OPENED CALLS (gate data + live for today) ─────
+    // ─── 4. PROCESS 3CX OPENED CALLS (all from gate data, no live calls) ─
     const openedByList: Record<string, number> = {};
     let totalOpenedCalls = 0;
 
-    // A) Use pre-computed opened calls from tcx_gate.json for seed dates
     for (const [date, phones] of Object.entries(seedOpenedByDate)) {
       if (date < fromDate || date > toDate) continue;
-      if (date >= today) continue; // today uses live data
       for (const phone of (phones as string[])) {
         totalOpenedCalls++;
         const listKey = attributeToList(phone, phoneToLists, aimPhoneHistory);
@@ -326,40 +306,7 @@ export async function GET(request: Request) {
       }
     }
 
-    // B) Use inline live 3CX fetch for today (no /api/calls, no 12MB seed load)
-    try {
-      const liveCalls = (live3cxResult as any)?.calls ?? [];
-      for (const call of liveCalls) {
-        const phone = call.phoneNumber;
-        if (!phone || phone.length !== 10) continue;
-
-        // Update Mail 4 ITD set and queue recency from live 3CX data
-        const queueName = (call.queueName ?? "").toLowerCase();
-        const callDate = call.startTime ?? "";
-        if (queueName.includes("mail 4")) {
-          mail4Phones.add(phone);
-        }
-        const isSalesQueue = SALES_QUEUES.some(q => queueName.includes(q));
-        if (isSalesQueue && callDate) {
-          const existing = phoneLastQueue.get(phone);
-          if (!existing || callDate > existing.date) {
-            phoneLastQueue.set(phone, { queue: queueName, date: callDate });
-          }
-        }
-
-        // Count opened calls for attribution
-        if (!call.opened) continue;
-        totalOpenedCalls++;
-        const listKey = attributeToList(phone, phoneToLists, aimPhoneHistory);
-        if (listKey) {
-          openedByList[listKey] = (openedByList[listKey] ?? 0) + 1;
-        }
-      }
-    } catch (e) {
-      console.error("[data/route] live 3CX processing failed:", e);
-    }
-
-    // ─── 8. PROCESS MOXY SALES (seed + live, dedup by customerId) ──────
+    // ─── 5. PROCESS MOXY SALES (seed only, no live API) ─────────────────
     interface MoxySale {
       soldDate: string | null;
       homePhone: string;
@@ -383,7 +330,6 @@ export async function GET(request: Request) {
       };
     };
 
-    // Helper: add all non-empty IDs to seenDeals for cross-source dedup
     const addDealIds = (d: any) => {
       const cid = String(d.customerId ?? "").trim();
       const cno = String(d.contractNo ?? "").trim();
@@ -396,7 +342,6 @@ export async function GET(request: Request) {
       return (cid !== "" && seenDeals.has(cid)) || (cno !== "" && seenDeals.has(cno));
     };
 
-    // Load seed
     try {
       const moxyPath = path.join(DATA_DIR, "moxy_seed.json");
       if (fs.existsSync(moxyPath)) {
@@ -419,29 +364,7 @@ export async function GET(request: Request) {
       console.error("[data/route] Moxy seed read failed:", e);
     }
 
-    // Load live API
-    try {
-      if (moxyRespRaw?.ok) {
-        const moxyData = await moxyRespRaw.json();
-        for (const d of (moxyData.sales ?? [])) {
-          const normalized = normalizeMoxyDeal(d);
-          if (!normalized.soldDate || normalized.soldDate < CAMPAIGN_START || !inRange(normalized.soldDate)) continue;
-          const dealSt = String(d.dealStatus ?? d.status ?? "").toLowerCase();
-          if (dealSt === "back out" || dealSt === "void" || !dealSt) continue;
-
-          if (isDealSeen(d)) continue;
-          addDealIds(d);
-          salesRows.push(normalized);
-          if (!moxyMaxDate || normalized.soldDate > moxyMaxDate) {
-            moxyMaxDate = normalized.soldDate;
-          }
-        }
-      }
-    } catch (e) {
-      console.error("[data/route] Moxy live fetch failed:", e);
-    }
-
-    // ─── 9. COMPUTE METRICS ──────────────────────────────────────────────
+    // ─── 6. COMPUTE METRICS ──────────────────────────────────────────────
     const allListKeys = new Set([...Object.keys(DEFAULT_LISTS), ...Object.keys(listPhones)]);
 
     const byList: Record<string, { t: number; o: number; s: number; min: number; cost: number; listCost: number }> = {};
@@ -473,12 +396,10 @@ export async function GET(request: Request) {
     const seenSalesKeys = new Set<string>();
 
     for (const s of salesRows) {
-      // Dedup by customerId (unique per deal, not per phone)
       const key = s.customerId || `${s.homePhone}|${s.mobilePhone}`;
       if (seenSalesKeys.has(key)) continue;
       seenSalesKeys.add(key);
 
-      // Exclude: empty salesperson or contains "fishbein"
       if (!s.salesperson || s.salesperson.toLowerCase().includes("fishbein")) {
         continue;
       }
@@ -486,19 +407,16 @@ export async function GET(request: Request) {
       const phones = [s.homePhone, s.mobilePhone].filter(p => p.length === 10);
       if (phones.length === 0) continue;
 
-      // Check Mail 4 Inbound ITD gate
       const phoneInMail4 = phones.find(p => mail4Phones.has(p));
       if (!phoneInMail4) continue;
 
-      // Check queue recency override: most recent sales queue call must be Mail 4
       const allPhonesHaveRecencyCheck = phones.every(p => {
         const lastQueue = phoneLastQueue.get(p);
-        if (!lastQueue) return true; // No recency data, allow
+        if (!lastQueue) return true;
         return lastQueue.queue.includes("mail 4");
       });
 
       if (!allPhonesHaveRecencyCheck) {
-        // At least one phone's most recent sales queue is NOT Mail 4 → skip
         const onOpened = phones.some(p => {
           const lists = phoneToLists.get(p);
           return lists && lists.length > 0;
@@ -507,7 +425,6 @@ export async function GET(request: Request) {
         continue;
       }
 
-      // List attribution
       const attributedPhone = phones.find(p => {
         const list = attributeToList(p, phoneToLists, aimPhoneHistory);
         return list !== null;
@@ -528,7 +445,7 @@ export async function GET(request: Request) {
       }
     }
 
-    // ─── 10. BUILD AGENT METRICS (ITD transfers always used) ────────────
+    // ─── 7. BUILD AGENT METRICS (ITD transfers always used) ────────────
     const byAgent: Record<string, { calls: number; min: number; cost: number; t: number; deals: number }> = {};
 
     for (const [agent, stats] of Object.entries(aimByAgent)) {
@@ -568,11 +485,10 @@ export async function GET(request: Request) {
       }
     }
 
-    // ─── 11. BUILD aimByAgentGrid (for campaign tab UI) ───────────────
+    // ─── 8. BUILD aimByAgentGrid (for campaign tab UI) ───────────────
     const allAgents = Object.keys(byAgent);
     const allLists = Array.from(allListKeys);
 
-    // Build agent × list matrix first
     const matrix: Record<string, Record<string, { t: number; d: number }>> = {};
     for (const agent of allAgents) {
       matrix[agent] = {};
@@ -581,8 +497,7 @@ export async function GET(request: Request) {
       }
     }
 
-    // Transfer counts — use date-filtered AIM phones (not the ITD set)
-    // This ensures the grid shows transfers for the selected date range only
+    // Transfer counts — use date-filtered AIM phones
     for (const [listKey, phones] of Object.entries(aimRangePhonesByList)) {
       for (const phone of phones) {
         const agent = phoneToAgent.get(phone);
@@ -645,6 +560,8 @@ export async function GET(request: Request) {
       }
     }
 
+    const elapsedMs = Date.now() - startMs;
+
     return NextResponse.json({
       byList,
       byAgent,
@@ -670,6 +587,8 @@ export async function GET(request: Request) {
         salesCount: salesRows.length,
         listFilesLoaded: loadedFiles.length,
         dateRange: { from: fromDate, to: toDate },
+        mode: "seed-only",
+        elapsedMs,
       },
     });
   } catch (err) {
