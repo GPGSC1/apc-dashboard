@@ -25,6 +25,47 @@ interface LogEntry {
   dryRun: boolean;
 }
 
+interface PeriodStats {
+  sales: number;
+  calls: number;
+  closeRate: number;
+  costPerSale: number | null;
+  dialCost: number;
+  minutes: number;
+}
+
+interface ListPerf {
+  listKey: string;
+  yesterday: PeriodStats;
+  wtd: PeriodStats;
+  mtd: PeriodStats;
+  score: number;
+}
+
+interface AgentListPerf {
+  agent: string;
+  listKey: string;
+  transfers: number;
+  sales: number;
+  closeRate: number;
+}
+
+interface AgentPerf {
+  agent: string;
+  totalTransfers: number;
+  totalSales: number;
+  overallCloseRate: number;
+  totalCost: number;
+  byList: Record<string, AgentListPerf>;
+  score: number;
+}
+
+interface PerformanceData {
+  lists: Record<string, ListPerf>;
+  agents: Record<string, AgentPerf>;
+  lastUpdated: string;
+}
+
 interface AidaStatus {
   ok: boolean;
   state: {
@@ -44,6 +85,7 @@ interface AidaStatus {
   isBusinessHours: boolean;
   currentTimeCT: string;
   recentActions: LogEntry[];
+  performance: PerformanceData | null;
 }
 
 // ─── Colors & Constants ─────────────────────────────────────────────────────
@@ -561,6 +603,123 @@ export default function AidaPage() {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── PERFORMANCE DATA ──────────────────────────────────── */}
+      {data?.performance && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+
+          {/* LIST PERFORMANCE */}
+          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: 16 }}>
+            <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: ".12em", marginBottom: 12 }}>
+              List Performance (MTD)
+              {data.performance.lastUpdated && (
+                <span style={{ float: "right", fontSize: 9, color: C.dim }}>
+                  Updated: {new Date(data.performance.lastUpdated).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              )}
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                  <th style={{ textAlign: "left", padding: "6px 8px", color: C.muted, fontSize: 9, textTransform: "uppercase" }}>List</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 9 }}>Score</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 9 }}>Y.day Sales</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 9 }}>WTD Sales</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 9 }}>MTD Sales</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 9 }}>Close %</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 9 }}>Cost/Sale</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.values(data.performance.lists)
+                  .sort((a, b) => b.score - a.score)
+                  .map(lp => {
+                    const scoreColor = lp.score >= 10 ? C.green : lp.score >= 5 ? C.amber : lp.score > 0 ? C.red : C.dim;
+                    return (
+                      <tr key={lp.listKey} style={{ borderBottom: `1px solid ${C.border}11` }}>
+                        <td style={{ padding: "6px 8px", color: C.accent, fontWeight: 600 }}>{lp.listKey}</td>
+                        <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "monospace", color: scoreColor, fontWeight: 700 }}>
+                          {lp.score.toFixed(1)}
+                        </td>
+                        <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "monospace", color: lp.yesterday.sales > 0 ? C.green : C.dim }}>
+                          {lp.yesterday.sales}
+                        </td>
+                        <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "monospace", color: lp.wtd.sales > 0 ? C.green : C.dim }}>
+                          {lp.wtd.sales}
+                        </td>
+                        <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "monospace", color: lp.mtd.sales > 0 ? C.green : C.dim }}>
+                          {lp.mtd.sales}
+                        </td>
+                        <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "monospace", color: scoreColor }}>
+                          {(lp.mtd.closeRate * 100).toFixed(1)}%
+                        </td>
+                        <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "monospace", color: lp.mtd.costPerSale != null ? (lp.mtd.costPerSale > 500 ? C.red : lp.mtd.costPerSale > 250 ? C.amber : C.green) : C.dim }}>
+                          {lp.mtd.costPerSale != null ? `$${lp.mtd.costPerSale.toFixed(0)}` : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* AGENT PERFORMANCE */}
+          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: 16 }}>
+            <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: ".12em", marginBottom: 12 }}>
+              Agent Performance (MTD)
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                  <th style={{ textAlign: "left", padding: "6px 8px", color: C.muted, fontSize: 9, textTransform: "uppercase" }}>Agent</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 9 }}>Score</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 9 }}>Transfers</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 9 }}>Sales</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 9 }}>Close %</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 9 }}>Cost</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px", color: C.muted, fontSize: 9 }}>Best List</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.values(data.performance.agents)
+                  .sort((a, b) => b.score - a.score)
+                  .map(ap => {
+                    const scoreColor = ap.score >= 10 ? C.green : ap.score >= 5 ? C.amber : ap.score > 0 ? C.red : C.dim;
+                    // Find best performing list for this agent
+                    const bestList = Object.values(ap.byList)
+                      .filter(bl => bl.transfers >= 5)
+                      .sort((a, b) => b.closeRate - a.closeRate)[0];
+                    return (
+                      <tr key={ap.agent} style={{ borderBottom: `1px solid ${C.border}11` }}>
+                        <td style={{ padding: "6px 8px", color: C.accent, fontWeight: 600, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {ap.agent}
+                        </td>
+                        <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "monospace", color: scoreColor, fontWeight: 700 }}>
+                          {ap.score.toFixed(1)}
+                        </td>
+                        <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "monospace", color: C.text }}>
+                          {ap.totalTransfers.toLocaleString()}
+                        </td>
+                        <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "monospace", color: ap.totalSales > 0 ? C.green : C.dim }}>
+                          {ap.totalSales}
+                        </td>
+                        <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "monospace", color: scoreColor }}>
+                          {(ap.overallCloseRate * 100).toFixed(1)}%
+                        </td>
+                        <td style={{ textAlign: "right", padding: "6px 8px", fontFamily: "monospace", color: C.muted }}>
+                          ${ap.totalCost.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        </td>
+                        <td style={{ padding: "6px 8px", fontSize: 10, color: bestList ? C.text : C.dim }}>
+                          {bestList ? `${bestList.listKey} (${(bestList.closeRate * 100).toFixed(1)}%)` : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 import { getState, getConfig, getLog } from "../../../../lib/aida/kv-schema";
 import { todayCentral, isBusinessHours, nowCentralDisplay } from "../../../../lib/aida/time";
+import { getPerformance } from "../../../../lib/aida/performance";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const [state, config, todayLog] = await Promise.all([
+  const [state, config, todayLog, performance] = await Promise.all([
     getState(),
     getConfig(),
     getLog(todayCentral()),
+    getPerformance(),
   ]);
 
   const recentActions = todayLog.slice(-20); // last 20 entries
@@ -44,5 +46,6 @@ export async function GET() {
     isBusinessHours: isBusinessHours(config),
     currentTimeCT: nowCentralDisplay(),
     recentActions,
+    performance,
   });
 }

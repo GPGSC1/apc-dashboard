@@ -3,6 +3,7 @@ import { getState, setState, getConfig, appendLog } from "../../../../lib/aida/k
 import { isBusinessHours, todayCentral } from "../../../../lib/aida/time";
 import { pollAllQueues } from "../../../../lib/aida/wallboard";
 import { evaluateThrottle } from "../../../../lib/aida/throttle";
+import { refreshPerformance } from "../../../../lib/aida/performance";
 import * as aim from "../../../../lib/aida/aim-control";
 import { AidaState, AidaLogEntry } from "../../../../lib/aida/types";
 
@@ -102,6 +103,13 @@ export async function GET(request: NextRequest) {
   } catch (e) {
     console.error("[AIDA tick] Wallboard poll failed:", e);
     return NextResponse.json({ action: "ERROR", error: String(e) }, { status: 500 });
+  }
+
+  // ─── 4.5 Refresh performance data (non-blocking — don't fail tick if this errors)
+  try {
+    await refreshPerformance();
+  } catch (e) {
+    console.error("[AIDA tick] Performance refresh failed:", e);
   }
 
   // ─── 5. Evaluate throttle ────────────────────────────────────────────────
