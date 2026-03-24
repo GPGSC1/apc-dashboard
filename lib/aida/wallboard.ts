@@ -198,6 +198,11 @@ async function pollCenterwide(
     cookies,
   });
 
+  if (res.status === 302 || res.body.includes("LoginPage") || res.body.includes("txtUsername")) {
+    await setWbSession("");
+    return { waiting: 0, callsWaiting: [] };
+  }
+
   try {
     const data = JSON.parse(res.body);
     return {
@@ -205,29 +210,48 @@ async function pollCenterwide(
       callsWaiting: data?.d?.CallsWaiting ?? [],
     };
   } catch {
+    // Non-JSON response = probably login page
+    await setWbSession("");
     return { waiting: 0, callsWaiting: [] };
   }
 }
 
 // ─── Poll all queues in parallel ────────────────────────────────────────────
 
-export async function pollAllQueues(): Promise<WallboardSnapshot> {
-  const cookies = await getAuthCookies();
-
-  // Fire all queue polls + centerwide in parallel
+async function doPoll(cookies: string[]): Promise<{ centerwide: { waiting: number; callsWaiting: any[] }; queueResults: { name: string; waiting: number }[]; authFailed: boolean }> {
   const queueEntries = Object.entries(QUEUE_FILTERS);
   const [centerwide, ...queueResults] = await Promise.all([
     pollCenterwide(cookies),
     ...queueEntries.map(([name, id]) => pollQueue(cookies, name, id)),
   ]);
+  // Detect auth failure: if centerwide returns 0 AND all queues return 0,
+  // AND we got redirected to login (pollQueue sets waiting=0 on redirect)
+  // We need a better signal — check if the session was cleared by pollQueue
+  const sessionCleared = !(await getWbSession());
+  return { centerwide, queueResults, authFailed: sessionCleared };
+}
+
+export async function pollAllQueues(): Promise<WallboardSnapshot> {
+  let cookies = await getAuthCookies();
+
+  let { centerwide, queueResults, authFailed } = await doPoll(cookies);
+
+  // If auth failed (session was cleared by a poll detecting redirect), retry with fresh login
+  if (authFailed) {
+    console.log("[Wallboard] Auth failed, retrying with fresh login...");
+    await setWbSession(""); // clear stale session
+    cookies = await login();
+    await setWbSession(JSON.stringify(cookies));
+    const retry = await doPoll(cookies);
+    centerwide = retry.centerwide;
+    queueResults = retry.queueResults;
+  }
 
   const byQueue: Record<string, number> = {};
   for (const q of queueResults) {
     byQueue[q.name] = q.waiting;
   }
 
-  // Use centerwide Waiting as the authoritative total
-  // (sums across ALL queues including any not in our filter list)
   return {
     totalWaiting: centerwide.waiting,
     byQueue,
