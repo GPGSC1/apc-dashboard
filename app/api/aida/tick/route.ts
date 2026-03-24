@@ -57,6 +57,49 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ action: "INITIALIZED", campaigns: campaigns.length });
   }
 
+  // ─── 2.5 Auto-refresh campaigns every 15 minutes ─────────────────────────
+  const lastRefresh = (state as any).lastCampaignRefresh ?? "";
+  const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  if (!lastRefresh || lastRefresh < fifteenMinAgo) {
+    try {
+      const fresh = await aim.listActiveCampaigns();
+      for (const c of fresh) {
+        const key = String(c.id);
+        if (state.campaigns[key]) {
+          // Update mutable fields, keep AIDA's tracking state
+          state.campaigns[key].status = c.status as any;
+          state.campaigns[key].currentConcurrentCalls = c.concurrentCalls;
+          state.campaigns[key].agentName = c.agentName;
+          state.campaigns[key].callsTotal = c.callsTotal;
+          state.campaigns[key].callsCompleted = c.callsCompleted;
+        } else {
+          // New campaign discovered
+          state.campaigns[key] = {
+            id: c.id,
+            name: c.name,
+            listKey: detectListKey(c.name),
+            currentConcurrentCalls: c.concurrentCalls,
+            maxConcurrentCalls: Math.max(c.concurrentCalls, 30),
+            minConcurrentCalls: 1,
+            status: c.status as any,
+            agentId: c.agentId,
+            agentName: c.agentName,
+            callsTotal: c.callsTotal,
+            callsCompleted: c.callsCompleted,
+          };
+        }
+      }
+      // Remove campaigns no longer in AIM
+      const freshIds = new Set(fresh.map(c => String(c.id)));
+      for (const key of Object.keys(state.campaigns)) {
+        if (!freshIds.has(key)) delete state.campaigns[key];
+      }
+      (state as any).lastCampaignRefresh = new Date().toISOString();
+    } catch (e) {
+      console.error("[AIDA tick] Campaign refresh failed:", e);
+    }
+  }
+
   // ─── 3. Business hours gate ───────────────────────────────────────────────
   if (!isBusinessHours(config)) {
     if (state.mode !== "after_hours" && state.mode !== "off") {
