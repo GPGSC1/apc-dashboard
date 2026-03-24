@@ -89,18 +89,25 @@ export async function getCampaign(
   };
 }
 
-/** List all active/paused campaigns */
+/** List all active/paused/completed campaigns (paginated) */
 export async function listActiveCampaigns(): Promise<
   Array<{ id: number; name: string; status: string; concurrentCalls: number; agentId: string; callsTotal: number; callsCompleted: number }>
 > {
-  const res = await fetch(`${AIM_REST}/campaigns?perPage=100&page=1`, {
-    headers: { Authorization: `Bearer ${token()}` },
-    cache: "no-store",
-  });
-  if (!res.ok) return [];
-  const data = await res.json();
-  return (data.data ?? [])
-    .filter((c: any) => c.status === "in_progress" || c.status === "paused")
+  const allCampaigns: any[] = [];
+  const maxPages = 5; // 500 campaigns max
+  for (let page = 1; page <= maxPages; page++) {
+    const res = await fetch(`${AIM_REST}/campaigns?perPage=100&page=${page}`, {
+      headers: { Authorization: `Bearer ${token()}` },
+      cache: "no-store",
+    });
+    if (!res.ok) break;
+    const data = await res.json();
+    if (!data.data?.length) break;
+    allCampaigns.push(...data.data);
+    if (data.data.length < 100) break; // last page
+  }
+  return allCampaigns
+    .filter((c: any) => c.status === "in_progress" || c.status === "paused" || c.status === "completed")
     .map((c: any) => ({
       id: c.id,
       name: c.name,

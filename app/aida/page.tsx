@@ -96,6 +96,7 @@ export default function AidaPage() {
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(POLL_MS / 1000);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [campaignTab, setCampaignTab] = useState<"in_progress" | "paused" | "completed">("in_progress");
   const countdownRef = useRef(POLL_MS / 1000);
 
   const fetchStatus = useCallback(async () => {
@@ -297,14 +298,33 @@ export default function AidaPage() {
 
             {/* CAMPAIGN TABLE */}
             <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden" }}>
-              <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: ".12em", padding: "12px 16px 0" }}>
-                Campaigns ({campaigns.filter(c => c.status === "in_progress").length} active / {campaigns.length} total)
+              {/* Campaign Status Tabs */}
+              <div style={{ display: "flex", alignItems: "center", gap: 0, borderBottom: `1px solid ${C.border}` }}>
+                {([
+                  { key: "in_progress" as const, label: "In Progress", count: campaigns.filter(c => c.status === "in_progress").length },
+                  { key: "paused" as const, label: "Paused", count: campaigns.filter(c => c.status === "paused").length },
+                  { key: "completed" as const, label: "Completed", count: campaigns.filter(c => c.status === "completed").length },
+                ]).map(tab => (
+                  <button
+                    key={tab.key}
+                    onClick={() => setCampaignTab(tab.key)}
+                    style={{
+                      background: campaignTab === tab.key ? C.surface : "transparent",
+                      color: campaignTab === tab.key ? C.accent : C.muted,
+                      border: "none", borderBottom: campaignTab === tab.key ? `2px solid ${C.accent}` : "2px solid transparent",
+                      padding: "10px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                      textTransform: "uppercase", letterSpacing: ".08em",
+                    }}
+                  >
+                    {tab.label} <span style={{ fontFamily: "monospace", marginLeft: 4, opacity: 0.7 }}>({tab.count})</span>
+                  </button>
+                ))}
               </div>
               <div style={{ overflowY: "auto", maxHeight: 400 }}>
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead>
                     <tr style={{ background: C.surface }}>
-                      {["List", "Campaign", "Status", "Calls", "Max", "List Progress"].map(h => (
+                      {["List", "Campaign", campaignTab === "completed" ? "" : "Calls", campaignTab === "completed" ? "" : "Max", "List Progress"].filter(Boolean).map(h => (
                         <th key={h} style={{
                           padding: "8px 12px", fontSize: 10, color: C.muted, textTransform: "uppercase",
                           letterSpacing: ".12em", textAlign: h === "Campaign" ? "left" : "center",
@@ -315,9 +335,9 @@ export default function AidaPage() {
                   </thead>
                   <tbody>
                     {[...campaigns]
+                      .filter(c => c.status === campaignTab)
                       .sort((a, b) => a.listKey.localeCompare(b.listKey) || a.name.localeCompare(b.name))
                       .map(c => {
-                        const statusColor = c.status === "in_progress" ? C.green : c.status === "paused" ? C.amber : C.dim;
                         return (
                           <tr key={c.id} style={{ borderBottom: `1px solid ${C.dim}` }}>
                             <td style={{ padding: "7px 12px", fontSize: 11, color: C.accent, fontWeight: 600, textAlign: "center" }}>
@@ -326,20 +346,16 @@ export default function AidaPage() {
                             <td style={{ padding: "7px 12px", fontSize: 11, color: C.text, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                               {c.name}
                             </td>
-                            <td style={{ padding: "7px 12px", textAlign: "center" }}>
-                              <span style={{
-                                fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 10,
-                                background: `${statusColor}22`, color: statusColor, textTransform: "uppercase",
-                              }}>
-                                {c.status.replace("_", " ")}
-                              </span>
-                            </td>
-                            <td style={{ padding: "7px 12px", fontFamily: "monospace", fontSize: 13, textAlign: "center", fontWeight: 600, color: C.text }}>
-                              {c.concurrentCalls}
-                            </td>
-                            <td style={{ padding: "7px 12px", fontFamily: "monospace", fontSize: 12, textAlign: "center", color: C.muted }}>
-                              {c.max}
-                            </td>
+                            {campaignTab !== "completed" && (
+                              <td style={{ padding: "7px 12px", fontFamily: "monospace", fontSize: 13, textAlign: "center", fontWeight: 600, color: C.text }}>
+                                {c.concurrentCalls}
+                              </td>
+                            )}
+                            {campaignTab !== "completed" && (
+                              <td style={{ padding: "7px 12px", fontFamily: "monospace", fontSize: 12, textAlign: "center", color: C.muted }}>
+                                {c.max}
+                              </td>
+                            )}
                             <td style={{ padding: "7px 12px", textAlign: "center" }}>
                               {c.callsTotal > 0 ? (
                                 <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
