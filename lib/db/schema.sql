@@ -99,6 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_moxy_deals_sold_date ON moxy_deals(sold_date);
 CREATE INDEX IF NOT EXISTS idx_moxy_deals_home_phone ON moxy_deals(home_phone);
 CREATE INDEX IF NOT EXISTS idx_moxy_deals_mobile_phone ON moxy_deals(mobile_phone);
 CREATE INDEX IF NOT EXISTS idx_moxy_deals_contract ON moxy_deals(contract_no);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_moxy_deals_unique ON moxy_deals(contract_no) WHERE contract_no IS NOT NULL AND contract_no != '';
 
 -- Metadata tracking
 CREATE TABLE IF NOT EXISTS seed_metadata (

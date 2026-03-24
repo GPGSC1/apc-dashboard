@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server";
-import * as fs from "fs";
-import * as path from "path";
 import https from "https";
 import { query } from "../../../lib/db/connection";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const DATA_DIR = path.join(process.cwd(), "data");
 const AIM_REST = "https://dash.aimnow.ai/api";
 const MOXY_BASE = "https://MoxyAPI.moxyws.com";
 const CT_TZ = "America/Chicago";
@@ -110,6 +107,7 @@ function normalizePhone(raw: string): string {
   return d.length === 10 ? d : d.slice(-10);
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function customerPhone(call: any): string {
   const dir = (call.direction ?? "").toLowerCase();
   const raw = dir === "inbound" ? (call.from ?? "") : (call.to ?? "");
@@ -166,6 +164,7 @@ function extractViewState(html: string, field: string): string {
 
 // ─── AIM API helper ───────────────────────────────────────────────────────────
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function aimFetchAllCalls(params: Record<string, string | string[]>): Promise<any[]> {
   const token = process.env.AIM_BEARER_TOKEN;
   if (!token) throw new Error("AIM_BEARER_TOKEN not set");
@@ -219,32 +218,39 @@ function parseCsvLine(line: string): string[] {
   return cols;
 }
 
-// ─── Atomic file write ────────────────────────────────────────────────────────
+// ─── Batch insert helper ──────────────────────────────────────────────────────
 
-function atomicWriteJson(filePath: string, data: any): void {
-  const tmp = filePath + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(data));
-  fs.renameSync(tmp, filePath);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function batchInsert(
+  sql: string,
+  colCount: number,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rows: any[][],
+  batchSize = 200
+): Promise<number> {
+  let inserted = 0;
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const batch = rows.slice(i, i + batchSize);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const vals: any[] = [];
+    const placeholders = batch.map((row, j) => {
+      const off = j * colCount;
+      vals.push(...row);
+      return `(${Array.from({ length: colCount }, (_, k) => `$${off + k + 1}`).join(",")})`;
+    }).join(",");
+    if (placeholders) {
+      const result = await query(sql.replace("__VALUES__", placeholders), vals);
+      inserted += result.rowCount ?? batch.length;
+    }
+  }
+  return inserted;
 }
 
-// ─── AIM Seed Refresh ─────────────────────────────────────────────────────────
+// ─── AIM: Direct to Postgres ──────────────────────────────────────────────────
 
-async function refreshAimSeed(dates: string[]): Promise<{ addedTransfers: number; updatedDays: string[] }> {
+async function refreshAim(dates: string[]): Promise<{ addedTransfers: number; updatedDays: string[] }> {
   const token = process.env.AIM_BEARER_TOKEN;
   if (!token) throw new Error("AIM_BEARER_TOKEN not set");
-
-  const seedPath = path.join(DATA_DIR, "aim_seed.json");
-  const seed = JSON.parse(fs.readFileSync(seedPath, "utf8"));
-
-  // Build existing callId set for transfer dedup
-  const existingTransferIds = new Set<string>();
-  for (const t of (seed.transfers ?? [])) {
-    if (t.callId) existingTransferIds.add(t.callId);
-  }
-
-  if (!seed.dailyCosts) seed.dailyCosts = {};
-  if (!seed.agentDailyCosts) seed.agentDailyCosts = {};
-  if (!seed.phoneToAgentAll) seed.phoneToAgentAll = {};
 
   let addedTransfers = 0;
   const updatedDays: string[] = [];
@@ -267,11 +273,12 @@ async function refreshAimSeed(dates: string[]): Promise<{ addedTransfers: number
 
     console.log(`[seed-refresh/AIM] ${targetDate}: ${transferCalls.length} transfers, ${allDialCalls.length} all calls`);
 
-    // ── Transfers: dedup by callId, APPEND only new ones ──
-    let dayAdded = 0;
+    // ── Transfers: INSERT ON CONFLICT DO NOTHING ──
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const transferRows: any[][] = [];
     for (const call of transferCalls) {
       const callId = call.id || call.callId || "";
-      if (!callId || existingTransferIds.has(callId)) continue;
+      if (!callId) continue;
 
       const phone = customerPhone(call);
       if (phone.length !== 10) continue;
@@ -287,17 +294,27 @@ async function refreshAimSeed(dates: string[]): Promise<{ addedTransfers: number
         : 0;
       const cost = call.price ?? 0;
 
-      seed.transfers.push({ callId, phone, listKey, agent, date, dSec, cost });
-      existingTransferIds.add(callId);
-      dayAdded++;
+      transferRows.push([callId, phone, listKey, agent, date, dSec, cost]);
     }
-    addedTransfers += dayAdded;
 
-    // ── dailyCosts / agentDailyCosts: REPLACE entire day ──
+    if (transferRows.length > 0) {
+      const inserted = await batchInsert(
+        `INSERT INTO aim_transfers (call_id,phone,list_key,agent,call_date,duration_sec,cost) VALUES __VALUES__ ON CONFLICT DO NOTHING`,
+        7, transferRows, 200
+      );
+      addedTransfers += inserted;
+    }
+
+    // ── dailyCosts / agentDailyCosts: compute from all calls, UPSERT ──
     const listMin: Record<string, number> = {};
     const listCost: Record<string, number> = {};
     const agentMin: Record<string, number> = {};
     const agentCost: Record<string, number> = {};
+    // phone→agent tracking
+    const phoneAgentMap: Map<string, { agent: string; date: string }> = new Map();
+    // phone history tracking
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const phoneHistoryRows: any[][] = [];
 
     for (const call of allDialCalls) {
       const campaignName = call.campaign?.name ?? "";
@@ -319,60 +336,94 @@ async function refreshAimSeed(dates: string[]): Promise<{ addedTransfers: number
       const phone = customerPhone(call);
       const callDate = call.startedAt ?? "";
       if (phone.length === 10 && agent && agent !== "Unknown") {
-        const existing = seed.phoneToAgentAll[phone];
+        const existing = phoneAgentMap.get(phone);
         if (!existing || callDate > existing.date) {
-          seed.phoneToAgentAll[phone] = { agent, date: callDate };
+          phoneAgentMap.set(phone, { agent, date: callDate });
         }
+      }
+
+      // Track phone history for tiebreaker
+      if (phone.length === 10) {
+        const dateOnly = callDate.slice(0, 10) || targetDate;
+        phoneHistoryRows.push([phone, listKey, dateOnly]);
       }
     }
 
-    // REPLACE (not accumulate) dailyCosts for this date
+    // UPSERT aim_daily_costs for this date
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dailyCostRows: any[][] = [];
     for (const [li, min] of Object.entries(listMin)) {
-      if (!seed.dailyCosts[li]) seed.dailyCosts[li] = {};
-      seed.dailyCosts[li][targetDate] = {
-        min: Math.round(min),
-        cost: Math.round((listCost[li] ?? 0) * 100) / 100,
-      };
+      dailyCostRows.push([li, targetDate, Math.round(min), Math.round((listCost[li] ?? 0) * 100) / 100]);
+    }
+    if (dailyCostRows.length > 0) {
+      await batchInsert(
+        `INSERT INTO aim_daily_costs (list_key,call_date,minutes,cost) VALUES __VALUES__ ON CONFLICT (list_key,call_date) DO UPDATE SET minutes=EXCLUDED.minutes, cost=EXCLUDED.cost`,
+        4, dailyCostRows, 200
+      );
     }
 
-    // REPLACE (not accumulate) agentDailyCosts for this date
+    // UPSERT aim_agent_daily_costs for this date
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const agentCostRows: any[][] = [];
     for (const [agent, min] of Object.entries(agentMin)) {
-      if (!seed.agentDailyCosts[agent]) seed.agentDailyCosts[agent] = {};
-      seed.agentDailyCosts[agent][targetDate] = {
-        min: Math.round(min),
-        cost: Math.round((agentCost[agent] ?? 0) * 100) / 100,
-      };
+      agentCostRows.push([agent, targetDate, Math.round(min), Math.round((agentCost[agent] ?? 0) * 100) / 100]);
+    }
+    if (agentCostRows.length > 0) {
+      await batchInsert(
+        `INSERT INTO aim_agent_daily_costs (agent,call_date,minutes,cost) VALUES __VALUES__ ON CONFLICT (agent,call_date) DO UPDATE SET minutes=EXCLUDED.minutes, cost=EXCLUDED.cost`,
+        4, agentCostRows, 200
+      );
+    }
+
+    // UPSERT aim_phone_agent
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const phoneAgentRows: any[][] = [];
+    for (const [phone, entry] of phoneAgentMap) {
+      phoneAgentRows.push([phone, entry.agent, entry.date.slice(0, 10) || targetDate]);
+    }
+    if (phoneAgentRows.length > 0) {
+      await batchInsert(
+        `INSERT INTO aim_phone_agent (phone,agent,last_call_date) VALUES __VALUES__ ON CONFLICT (phone) DO UPDATE SET agent=EXCLUDED.agent, last_call_date=EXCLUDED.last_call_date WHERE EXCLUDED.last_call_date >= aim_phone_agent.last_call_date`,
+        3, phoneAgentRows, 200
+      );
+    }
+
+    // INSERT aim_phone_history ON CONFLICT DO NOTHING
+    if (phoneHistoryRows.length > 0) {
+      // Deduplicate in-memory first (same phone+list+date)
+      const seen = new Set<string>();
+      const uniqueRows = phoneHistoryRows.filter((r) => {
+        const key = `${r[0]}|${r[1]}|${r[2]}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      await batchInsert(
+        `INSERT INTO aim_phone_history (phone,list_key,call_date) VALUES __VALUES__ ON CONFLICT DO NOTHING`,
+        3, uniqueRows, 300
+      );
     }
 
     updatedDays.push(targetDate);
-    console.log(`[seed-refresh/AIM] ${targetDate}: +${dayAdded} transfers, dailyCosts replaced for ${Object.keys(listMin).length} lists, ${Object.keys(agentMin).length} agents`);
+    console.log(`[seed-refresh/AIM] ${targetDate}: ${transferRows.length} transfer rows, ${Object.keys(listMin).length} lists, ${Object.keys(agentMin).length} agents, ${phoneAgentMap.size} phone-agent, ${phoneHistoryRows.length} history`);
   }
 
-  seed.count = seed.transfers.length;
-  seed.generatedAt = new Date().toISOString();
-  atomicWriteJson(seedPath, seed);
-  console.log(`[seed-refresh/AIM] Wrote aim_seed.json (${seed.transfers.length} transfers total)`);
+  // Update metadata
+  await query(
+    `INSERT INTO seed_metadata (source, max_date, updated_at) VALUES ('aim', $1, NOW()) ON CONFLICT (source) DO UPDATE SET max_date=GREATEST(seed_metadata.max_date, $1), updated_at=NOW()`,
+    [dates[dates.length - 1]]
+  );
 
   return { addedTransfers, updatedDays };
 }
 
-// ─── 3CX Seed Refresh ────────────────────────────────────────────────────────
+// ─── 3CX: Direct to Postgres ─────────────────────────────────────────────────
 
-async function refresh3cxSeed(dates: string[]): Promise<{ addedCalls: number }> {
+async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
   const domain = process.env.TCX_DOMAIN ?? "gpgsc.innicom.com";
   const username = process.env.TCX_USERNAME ?? "1911";
   const password = process.env.TCX_PASSWORD;
   if (!password) throw new Error("TCX_PASSWORD not set");
-
-  const seedPath = path.join(DATA_DIR, "tcx_seed.json");
-  const seed = JSON.parse(fs.readFileSync(seedPath, "utf8"));
-
-  // Build callId set for dedup
-  const existingIds = new Set<string>();
-  for (const row of (seed.rows ?? [])) {
-    const callId = row[0];
-    if (callId) existingIds.add(String(callId));
-  }
 
   // Login to 3CX (single session for all date fetches)
   console.log(`[seed-refresh/3CX] Logging in to ${domain}...`);
@@ -447,6 +498,17 @@ async function refresh3cxSeed(dates: string[]): Promise<{ addedCalls: number }> 
     const TTI = SSI + 2;
     const QI = SSI + 7;
 
+    // Collect rows for batch inserts
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mail4PhoneRows: any[][] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const phoneLastQueueRows: any[][] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const openedCallRows: any[][] = [];
+
+    const mail4PhonesSet = new Set<string>();
+    const phoneLastQueueMap = new Map<string, { queue: string; date: string }>();
+
     let dayAdded = 0;
     for (let i = headerIdx + 1; i < lines.length; i++) {
       const line = lines[i].trim();
@@ -455,7 +517,7 @@ async function refresh3cxSeed(dates: string[]): Promise<{ addedCalls: number }> 
       if (c.length < 13) continue;
 
       const callId = (c[CI] || "").trim();
-      if (!callId || existingIds.has(callId)) continue;
+      if (!callId) continue;
 
       const phone = normalizePhone(c[PHI] || "");
       if (!phone || phone.length !== 10) continue;
@@ -470,99 +532,94 @@ async function refresh3cxSeed(dates: string[]): Promise<{ addedCalls: number }> 
       const talkSec = parseFloat(c[TTI] || "0") || 0;
       const inOut = (c[IOI] || "").trim();
 
-      seed.rows.push([callId, startTime, phone, destName, status, talkSec, queueName, inOut]);
-      existingIds.add(callId);
+      // Track inbound Mail 4 phones
+      if (inOut.toLowerCase() === "inbound") {
+        const qLower = queueName.toLowerCase();
+        if (qLower.includes("mail 4") && !mail4PhonesSet.has(phone)) {
+          mail4PhonesSet.add(phone);
+          mail4PhoneRows.push([phone]);
+        }
+
+        // Track phone last queue (keep most recent)
+        const dateStr = parseDate(startTime);
+        if (dateStr) {
+          const existing = phoneLastQueueMap.get(phone);
+          if (!existing || dateStr > existing.date) {
+            phoneLastQueueMap.set(phone, { queue: qLower, date: dateStr });
+          }
+        }
+      }
+
+      // Opened calls: answered, not AI, talk>0, mail 4
+      if (
+        status === "answered" &&
+        destName && !destName.toUpperCase().startsWith("AI F") &&
+        talkSec > 0 &&
+        queueName.toLowerCase().includes("mail 4")
+      ) {
+        const dt = parseDate(startTime);
+        if (dt) {
+          openedCallRows.push([dt, phone]);
+        }
+      }
+
       dayAdded++;
     }
 
+    // Batch insert mail4_phones
+    if (mail4PhoneRows.length > 0) {
+      await batchInsert(
+        `INSERT INTO mail4_phones (phone) VALUES __VALUES__ ON CONFLICT DO NOTHING`,
+        1, mail4PhoneRows, 500
+      );
+    }
+
+    // Build phone_last_queue rows from map
+    for (const [phone, entry] of phoneLastQueueMap) {
+      phoneLastQueueRows.push([phone, entry.queue, entry.date]);
+    }
+    if (phoneLastQueueRows.length > 0) {
+      await batchInsert(
+        `INSERT INTO phone_last_queue (phone,queue,call_date) VALUES __VALUES__ ON CONFLICT (phone) DO UPDATE SET queue=EXCLUDED.queue, call_date=EXCLUDED.call_date WHERE EXCLUDED.call_date >= phone_last_queue.call_date`,
+        3, phoneLastQueueRows, 200
+      );
+    }
+
+    // Deduplicate opened calls in-memory before insert
+    if (openedCallRows.length > 0) {
+      const seen = new Set<string>();
+      const uniqueOpened = openedCallRows.filter((r) => {
+        const key = `${r[0]}|${r[1]}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      await batchInsert(
+        `INSERT INTO opened_calls (call_date,phone) VALUES __VALUES__ ON CONFLICT DO NOTHING`,
+        2, uniqueOpened, 300
+      );
+    }
+
     totalAdded += dayAdded;
-    console.log(`[seed-refresh/3CX] ${targetDate}: +${dayAdded} calls (${lines.length} CSV lines)`);
+    console.log(`[seed-refresh/3CX] ${targetDate}: ${dayAdded} calls parsed, ${mail4PhoneRows.length} mail4, ${phoneLastQueueRows.length} queues, ${openedCallRows.length} opened`);
   }
 
-  seed.count = seed.rows.length;
-  seed.generatedAt = new Date().toISOString();
-  atomicWriteJson(seedPath, seed);
-  console.log(`[seed-refresh/3CX] Wrote tcx_seed.json (${seed.rows.length} rows total)`);
-
-  // Rebuild tcx_gate.json from the full seed
-  rebuildTcxGate(seed);
+  // Update metadata
+  await query(
+    `INSERT INTO seed_metadata (source, max_date, updated_at) VALUES ('tcx', $1, NOW()) ON CONFLICT (source) DO UPDATE SET max_date=GREATEST(seed_metadata.max_date, $1), updated_at=NOW()`,
+    [dates[dates.length - 1]]
+  );
 
   return { addedCalls: totalAdded };
 }
 
-// ─── Rebuild tcx_gate.json ────────────────────────────────────────────────────
+// ─── Moxy: Direct to Postgres ─────────────────────────────────────────────────
 
-function rebuildTcxGate(seed: any): void {
-  const mail4Phones = new Set<string>();
-  const phoneLastQueue: Record<string, { queue: string; date: string }> = {};
-  let maxDate = "";
-
-  for (const row of (seed.rows ?? [])) {
-    const [, startTime, phone, , , , queueName, inOut] = row;
-    if (!phone || String(phone).length !== 10 || String(inOut || "").toLowerCase() !== "inbound") continue;
-
-    const qLower = String(queueName || "").toLowerCase();
-    if (qLower.includes("mail 4")) mail4Phones.add(String(phone));
-
-    const dateStr = parseDate(startTime);
-    if (dateStr) {
-      const existing = phoneLastQueue[String(phone)];
-      if (!existing || dateStr > existing.date) {
-        phoneLastQueue[String(phone)] = { queue: qLower, date: dateStr };
-      }
-      if (dateStr > maxDate) maxDate = dateStr;
-    }
-  }
-
-  // Only keep phoneLastQueue for mail4Phones
-  const filteredPLQ: Record<string, { queue: string; date: string }> = {};
-  for (const phone of mail4Phones) {
-    if (phoneLastQueue[phone]) filteredPLQ[phone] = phoneLastQueue[phone];
-  }
-
-  // Pre-compute opened calls by date
-  const openedByDate: Record<string, string[]> = {};
-  for (const row of (seed.rows ?? [])) {
-    const [, startTime, phone, destName, status, talkSec, queueName] = row;
-    if (String(status) !== "answered") continue;
-    if (!destName || String(destName).toUpperCase().startsWith("AI F")) continue;
-    if (Number(talkSec) <= 0) continue;
-    if (!String(queueName || "").toLowerCase().includes("mail 4")) continue;
-    const dt = parseDate(startTime);
-    if (!dt) continue;
-    if (!openedByDate[dt]) openedByDate[dt] = [];
-    openedByDate[dt].push(String(phone));
-  }
-
-  const gatePath = path.join(DATA_DIR, "tcx_gate.json");
-  const gateData = {
-    generatedAt: new Date().toISOString(),
-    maxDate,
-    mail4Phones: Array.from(mail4Phones),
-    phoneLastQueue: filteredPLQ,
-    openedByDate,
-  };
-  atomicWriteJson(gatePath, gateData);
-  const gateSize = fs.statSync(gatePath).size;
-  console.log(`[seed-refresh/3CX] Rebuilt tcx_gate.json (${(gateSize / 1024).toFixed(0)}KB — ${mail4Phones.size} mail4, ${Object.keys(filteredPLQ).length} queues, ${Object.keys(openedByDate).length} dates)`);
-}
-
-// ─── Moxy Seed Refresh ───────────────────────────────────────────────────────
-
-async function refreshMoxySeed(dates: string[]): Promise<{ addedDeals: number }> {
+async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number }> {
   const moxyKey = process.env.MOXY_API_KEY ?? "a242ccb0-738e-4e4f-a418-facf89297904";
 
-  const seedPath = path.join(DATA_DIR, "moxy_seed.json");
-  const seed = JSON.parse(fs.readFileSync(seedPath, "utf8"));
-
-  // Build dedup set from both customerId AND contractNo
-  const existingIds = new Set<string>();
-  for (const d of (seed.deals ?? [])) {
-    const cid = String(d.customerId ?? "").trim();
-    const cno = String(d.contractNo ?? "").trim();
-    if (cid) existingIds.add("cid:" + cid);
-    if (cno) existingIds.add("cno:" + cno);
-  }
+  // Ensure unique constraint exists (idempotent)
+  await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_moxy_deals_unique ON moxy_deals(contract_no) WHERE contract_no IS NOT NULL AND contract_no != ''`);
 
   // Determine fetch range: min date to max date + 1 day
   const sortedDates = [...dates].sort();
@@ -586,182 +643,58 @@ async function refreshMoxySeed(dates: string[]): Promise<{ addedDeals: number }>
   const deals: Record<string, unknown>[] = await resp.json();
   console.log(`[seed-refresh/Moxy] API returned ${deals.length} deals`);
 
-  let addedDeals = 0;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const dealRows: any[][] = [];
   for (const d of deals) {
-    const cid = String((d as any).customerId ?? (d as any).customerID ?? (d as any).customerNo ?? "").trim();
-    const cno = String((d as any).contractNo ?? "").trim();
-
-    // DEDUP: skip if customerId OR contractNo already exists
-    if ((cid && existingIds.has("cid:" + cid)) || (cno && existingIds.has("cno:" + cno))) continue;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const da = d as any;
+    const cid = String(da.customerId ?? da.customerID ?? da.customerNo ?? "").trim();
+    const cno = String(da.contractNo ?? "").trim();
     if (!cid && !cno) continue; // no identifier at all
 
-    const hp = String((d as any).homePhone ?? "").replace(/\D/g, "");
-    const cp = String((d as any).cellphone ?? (d as any).cellPhone ?? (d as any).mobilePhone ?? "").replace(/\D/g, "");
+    const hp = String(da.homePhone ?? "").replace(/\D/g, "");
+    const cp = String(da.cellphone ?? da.cellPhone ?? da.mobilePhone ?? "").replace(/\D/g, "");
 
-    seed.deals.push({
-      customerId: cid,
-      soldDate: String((d as any).soldDate ?? ""),
-      firstName: String((d as any).firstName ?? ""),
-      lastName: String((d as any).lastName ?? ""),
-      homePhone: hp.length === 11 && hp.startsWith("1") ? hp.slice(1) : hp,
-      mobilePhone: cp.length === 11 && cp.startsWith("1") ? cp.slice(1) : cp,
-      salesperson: String((d as any).closer ?? (d as any).salesRep ?? (d as any).salesperson ?? ""),
-      dealStatus: String((d as any).dealStatus ?? (d as any).status ?? ""),
-      promoCode: String((d as any).promoCode ?? ""),
-      campaign: String((d as any).campaign ?? (d as any).campaignName ?? ""),
-      source: String((d as any).source ?? ""),
-      contractNo: cno,
-      cancelReason: String((d as any).cancelReason ?? ""),
-      make: String((d as any).make ?? ""),
-      model: String((d as any).model ?? ""),
-      state: String((d as any).state ?? ""),
-      admin: String((d as any).admin ?? ""),
-    });
-
-    if (cid) existingIds.add("cid:" + cid);
-    if (cno) existingIds.add("cno:" + cno);
-    addedDeals++;
+    dealRows.push([
+      cid,
+      cno,
+      parseDate(String(da.soldDate ?? "")),
+      String(da.firstName ?? ""),
+      String(da.lastName ?? ""),
+      hp.length === 11 && hp.startsWith("1") ? hp.slice(1) : hp,
+      cp.length === 11 && cp.startsWith("1") ? cp.slice(1) : cp,
+      String(da.closer ?? da.salesRep ?? da.salesperson ?? ""),
+      String(da.dealStatus ?? da.status ?? ""),
+      String(da.promoCode ?? ""),
+      String(da.campaign ?? da.campaignName ?? ""),
+      String(da.source ?? ""),
+      String(da.cancelReason ?? ""),
+      String(da.make ?? ""),
+      String(da.model ?? ""),
+      String(da.state ?? ""),
+      parseFloat(String(da.admin ?? "0")) || 0,
+    ]);
   }
 
-  seed.count = seed.deals.length;
-  seed.generatedAt = new Date().toISOString();
-  atomicWriteJson(seedPath, seed);
-  console.log(`[seed-refresh/Moxy] Wrote moxy_seed.json (+${addedDeals} deals, ${seed.deals.length} total)`);
+  let addedDeals = 0;
+  if (dealRows.length > 0) {
+    addedDeals = await batchInsert(
+      `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin)
+       VALUES __VALUES__
+       ON CONFLICT (contract_no) WHERE contract_no IS NOT NULL AND contract_no != '' DO NOTHING`,
+      17, dealRows, 100
+    );
+  }
+
+  console.log(`[seed-refresh/Moxy] Inserted ${addedDeals} new deals (${dealRows.length} total from API)`);
+
+  // Update metadata
+  await query(
+    `INSERT INTO seed_metadata (source, max_date, updated_at) VALUES ('moxy', $1, NOW()) ON CONFLICT (source) DO UPDATE SET max_date=GREATEST(seed_metadata.max_date, $1), updated_at=NOW()`,
+    [dates[dates.length - 1]]
+  );
 
   return { addedDeals };
-}
-
-// ─── Postgres Sync ───────────────────────────────────────────────────────────
-
-async function syncToPostgres(dates: string[]): Promise<void> {
-  console.log(`[seed-refresh/PG] Syncing ${dates.join(", ")} to Postgres...`);
-
-  try {
-    // 1. Sync AIM transfers for these dates
-    const aimSeed = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "aim_seed.json"), "utf8"));
-    for (const date of dates) {
-      const dayTransfers = (aimSeed.transfers ?? []).filter((t: any) => t.date === date);
-      if (dayTransfers.length > 0) {
-        for (let i = 0; i < dayTransfers.length; i += 100) {
-          const batch = dayTransfers.slice(i, i + 100);
-          const vals: any[] = [];
-          const placeholders = batch.map((t: any, j: number) => {
-            const off = j * 7;
-            vals.push(t.callId, t.phone, t.listKey, t.agent, t.date, t.dSec || 0, t.cost || 0);
-            return `($${off+1},$${off+2},$${off+3},$${off+4},$${off+5},$${off+6},$${off+7})`;
-          }).join(",");
-          await query(`INSERT INTO aim_transfers (call_id,phone,list_key,agent,call_date,duration_sec,cost) VALUES ${placeholders} ON CONFLICT DO NOTHING`, vals);
-        }
-      }
-
-      // 2. Sync AIM dailyCosts — REPLACE for this date
-      for (const [li, dateCosts] of Object.entries(aimSeed.dailyCosts ?? {})) {
-        const dc = (dateCosts as any)[date];
-        if (dc) {
-          await query(
-            `INSERT INTO aim_daily_costs (list_key,call_date,minutes,cost) VALUES ($1,$2,$3,$4) ON CONFLICT (list_key,call_date) DO UPDATE SET minutes=$3, cost=$4`,
-            [li, date, dc.min, dc.cost]
-          );
-        }
-      }
-
-      // 3. Sync AIM agentDailyCosts — REPLACE for this date
-      for (const [agent, dateCosts] of Object.entries(aimSeed.agentDailyCosts ?? {})) {
-        const dc = (dateCosts as any)[date];
-        if (dc) {
-          await query(
-            `INSERT INTO aim_agent_daily_costs (agent,call_date,minutes,cost) VALUES ($1,$2,$3,$4) ON CONFLICT (agent,call_date) DO UPDATE SET minutes=$3, cost=$4`,
-            [agent, date, dc.min, dc.cost]
-          );
-        }
-      }
-    }
-
-    // 4. Sync phoneToAgentAll
-    const ptaAll = aimSeed.phoneToAgentAll ?? {};
-    const ptaEntries = Object.entries(ptaAll);
-    for (let i = 0; i < ptaEntries.length; i += 100) {
-      const batch = ptaEntries.slice(i, i + 100);
-      const vals: any[] = [];
-      const placeholders = batch.map(([phone, entry]: [string, any], j: number) => {
-        const off = j * 3;
-        vals.push(phone, entry.agent, entry.date?.slice(0, 10) || dates[0]);
-        return `($${off+1},$${off+2},$${off+3})`;
-      }).join(",");
-      if (placeholders) {
-        await query(`INSERT INTO aim_phone_agent (phone,agent,last_call_date) VALUES ${placeholders} ON CONFLICT (phone) DO UPDATE SET agent=EXCLUDED.agent, last_call_date=EXCLUDED.last_call_date`, vals);
-      }
-    }
-
-    // 5. Sync 3CX gate data
-    const gatePath = path.join(DATA_DIR, "tcx_gate.json");
-    if (fs.existsSync(gatePath)) {
-      const gate = JSON.parse(fs.readFileSync(gatePath, "utf8"));
-
-      // Mail 4 phones
-      const m4 = gate.mail4Phones ?? [];
-      for (let i = 0; i < m4.length; i += 200) {
-        const batch = m4.slice(i, i + 200);
-        const vals: any[] = [];
-        const placeholders = batch.map((p: string, j: number) => { vals.push(p); return `($${j+1})`; }).join(",");
-        if (placeholders) await query(`INSERT INTO mail4_phones (phone) VALUES ${placeholders} ON CONFLICT DO NOTHING`, vals);
-      }
-
-      // Phone last queue
-      const plq = Object.entries(gate.phoneLastQueue ?? {});
-      for (let i = 0; i < plq.length; i += 100) {
-        const batch = plq.slice(i, i + 100);
-        const vals: any[] = [];
-        const placeholders = batch.map(([phone, entry]: [string, any], j: number) => {
-          const off = j * 3;
-          vals.push(phone, entry.queue, entry.date);
-          return `($${off+1},$${off+2},$${off+3})`;
-        }).join(",");
-        if (placeholders) await query(`INSERT INTO phone_last_queue (phone,queue,call_date) VALUES ${placeholders} ON CONFLICT (phone) DO UPDATE SET queue=EXCLUDED.queue, call_date=EXCLUDED.call_date`, vals);
-      }
-
-      // Opened calls by date (only for refreshed dates)
-      for (const date of dates) {
-        const phones = (gate.openedByDate ?? {})[date];
-        if (phones && phones.length > 0) {
-          const vals: any[] = [];
-          const placeholders = phones.map((p: string, j: number) => {
-            const off = j * 2;
-            vals.push(date, p);
-            return `($${off+1},$${off+2})`;
-          }).join(",");
-          await query(`INSERT INTO opened_calls (call_date,phone) VALUES ${placeholders} ON CONFLICT DO NOTHING`, vals);
-        }
-      }
-    }
-
-    // 6. Sync Moxy deals for these dates
-    const moxySeed = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "moxy_seed.json"), "utf8"));
-    for (const date of dates) {
-      const dayDeals = (moxySeed.deals ?? []).filter((d: any) => {
-        const sd = parseDate(d.soldDate);
-        return sd === date;
-      });
-      for (let i = 0; i < dayDeals.length; i += 50) {
-        const batch = dayDeals.slice(i, i + 50);
-        for (const d of batch) {
-          await query(
-            `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
-             ON CONFLICT DO NOTHING`,
-            [d.customerId, d.contractNo, parseDate(d.soldDate), d.firstName, d.lastName, d.homePhone, d.mobilePhone, d.salesperson, d.dealStatus, d.promoCode, d.campaign, d.source, d.cancelReason, d.make, d.model, d.state, parseFloat(d.admin) || 0]
-          );
-        }
-      }
-    }
-
-    // 7. Update metadata
-    await query(`INSERT INTO seed_metadata (source, max_date, updated_at) VALUES ('refresh', $1, NOW()) ON CONFLICT (source) DO UPDATE SET max_date=$1, updated_at=NOW()`, [dates[dates.length - 1]]);
-
-    console.log(`[seed-refresh/PG] Postgres sync complete for ${dates.join(", ")}`);
-  } catch (e) {
-    console.error(`[seed-refresh/PG] Postgres sync error:`, e);
-  }
 }
 
 // ─── Main Route Handler ───────────────────────────────────────────────────────
@@ -787,28 +720,30 @@ export async function GET() {
     const yesterday = yesterdayCentral();
 
     // Determine which dates to fetch.
-    // Read seed max dates to decide if we need yesterday too.
-    let aimSeedMaxDate = "";
+    // Check Postgres seed_metadata to decide if we need yesterday too.
+    let aimMaxDate = "";
     try {
-      const aimSeed = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "aim_seed.json"), "utf8"));
-      for (const t of (aimSeed.transfers ?? [])) {
-        if (t.date && t.date > aimSeedMaxDate) aimSeedMaxDate = t.date;
+      const metaResult = await query(`SELECT max_date FROM seed_metadata WHERE source = 'aim'`);
+      if (metaResult.rows.length > 0 && metaResult.rows[0].max_date) {
+        aimMaxDate = metaResult.rows[0].max_date instanceof Date
+          ? metaResult.rows[0].max_date.toISOString().slice(0, 10)
+          : String(metaResult.rows[0].max_date).slice(0, 10);
       }
-    } catch { /* empty seed */ }
+    } catch { /* no metadata yet */ }
 
-    // If seed's max date is before yesterday, we need to catch up yesterday + today
+    // If max date is before yesterday, we need to catch up yesterday + today
     // Otherwise just today (dailyCosts get REPLACED so today is always fresh)
-    const datesToFetch = aimSeedMaxDate < yesterday
+    const datesToFetch = aimMaxDate < yesterday
       ? [yesterday, today]
       : [today];
 
-    console.log(`[seed-refresh] Seed max date: ${aimSeedMaxDate || "(empty)"}, fetching: ${datesToFetch.join(", ")}`);
+    console.log(`[seed-refresh] DB max date: ${aimMaxDate || "(empty)"}, fetching: ${datesToFetch.join(", ")}`);
 
-    // Run all three seed refreshes
+    // Run all three source refreshes
     const results = await Promise.allSettled([
-      refreshAimSeed(datesToFetch),
-      refresh3cxSeed(datesToFetch),
-      refreshMoxySeed(datesToFetch),
+      refreshAim(datesToFetch),
+      refresh3cx(datesToFetch),
+      refreshMoxy(datesToFetch),
     ]);
 
     const aimResult = results[0].status === "fulfilled" ? results[0].value : { error: String((results[0] as PromiseRejectedResult).reason) };
@@ -819,8 +754,11 @@ export async function GET() {
       if (r.status === "rejected") console.error("[seed-refresh] Error:", r.reason);
     }
 
-    // Sync updated seed data to Postgres
-    await syncToPostgres(datesToFetch);
+    // Update overall refresh metadata
+    await query(
+      `INSERT INTO seed_metadata (source, max_date, updated_at) VALUES ('refresh', $1, NOW()) ON CONFLICT (source) DO UPDATE SET max_date=$1, updated_at=NOW()`,
+      [datesToFetch[datesToFetch.length - 1]]
+    );
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`[seed-refresh] Complete in ${elapsed}s — AIM: ${JSON.stringify(aimResult)}, 3CX: ${JSON.stringify(tcxResult)}, Moxy: ${JSON.stringify(moxyResult)}`);
