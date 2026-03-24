@@ -59,8 +59,8 @@ export async function GET(request: NextRequest) {
 
   // ─── 2.5 Auto-refresh campaigns every 15 minutes ─────────────────────────
   const lastRefresh = (state as any).lastCampaignRefresh ?? "";
-  const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
-  if (!lastRefresh || lastRefresh < fifteenMinAgo) {
+  const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  if (!lastRefresh || lastRefresh < fiveMinAgo) {
     try {
       const fresh = await aim.listActiveCampaigns();
       for (const c of fresh) {
