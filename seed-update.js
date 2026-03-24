@@ -452,7 +452,14 @@ async function updateMoxySeed(targetDate) {
   const seedPath = path.join(DATA_DIR, "moxy_seed.json");
   const seed = JSON.parse(fs.readFileSync(seedPath, "utf8"));
 
-  const existingIds = new Set((seed.deals || []).map((d) => String(d.customerId)).filter(Boolean));
+  // Build dedup set from both customerId and contractNo (REST API often lacks customerId)
+  const existingIds = new Set();
+  for (const d of (seed.deals || [])) {
+    const cid = String(d.customerId || "").trim();
+    const cno = String(d.contractNo || "").trim();
+    if (cid) existingIds.add("cid:" + cid);
+    if (cno) existingIds.add("cno:" + cno);
+  }
 
   // Fetch deals for the target date (toDate is exclusive, so +1 day)
   const nextDay = (() => {
@@ -472,8 +479,11 @@ async function updateMoxySeed(targetDate) {
   let added = 0;
 
   for (const d of deals) {
-    const cid = String(d.customerId || d.customerID || d.customerNo || "");
-    if (!cid || existingIds.has(cid)) continue;
+    const cid = String(d.customerId || d.customerID || d.customerNo || "").trim();
+    const cno = String(d.contractNo || "").trim();
+    // Skip if we already have this deal (by customerId or contractNo)
+    if ((cid && existingIds.has("cid:" + cid)) || (cno && existingIds.has("cno:" + cno))) continue;
+    if (!cid && !cno) continue; // skip deals with no identifiers at all
 
     const hp = (d.homePhone || "").replace(/\D/g, "");
     const cp = (d.cellphone || d.cellPhone || "").replace(/\D/g, "");
@@ -497,7 +507,8 @@ async function updateMoxySeed(targetDate) {
       state: String(d.state || ""),
       admin: String(d.admin || ""),
     });
-    existingIds.add(cid);
+    if (cid) existingIds.add("cid:" + cid);
+    if (cno) existingIds.add("cno:" + cno);
     added++;
   }
 
@@ -507,19 +518,76 @@ async function updateMoxySeed(targetDate) {
   console.log(`[Moxy] Added ${added} deals for ${targetDate} (total: ${seed.deals.length})`);
 }
 
+// ─── Find seed max dates to determine catch-up range ────────────────────────
+function getSeedMaxDates() {
+  const dates = {};
+  try {
+    const moxy = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "moxy_seed.json"), "utf8"));
+    let max = "";
+    for (const d of (moxy.deals || [])) {
+      const raw = String(d.soldDate || "");
+      const m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      if (m) { const iso = m[3]+"-"+m[1].padStart(2,"0")+"-"+m[2].padStart(2,"0"); if (iso > max) max = iso; }
+    }
+    dates.moxy = max || null;
+  } catch { dates.moxy = null; }
+  return dates;
+}
+
+function addDays(dateStr, n) {
+  const d = new Date(dateStr + "T12:00:00Z");
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
 // ─── Main ───────────────────────────────────────────────────────────────────
 async function main() {
-  const targetDate = getTargetDate();
-  console.log(`\n=== Seed Update: ${targetDate} ===\n`);
+  // If --date is specified, run for that single date
+  const idx = process.argv.indexOf("--date");
+  if (idx >= 0 && process.argv[idx + 1]) {
+    const targetDate = process.argv[idx + 1];
+    console.log(`\n=== Seed Update: ${targetDate} ===\n`);
+    const results = await Promise.allSettled([
+      updateAimSeed(targetDate),
+      update3cxSeed(targetDate),
+      updateMoxySeed(targetDate),
+    ]);
+    for (const r of results) {
+      if (r.status === "rejected") console.error("Error:", r.reason);
+    }
+    console.log("\n=== Done ===\n");
+    return;
+  }
 
-  const results = await Promise.allSettled([
-    updateAimSeed(targetDate),
-    update3cxSeed(targetDate),
-    updateMoxySeed(targetDate),
-  ]);
+  // Auto mode: catch up from day after seed max through yesterday
+  const yesterday = yesterdayCentral();
+  const seedMax = getSeedMaxDates();
+  const moxyStart = seedMax.moxy ? addDays(seedMax.moxy, 1) : yesterday;
 
-  for (const r of results) {
-    if (r.status === "rejected") console.error("Error:", r.reason);
+  // Build list of dates to process
+  const dates = new Set();
+  dates.add(yesterday); // Always process yesterday for AIM/3CX
+
+  // Add catch-up dates for Moxy
+  let d = moxyStart;
+  while (d <= yesterday) {
+    dates.add(d);
+    d = addDays(d, 1);
+  }
+
+  const sortedDates = Array.from(dates).sort();
+  console.log(`\n=== Seed Update: ${sortedDates.length} date(s) to process [${sortedDates[0]} → ${sortedDates[sortedDates.length-1]}] ===\n`);
+
+  for (const targetDate of sortedDates) {
+    console.log(`--- Processing ${targetDate} ---`);
+    const results = await Promise.allSettled([
+      updateAimSeed(targetDate),
+      update3cxSeed(targetDate),
+      updateMoxySeed(targetDate),
+    ]);
+    for (const r of results) {
+      if (r.status === "rejected") console.error("Error:", r.reason);
+    }
   }
 
   console.log("\n=== Done ===\n");
