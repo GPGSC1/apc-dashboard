@@ -200,6 +200,7 @@ export default function SalesDashboard() {
         padding: "20px 24px",
         borderLeft: `3px solid ${color}`,
         transition: "background 0.2s",
+        textAlign: "center",
       }}
       onMouseEnter={(e) => (e.currentTarget.style.background = C.cardHover)}
       onMouseLeave={(e) => (e.currentTarget.style.background = C.card)}
@@ -1093,7 +1094,7 @@ export default function SalesDashboard() {
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "1fr 1fr 1fr",
+                    gridTemplateColumns: "repeat(3, 1fr)",
                     gap: 16,
                   }}
                 >
@@ -1115,13 +1116,12 @@ export default function SalesDashboard() {
                       background: C.card,
                       borderRadius: 12,
                       borderLeft: `3px solid ${C.warning}`,
-                      padding: "16px 20px",
+                      padding: "20px 24px",
                       display: "grid",
                       gridTemplateColumns: "1fr auto 1fr",
-                      gridTemplateRows: "1fr auto 1fr",
-                      gap: 0,
-                      minHeight: 100,
-                      position: "relative",
+                      gridTemplateRows: "auto auto auto",
+                      gap: 2,
+                      alignContent: "center",
                     }}
                   >
                     {/* Top-left: Auto Flip */}
