@@ -240,9 +240,20 @@ export async function GET(req: Request) {
 
     const byQueue: Record<string, { deals: number; calls: number; closeRate: number; aiFwd: number; dropped: number }> = {};
     let companyDeals = 0;
-    let autoDeals = 0, homeDealCount = 0, fbDeals = 0;
-    let fbInAutoDeals = 0, fbInHomeDeals = 0;
+    let autoDeals = 0, homeDealCount = 0;
+    let csDeals = 0, aiDeals = 0;
+    // F/B 4-corner breakdown (computed after main loop)
+    let autoFlip = 0;    // Home queue → auto policy only (no home for that phone)
+    let autoBundle = 0;  // Home queue → auto + home policy
+    let homeFlip = 0;    // Auto queue → home policy only (no auto for that phone)
+    let homeBundle = 0;  // Auto queue → auto + home policy
+    let fbDeals = 0, fbInAutoDeals = 0, fbInHomeDeals = 0;
     let autoCalls = 0, homeCallCount = 0;
+    // Collect F/B deals for post-loop 4-corner classification
+    const fbDealEntries: { phone: string; product: string; queueIsAuto: boolean; queueIsHome: boolean }[] = [];
+
+    const AI_SALESPERSONS = new Set(["jeremy fishbein"]);
+    function isAiDeal(sp: string) { return AI_SALESPERSONS.has(sp.toLowerCase()); }
 
     // Initialize queues
     for (const q of ALL_QUEUES) {
@@ -304,6 +315,13 @@ export async function GET(req: Request) {
         phoneProductSet.get(p)!.add(product);
       }
 
+      // CS deals: promo_code = 'CS' (case insensitive) — separate from queue attribution
+      const pc = ((deal.promo_code ?? "") as string).trim().toUpperCase();
+      if (pc === "CS") csDeals++;
+
+      // AI deals: salesperson matches AI_SALESPERSONS — separate from queue attribution
+      if (isAiDeal(sp)) aiDeals++;
+
       companyDeals++;
       // Only count deal in the queue row if product matches division (not F/B)
       if (category !== "fb" && byQueue[dealQueue]) byQueue[dealQueue].deals++;
@@ -312,17 +330,19 @@ export async function GET(req: Request) {
       else if (category === "home") homeDealCount++;
       else {
         // F/B: product doesn't match queue division
-        // Count the sale for the product's division total AND the opposing F/B tracker
         fbDeals++;
         if (queueIsAuto) {
-          // Home product sold through auto queue → F/B shows in HOME table
-          fbInHomeDeals++;   // F/B row shows in Home table (product's own table)
-          homeDealCount++;   // It IS a home sale, counts in Home total
+          fbInHomeDeals++;
+          homeDealCount++;
         }
         if (queueIsHome) {
-          // Auto product sold through home queue → F/B shows in AUTO table
-          fbInAutoDeals++;   // F/B row shows in Auto table (product's own table)
-          autoDeals++;       // It IS an auto sale, counts in Auto total
+          fbInAutoDeals++;
+          autoDeals++;
+        }
+        // Collect for post-loop 4-corner classification
+        const bestPhone = phones[0] || "";
+        if (bestPhone) {
+          fbDealEntries.push({ phone: bestPhone, product, queueIsAuto, queueIsHome });
         }
       }
 
@@ -341,6 +361,21 @@ export async function GET(req: Request) {
     let bundleCount = 0;
     for (const [, products] of phoneProductSet) {
       if (products.has("auto") && products.has("home")) bundleCount++;
+    }
+
+    // F/B 4-corner classification using phoneProductSet
+    for (const entry of fbDealEntries) {
+      const products = phoneProductSet.get(entry.phone);
+      const hasBoth = products && products.has("auto") && products.has("home");
+
+      if (entry.queueIsHome && entry.product === "auto") {
+        // Auto product sold through home queue
+        if (hasBoth) autoBundle++; else autoFlip++;
+      }
+      if (entry.queueIsAuto && entry.product === "home") {
+        // Home product sold through auto queue
+        if (hasBoth) homeBundle++; else homeFlip++;
+      }
     }
 
     // Compute close rates
@@ -392,6 +427,15 @@ export async function GET(req: Request) {
         deals: homeDealCount,
         calls: homeCallCount,
         closeRate: homeCallCount > 0 ? homeDealCount / homeCallCount : 0,
+      },
+      csDeals,
+      aiDeals,
+      fb: {
+        autoFlip,
+        autoBundle,
+        homeFlip,
+        homeBundle,
+        total: fbDeals,
       },
       fbTotal: {
         deals: fbDeals,

@@ -66,11 +66,21 @@ interface FBStats {
   inHome: number;
   label: string;
 }
+interface FBDetail {
+  autoFlip: number;
+  autoBundle: number;
+  homeFlip: number;
+  homeBundle: number;
+  total: number;
+}
 interface SalesData {
   companyTotal: TotalStats;
   autoTotal: TotalStats;
   homeTotal: TotalStats;
   fbTotal?: FBStats;
+  csDeals?: number;
+  aiDeals?: number;
+  fb?: FBDetail;
   byQueue: Record<string, QueueStats>;
   bySalesperson: Record<string, SalespersonStats>;
   teams: Record<string, string[]>;
@@ -272,12 +282,10 @@ export default function SalesDashboard() {
     title,
     queues,
     color,
-    fbCount,
   }: {
     title: string;
     queues: string[];
     color: string;
-    fbCount?: number;
   }) => (
     <div style={{ flex: 1, minWidth: 320 }}>
       <div
@@ -408,83 +416,6 @@ export default function SalesDashboard() {
                 </tr>
               );
             })}
-            {(fbCount ?? 0) > 0 && (
-              <tr>
-                <td
-                  style={{
-                    padding: "10px 14px",
-                    fontSize: 13,
-                    fontWeight: 700,
-                    color: C.warning,
-                    borderBottom: `1px solid ${C.border}`,
-                    fontFamily: FONT,
-                  }}
-                >
-                  F/B
-                </td>
-                <td
-                  style={{
-                    padding: "10px 14px",
-                    fontSize: 13,
-                    textAlign: "right",
-                    color: C.warning,
-                    fontWeight: 700,
-                    borderBottom: `1px solid ${C.border}`,
-                    fontFamily: FONT,
-                  }}
-                >
-                  {fmt(fbCount ?? 0)}
-                </td>
-                <td
-                  style={{
-                    padding: "10px 14px",
-                    fontSize: 13,
-                    textAlign: "right",
-                    color: C.muted,
-                    borderBottom: `1px solid ${C.border}`,
-                    fontFamily: FONT,
-                  }}
-                >
-                  —
-                </td>
-                <td
-                  style={{
-                    padding: "10px 14px",
-                    fontSize: 13,
-                    textAlign: "right",
-                    color: C.muted,
-                    borderBottom: `1px solid ${C.border}`,
-                    fontFamily: FONT,
-                  }}
-                >
-                  —
-                </td>
-                <td
-                  style={{
-                    padding: "10px 14px",
-                    fontSize: 13,
-                    textAlign: "right",
-                    color: C.muted,
-                    borderBottom: `1px solid ${C.border}`,
-                    fontFamily: FONT,
-                  }}
-                >
-                  —
-                </td>
-                <td
-                  style={{
-                    padding: "10px 14px",
-                    fontSize: 13,
-                    textAlign: "right",
-                    color: C.muted,
-                    borderBottom: `1px solid ${C.border}`,
-                    fontFamily: FONT,
-                  }}
-                >
-                  —
-                </td>
-              </tr>
-            )}
           </tbody>
         </table>
       </div>
@@ -1157,6 +1088,78 @@ export default function SalesDashboard() {
                   />
                 </div>
 
+                {/* Row 4: CS / AI / F/B Detail */}
+                <SectionHeader title="CS / AI / Flip-Bundle" color={C.warning} />
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr 1fr",
+                    gap: 16,
+                  }}
+                >
+                  <MetricCard
+                    label="CS DEALS"
+                    value={fmt(data.csDeals ?? 0)}
+                    subtitle="Promo code: CS"
+                    color={C.danger}
+                  />
+                  <MetricCard
+                    label="AI DEALS"
+                    value={fmt(data.aiDeals ?? 0)}
+                    subtitle="Front-to-back AI sales"
+                    color={C.purple}
+                  />
+                  {/* F/B Detail box with 4 corners */}
+                  <div
+                    style={{
+                      background: C.card,
+                      borderRadius: 12,
+                      borderLeft: `3px solid ${C.warning}`,
+                      padding: "16px 20px",
+                      display: "grid",
+                      gridTemplateColumns: "1fr auto 1fr",
+                      gridTemplateRows: "1fr auto 1fr",
+                      gap: 0,
+                      minHeight: 100,
+                      position: "relative",
+                    }}
+                  >
+                    {/* Top-left: Auto Flip */}
+                    <div style={{ textAlign: "left", padding: 4 }}>
+                      <div style={{ fontSize: 10, color: C.secondary, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontFamily: FONT }}>Auto Flip</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, color: C.orange, fontFamily: FONT }}>{data.fb?.autoFlip ?? 0}</div>
+                    </div>
+                    {/* Top-center spacer */}
+                    <div />
+                    {/* Top-right: Home Flip */}
+                    <div style={{ textAlign: "right", padding: 4 }}>
+                      <div style={{ fontSize: 10, color: C.secondary, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontFamily: FONT }}>Home Flip</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, color: C.purpleLight, fontFamily: FONT }}>{data.fb?.homeFlip ?? 0}</div>
+                    </div>
+                    {/* Middle-left spacer */}
+                    <div />
+                    {/* Center: Total */}
+                    <div style={{ textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 4 }}>
+                      <div style={{ fontSize: 28, fontWeight: 800, color: C.warning, fontFamily: FONT, lineHeight: 1.1 }}>{data.fb?.total ?? 0}</div>
+                      <div style={{ fontSize: 11, color: C.secondary, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontFamily: FONT, marginTop: 2 }}>F/B</div>
+                    </div>
+                    {/* Middle-right spacer */}
+                    <div />
+                    {/* Bottom-left: Auto Bundle */}
+                    <div style={{ textAlign: "left", padding: 4 }}>
+                      <div style={{ fontSize: 10, color: C.secondary, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontFamily: FONT }}>Auto Bundle</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, color: C.orange, fontFamily: FONT }}>{data.fb?.autoBundle ?? 0}</div>
+                    </div>
+                    {/* Bottom-center spacer */}
+                    <div />
+                    {/* Bottom-right: Home Bundle */}
+                    <div style={{ textAlign: "right", padding: 4 }}>
+                      <div style={{ fontSize: 10, color: C.secondary, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontFamily: FONT }}>Home Bundle</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, color: C.purpleLight, fontFamily: FONT }}>{data.fb?.homeBundle ?? 0}</div>
+                    </div>
+                  </div>
+                </div>
+
                 {/* Queue Breakdown Tables */}
                 <div
                   style={{
@@ -1170,13 +1173,11 @@ export default function SalesDashboard() {
                     title="Auto Queue Breakdown"
                     queues={AUTO_QUEUES}
                     color={C.orange}
-                    fbCount={data.fbTotal?.inAuto ?? 0}
                   />
                   <QueueTable
                     title="Home Queue Breakdown"
                     queues={HOME_QUEUES}
                     color={C.purple}
-                    fbCount={data.fbTotal?.inHome ?? 0}
                   />
                 </div>
               </div>
