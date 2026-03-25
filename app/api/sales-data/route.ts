@@ -76,9 +76,10 @@ export async function GET(req: Request) {
         for (const row of result.rows) {
           const p = row.phone.trim();
           if (!phoneQueueHistory.has(p)) phoneQueueHistory.set(p, []);
+          const cd = row.call_date instanceof Date ? row.call_date.toISOString().slice(0, 10) : String(row.call_date).slice(0, 10);
           phoneQueueHistory.get(p)!.push({
             queue: row.queue,
-            date: String(row.call_date).slice(0, 10),
+            date: cd,
           });
         }
       }
@@ -141,7 +142,7 @@ export async function GET(req: Request) {
       const sp = deal.salesperson?.trim();
       if (!sp || isExcludedSalesperson(sp)) continue;
 
-      const soldDate = String(deal.sold_date).slice(0, 10);
+      const soldDate = deal.sold_date instanceof Date ? deal.sold_date.toISOString().slice(0, 10) : String(deal.sold_date).slice(0, 10);
       const product: string = deal.product; // "auto" or "home"
       const phones = [deal.home_phone, deal.mobile_phone]
         .map((p: string) => (p ?? "").replace(/\D/g, "").slice(-10))
@@ -220,7 +221,7 @@ export async function GET(req: Request) {
       [fromDate, toDate]
     );
     const dailyTrends = trendsResult.rows.map((r: { sold_date: string; cnt: string }) => ({
-      date: String(r.sold_date).slice(0, 10),
+      date: r.sold_date instanceof Date ? r.sold_date.toISOString().slice(0, 10) : String(r.sold_date).slice(0, 10),
       deals: parseInt(r.cnt),
     }));
 
