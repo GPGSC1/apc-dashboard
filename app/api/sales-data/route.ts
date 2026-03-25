@@ -160,13 +160,14 @@ export async function GET(req: Request) {
     }
 
     // ── 3. CALLS: unique phones per queue in date range ─────────────
-    // Answered calls: has extension AND not an AI agent
+    // Human answered: has 4-digit extension NOT starting with 99
     const callsResult = await query(
       `SELECT queue, COUNT(DISTINCT phone) as cnt
        FROM queue_calls
        WHERE call_date BETWEEN $1 AND $2
-         AND first_ext != '' AND first_ext IS NOT NULL
-         AND agent_name NOT ILIKE 'AI %'
+         AND first_ext IS NOT NULL AND first_ext != ''
+         AND LENGTH(TRIM(first_ext)) <= 4
+         AND TRIM(first_ext) NOT LIKE '99%'
        GROUP BY queue`,
       [fromDate, toDate]
     );
@@ -181,13 +182,13 @@ export async function GET(req: Request) {
       }
     }
 
-    // AI-forwarded calls: has extension but handled by AI agent
+    // AI-forwarded calls: extension starts with 99 (AI FWD agents)
     const aiFwdResult = await query(
       `SELECT queue, COUNT(DISTINCT phone) as cnt
        FROM queue_calls
        WHERE call_date BETWEEN $1 AND $2
-         AND first_ext != '' AND first_ext IS NOT NULL
-         AND agent_name ILIKE 'AI %'
+         AND first_ext IS NOT NULL AND first_ext != ''
+         AND TRIM(first_ext) LIKE '99%'
        GROUP BY queue`,
       [fromDate, toDate]
     );
