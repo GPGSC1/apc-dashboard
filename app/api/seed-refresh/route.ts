@@ -529,6 +529,7 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
 
       const queueName = (c[QI] || "").trim();
       const lastQueueName = (c[QI + 2] || "").trim();
+      // Use Last Queue Name for answered, Queue Name fallback for unanswered
       const lastQueueFull = lastQueueName || queueName;
       const isSalesQueue = SALES_QUEUES.some((q) => lastQueueFull.toLowerCase().includes(q));
       if (!isSalesQueue) continue;
@@ -557,8 +558,10 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
 
           // Collect detailed call row for queue_calls
           const firstExt = (c[4] || "").trim();
-          const agentName = (c[7] || "").trim();
-          queueCallDetailRows.push([phone, lastQueueFull, dateStr, status, agentName, firstExt, lastQueueFull]);
+          const firstExtName = (c[5] || "").trim();
+          // Clean queue name: remove leading number prefix like "8023 "
+          const cleanQueue = lastQueueFull.replace(/^\d+\s+/, "");
+          queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status]);
         }
       }
 
@@ -589,7 +592,7 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
         return true;
       });
       await batchInsert(
-        `INSERT INTO queue_calls (phone,queue,call_date,status,agent_name,first_ext,last_queue) VALUES __VALUES__ ON CONFLICT DO NOTHING`,
+        `INSERT INTO queue_calls (phone,queue,call_date,first_ext,agent_name,direction,status) VALUES __VALUES__ ON CONFLICT DO NOTHING`,
         7, uniqueQueueCallRows, 200
       );
     }
