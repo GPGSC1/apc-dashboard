@@ -282,6 +282,12 @@ export async function GET(req: Request) {
         if (q) { dealQueue = q; break; }
       }
 
+      // CS / AI / Spanish deals: count BEFORE queue check (these count even without a queue)
+      const pc = ((deal.promo_code ?? "") as string).trim().toUpperCase();
+      if (pc === "CS") csDeals++;
+      if (pc === "SP") spDeals++;
+      if (isAiDeal(sp)) aiDeals++;
+
       // Fallback: apply campaign/promo queue rules
       if (!dealQueue) {
         dealQueue = applyQueueRules(
@@ -314,14 +320,6 @@ export async function GET(req: Request) {
         if (!phoneProductSet.has(p)) phoneProductSet.set(p, new Set());
         phoneProductSet.get(p)!.add(product);
       }
-
-      // CS deals: promo_code = 'CS' (case insensitive) — separate from queue attribution
-      const pc = ((deal.promo_code ?? "") as string).trim().toUpperCase();
-      if (pc === "CS") csDeals++;
-      if (pc === "SP") spDeals++;
-
-      // AI deals: salesperson matches AI_SALESPERSONS — separate from queue attribution
-      if (isAiDeal(sp)) aiDeals++;
 
       companyDeals++;
       // Only count deal in the queue row if product matches division (not F/B)
