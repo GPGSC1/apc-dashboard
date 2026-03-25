@@ -559,9 +559,10 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
           // Collect detailed call row for queue_calls
           const firstExt = (c[4] || "").trim();
           const firstExtName = (c[5] || "").trim();
+          const destination = (c[10] || "").trim().replace(/\D/g, "");
           // Clean queue name: remove leading number prefix like "8023 "
           const cleanQueue = lastQueueFull.replace(/^\d+\s+/, "");
-          queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status]);
+          queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status, destination]);
         }
       }
 
@@ -592,8 +593,8 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
         return true;
       });
       await batchInsert(
-        `INSERT INTO queue_calls (phone,queue,call_date,first_ext,agent_name,direction,status) VALUES __VALUES__ ON CONFLICT DO NOTHING`,
-        7, uniqueQueueCallRows, 200
+        `INSERT INTO queue_calls (phone,queue,call_date,first_ext,agent_name,direction,status,destination) VALUES __VALUES__ ON CONFLICT (phone,queue,call_date) DO UPDATE SET first_ext=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.first_ext ELSE queue_calls.first_ext END, agent_name=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.agent_name ELSE queue_calls.agent_name END, status=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.status ELSE queue_calls.status END, destination=CASE WHEN EXCLUDED.destination!='' THEN EXCLUDED.destination ELSE queue_calls.destination END`,
+        8, uniqueQueueCallRows, 200
       );
     }
 
