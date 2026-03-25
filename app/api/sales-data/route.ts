@@ -221,7 +221,8 @@ export async function GET(req: Request) {
        ORDER BY sold_date`,
       [fromDate, toDate]
     );
-    const dailyTrends = trendsResult.rows.map((r: { sold_date: string; cnt: string }) => ({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dailyTrends = trendsResult.rows.map((r: any) => ({
       date: r.sold_date instanceof Date ? r.sold_date.toISOString().slice(0, 10) : String(r.sold_date).slice(0, 10),
       deals: parseInt(r.cnt),
     }));
