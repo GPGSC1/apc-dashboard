@@ -28,7 +28,7 @@ const FONT = "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif
 
 /* ── helpers ────────────────────────────────────────────────────────────────── */
 const fmt = (n: number) => (n || 0).toLocaleString();
-const pct = (n: number) => (n != null && !isNaN(n) ? n.toFixed(1) + "%" : "0.0%");
+const pct = (n: number) => (n != null && !isNaN(n) ? (n * 100).toFixed(1) + "%" : "0.0%");
 
 const AUTO_QUEUES = ["A1", "A2", "A3", "A4", "A5", "A6"];
 const HOME_QUEUES = ["H1", "H2", "H3", "H4", "H5"];
@@ -89,7 +89,7 @@ export default function SalesDashboard() {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [data, setData] = useState<SalesData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [fromDate, setFromDate] = useState("2026-02-25");
+  const [fromDate, setFromDate] = useState(todayStr);
   const [toDate, setToDate] = useState(todayStr);
   const [byTeamMode, setByTeamMode] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("deals");
