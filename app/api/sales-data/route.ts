@@ -199,12 +199,20 @@ export async function GET(req: Request) {
       }
     }
 
-    // Dropped calls: no extension at all (nobody picked up)
+    // Dropped calls: phone hit the queue but was NEVER answered (by human or AI)
+    // during the entire date range. If they called back later and got through, not dropped.
     const droppedResult = await query(
       `SELECT queue, COUNT(DISTINCT phone) as cnt
-       FROM queue_calls
-       WHERE call_date BETWEEN $1 AND $2
-         AND (first_ext = '' OR first_ext IS NULL)
+       FROM queue_calls d
+       WHERE d.call_date BETWEEN $1 AND $2
+         AND (d.first_ext = '' OR d.first_ext IS NULL)
+         AND NOT EXISTS (
+           SELECT 1 FROM queue_calls a
+           WHERE a.phone = d.phone
+             AND a.queue = d.queue
+             AND a.call_date BETWEEN $1 AND $2
+             AND a.first_ext IS NOT NULL AND a.first_ext != ''
+         )
        GROUP BY queue`,
       [fromDate, toDate]
     );
