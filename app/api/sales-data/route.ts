@@ -297,21 +297,24 @@ export async function GET(req: Request) {
         );
       }
 
-      // Only count deals that came through a queue
-      if (!dealQueue) continue;
+      // Skip deals with no queue — UNLESS it's a CS, SP, or AI deal (those count regardless)
+      const isSpecialDeal = pc === "CS" || pc === "SP" || isAiDeal(sp);
+      if (!dealQueue && !isSpecialDeal) continue;
 
       // Determine category: Auto, Home, or F/B (Flip/Bundle)
-      const queueIsAuto = isAutoQueue(dealQueue);
-      const queueIsHome = isHomeQueue(dealQueue);
-      let category: "auto" | "home" | "fb";
+      const queueIsAuto = dealQueue ? isAutoQueue(dealQueue) : false;
+      const queueIsHome = dealQueue ? isHomeQueue(dealQueue) : false;
+      let category: "auto" | "home" | "fb" | "none";
 
-      if (product === "auto" && queueIsAuto) {
+      if (!dealQueue) {
+        // Special deal (CS/SP/AI) with no queue — classify by product
+        category = "none";
+      } else if (product === "auto" && queueIsAuto) {
         category = "auto";
       } else if (product === "home" && queueIsHome) {
         category = "home";
       } else {
         // Flip: product doesn't match queue division
-        // auto deal in home queue, or home deal in auto queue
         category = "fb";
       }
 
@@ -322,11 +325,16 @@ export async function GET(req: Request) {
       }
 
       companyDeals++;
-      // Only count deal in the queue row if product matches division (not F/B)
-      if (category !== "fb" && byQueue[dealQueue]) byQueue[dealQueue].deals++;
+      // Only count deal in the queue row if product matches division (not F/B or none)
+      if (dealQueue && category !== "fb" && category !== "none" && byQueue[dealQueue]) byQueue[dealQueue].deals++;
 
       if (category === "auto") autoDeals++;
       else if (category === "home") homeDealCount++;
+      else if (category === "none") {
+        // No queue — count by product type
+        if (product === "auto") autoDeals++;
+        else homeDealCount++;
+      }
       else {
         // F/B: product doesn't match queue division
         fbDeals++;
