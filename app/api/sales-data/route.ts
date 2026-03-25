@@ -41,9 +41,10 @@ export async function GET(req: Request) {
     );
 
     // Tag each deal with its product type
-    const allDeals = [
-      ...autoDealsResult.rows.map((r: Record<string, unknown>) => ({ ...r, product: "auto" as const })),
-      ...homeDealsResult.rows.map((r: Record<string, unknown>) => ({ ...r, product: "home" as const })),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const allDeals: any[] = [
+      ...autoDealsResult.rows.map((r: any) => ({ ...r, product: "auto" })),
+      ...homeDealsResult.rows.map((r: any) => ({ ...r, product: "home" })),
     ];
     const dealsResult = { rows: allDeals };
 
