@@ -718,6 +718,91 @@ async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number }> {
   return { addedDeals };
 }
 
+// ─── Moxy Home: Direct to Postgres ───────────────────────────────────────────
+
+async function refreshMoxyHome(dates: string[]): Promise<{ addedDeals: number }> {
+  const moxyHomeKey = process.env.MOXY_HOME_KEY ?? "3f7c2b0a-9e4d-4f6e-b1a8-8c9a6e2d7b54";
+
+  await query(`CREATE TABLE IF NOT EXISTS moxy_home_deals (
+    customer_id TEXT, contract_no TEXT, sold_date DATE, first_name TEXT, last_name TEXT,
+    home_phone TEXT, mobile_phone TEXT, salesperson TEXT, deal_status TEXT, promo_code TEXT,
+    campaign TEXT, source TEXT, cancel_reason TEXT, state TEXT, admin TEXT, division TEXT DEFAULT 'home',
+    UNIQUE(customer_id, contract_no)
+  )`);
+  await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_moxy_home_unique ON moxy_home_deals(contract_no) WHERE contract_no IS NOT NULL AND contract_no != ''`);
+
+  const sortedDates = [...dates].sort();
+  const fromDate = sortedDates[0];
+  const toDate = addDays(sortedDates[sortedDates.length - 1], 1);
+
+  console.log(`[seed-refresh/MoxyHome] Fetching deals ${fromDate} to ${toDate}...`);
+
+  const url = `${MOXY_BASE}/api/GetDealLog?fromDate=${fromDate}&toDate=${toDate}&dealType=Both`;
+  const resp = await fetch(url, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${moxyHomeKey}` },
+    cache: "no-store",
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`Moxy Home API ${resp.status}: ${errText}`);
+  }
+
+  const deals: Record<string, unknown>[] = await resp.json();
+  console.log(`[seed-refresh/MoxyHome] API returned ${deals.length} deals`);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const dealRows: any[][] = [];
+  for (const d of deals) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const da = d as any;
+    const cid = String(da.vchCampaignId ?? da.customerId ?? da.customerID ?? "").trim();
+    const cno = String(da.contractNo ?? "").trim();
+    if (!cid && !cno) continue;
+
+    const hp = String(da.homePhone ?? "").replace(/\D/g, "");
+    const cp = String(da.cellphone ?? da.cellPhone ?? da.mobilePhone ?? "").replace(/\D/g, "");
+
+    dealRows.push([
+      cid,
+      cno,
+      parseDate(String(da.soldDate ?? "")),
+      String(da.firstName ?? ""),
+      String(da.lastName ?? ""),
+      hp.length === 11 && hp.startsWith("1") ? hp.slice(1) : hp,
+      cp.length === 11 && cp.startsWith("1") ? cp.slice(1) : cp,
+      String(da.closer ?? da.salesRep ?? da.salesperson ?? ""),
+      String(da.dealStatus ?? da.status ?? ""),
+      String(da.promoCode ?? ""),
+      String(da.campaign ?? da.campaignName ?? da.listCode ?? ""),
+      String(da.source ?? ""),
+      String(da.cancelReason ?? ""),
+      String(da.state ?? ""),
+      parseFloat(String(da.admin ?? "0")) || 0,
+    ]);
+  }
+
+  let addedDeals = 0;
+  if (dealRows.length > 0) {
+    addedDeals = await batchInsert(
+      `INSERT INTO moxy_home_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,state,admin)
+       VALUES __VALUES__
+       ON CONFLICT (contract_no) WHERE contract_no IS NOT NULL AND contract_no != '' DO NOTHING`,
+      15, dealRows, 100
+    );
+  }
+
+  console.log(`[seed-refresh/MoxyHome] Inserted ${addedDeals} new deals (${dealRows.length} total from API)`);
+
+  await query(
+    `INSERT INTO seed_metadata (source, max_date, updated_at) VALUES ('moxy_home', $1, NOW()) ON CONFLICT (source) DO UPDATE SET max_date=GREATEST(seed_metadata.max_date, $1), updated_at=NOW()`,
+    [dates[dates.length - 1]]
+  );
+
+  return { addedDeals };
+}
+
 // ─── Main Route Handler ───────────────────────────────────────────────────────
 
 export const maxDuration = 60;
@@ -760,16 +845,18 @@ export async function GET() {
 
     console.log(`[seed-refresh] DB max date: ${aimMaxDate || "(empty)"}, fetching: ${datesToFetch.join(", ")}`);
 
-    // Run all three source refreshes
+    // Run all four source refreshes
     const results = await Promise.allSettled([
       refreshAim(datesToFetch),
       refresh3cx(datesToFetch),
       refreshMoxy(datesToFetch),
+      refreshMoxyHome(datesToFetch),
     ]);
 
     const aimResult = results[0].status === "fulfilled" ? results[0].value : { error: String((results[0] as PromiseRejectedResult).reason) };
     const tcxResult = results[1].status === "fulfilled" ? results[1].value : { error: String((results[1] as PromiseRejectedResult).reason) };
     const moxyResult = results[2].status === "fulfilled" ? results[2].value : { error: String((results[2] as PromiseRejectedResult).reason) };
+    const moxyHomeResult = results[3].status === "fulfilled" ? results[3].value : { error: String((results[3] as PromiseRejectedResult).reason) };
 
     for (const r of results) {
       if (r.status === "rejected") console.error("[seed-refresh] Error:", r.reason);
@@ -782,7 +869,7 @@ export async function GET() {
     );
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[seed-refresh] Complete in ${elapsed}s — AIM: ${JSON.stringify(aimResult)}, 3CX: ${JSON.stringify(tcxResult)}, Moxy: ${JSON.stringify(moxyResult)}`);
+    console.log(`[seed-refresh] Complete in ${elapsed}s — AIM: ${JSON.stringify(aimResult)}, 3CX: ${JSON.stringify(tcxResult)}, Moxy: ${JSON.stringify(moxyResult)}, MoxyHome: ${JSON.stringify(moxyHomeResult)}`);
 
     return NextResponse.json({
       ok: true,
@@ -792,6 +879,7 @@ export async function GET() {
       aim: aimResult,
       tcx: tcxResult,
       moxy: moxyResult,
+      moxyHome: moxyHomeResult,
     });
   } catch (err) {
     console.error("[seed-refresh] Fatal error:", err);

@@ -20,16 +20,32 @@ export async function GET(req: Request) {
   const toDate = url.searchParams.get("end") ?? todayLocal();
 
   try {
-    // ── 1. DEALS from Moxy ──────────────────────────────────────────
-    const dealsResult = await query(
+    // ── 1. DEALS from Moxy Auto + Moxy Home ─────────────────────────
+    const autoDealsResult = await query(
       `SELECT DISTINCT ON (contract_no)
-         contract_no, salesperson, home_phone, mobile_phone, sold_date, deal_status
+         contract_no, salesperson, home_phone, mobile_phone, sold_date, deal_status, make, model
        FROM moxy_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')
        ORDER BY contract_no, sold_date DESC`,
       [fromDate, toDate]
     );
+    const homeDealsResult = await query(
+      `SELECT DISTINCT ON (contract_no)
+         contract_no, salesperson, home_phone, mobile_phone, sold_date, deal_status
+       FROM moxy_home_deals
+       WHERE sold_date BETWEEN $1 AND $2
+         AND deal_status NOT IN ('Back Out', 'VOID', '')
+       ORDER BY contract_no, sold_date DESC`,
+      [fromDate, toDate]
+    );
+
+    // Tag each deal with its product type
+    const allDeals = [
+      ...autoDealsResult.rows.map((r: Record<string, unknown>) => ({ ...r, product: "auto" as const })),
+      ...homeDealsResult.rows.map((r: Record<string, unknown>) => ({ ...r, product: "home" as const })),
+    ];
+    const dealsResult = { rows: allDeals };
 
     // ── 2. For each deal, find most recent queue ON or BEFORE sold date ──
     // Batch: get all queue_calls for deal phones, then match in JS
@@ -108,7 +124,7 @@ export async function GET(req: Request) {
 
     const byQueue: Record<string, { deals: number; calls: number; closeRate: number; unanswered: number }> = {};
     let companyDeals = 0;
-    let autoDeals = 0, homeDealCount = 0;
+    let autoDeals = 0, homeDealCount = 0, fbDeals = 0;
     let autoCalls = 0, homeCallCount = 0;
 
     // Initialize queues
@@ -118,11 +134,15 @@ export async function GET(req: Request) {
       if (isHomeQueue(q)) homeCallCount += byQueue[q].calls;
     }
 
+    // Track phones that have BOTH auto and home deals in the same month (bundles)
+    const phoneProductSet = new Map<string, Set<string>>();
+
     for (const deal of dealsResult.rows) {
       const sp = deal.salesperson?.trim();
       if (!sp || isExcludedSalesperson(sp)) continue;
 
       const soldDate = String(deal.sold_date).slice(0, 10);
+      const product: string = deal.product; // "auto" or "home"
       const phones = [deal.home_phone, deal.mobile_phone]
         .map((p: string) => (p ?? "").replace(/\D/g, "").slice(-10))
         .filter((p: string) => p.length === 10);
@@ -137,10 +157,33 @@ export async function GET(req: Request) {
       // Only count deals that came through a 3CX queue
       if (!dealQueue) continue;
 
+      // Determine category: Auto, Home, or F/B (Flip/Bundle)
+      const queueIsAuto = isAutoQueue(dealQueue);
+      const queueIsHome = isHomeQueue(dealQueue);
+      let category: "auto" | "home" | "fb";
+
+      if (product === "auto" && queueIsAuto) {
+        category = "auto";
+      } else if (product === "home" && queueIsHome) {
+        category = "home";
+      } else {
+        // Flip: product doesn't match queue division
+        // auto deal in home queue, or home deal in auto queue
+        category = "fb";
+      }
+
+      // Track bundle detection (same phone, both products)
+      for (const p of phones) {
+        if (!phoneProductSet.has(p)) phoneProductSet.set(p, new Set());
+        phoneProductSet.get(p)!.add(product);
+      }
+
       companyDeals++;
       if (byQueue[dealQueue]) byQueue[dealQueue].deals++;
-      if (isAutoQueue(dealQueue)) autoDeals++;
-      if (isHomeQueue(dealQueue)) homeDealCount++;
+
+      if (category === "auto") autoDeals++;
+      else if (category === "home") homeDealCount++;
+      else fbDeals++;
 
       // Track per salesperson
       if (!bySalesperson[sp]) {
@@ -153,6 +196,12 @@ export async function GET(req: Request) {
       bySalesperson[sp].queues[dealQueue].deals++;
     }
 
+    // Count bundles (phones with both auto AND home deals)
+    let bundleCount = 0;
+    for (const [, products] of phoneProductSet) {
+      if (products.has("auto") && products.has("home")) bundleCount++;
+    }
+
     // Compute close rates
     for (const q of ALL_QUEUES) {
       const qs = byQueue[q];
@@ -161,10 +210,11 @@ export async function GET(req: Request) {
 
     // ── 5. DAILY TRENDS ─────────────────────────────────────────────
     const trendsResult = await query(
-      `SELECT sold_date, COUNT(DISTINCT contract_no) as cnt
-       FROM moxy_deals
-       WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '')
+      `SELECT sold_date, COUNT(DISTINCT contract_no) as cnt FROM (
+         SELECT sold_date, contract_no FROM moxy_deals WHERE sold_date BETWEEN $1 AND $2 AND deal_status NOT IN ('Back Out', 'VOID', '')
+         UNION ALL
+         SELECT sold_date, contract_no FROM moxy_home_deals WHERE sold_date BETWEEN $1 AND $2 AND deal_status NOT IN ('Back Out', 'VOID', '')
+       ) combined
        GROUP BY sold_date
        ORDER BY sold_date`,
       [fromDate, toDate]
@@ -176,11 +226,12 @@ export async function GET(req: Request) {
 
     // ── 6. STALENESS ────────────────────────────────────────────────
     const metaResult = await query(
-      "SELECT source, max_date FROM seed_metadata WHERE source IN ('moxy', 'tcx')"
+      "SELECT source, max_date FROM seed_metadata WHERE source IN ('moxy', 'moxy_home', 'tcx')"
     );
-    const staleness: Record<string, string | null> = { moxy: null, cx: null };
+    const staleness: Record<string, string | null> = { moxy: null, moxyHome: null, cx: null };
     for (const row of metaResult.rows) {
       if (row.source === "moxy") staleness.moxy = row.max_date ? String(row.max_date).slice(0, 10) : null;
+      if (row.source === "moxy_home") staleness.moxyHome = row.max_date ? String(row.max_date).slice(0, 10) : null;
       if (row.source === "tcx") staleness.cx = row.max_date ? String(row.max_date).slice(0, 10) : null;
     }
 
@@ -199,6 +250,11 @@ export async function GET(req: Request) {
         deals: homeDealCount,
         calls: homeCallCount,
         closeRate: homeCallCount > 0 ? homeDealCount / homeCallCount : 0,
+      },
+      fbTotal: {
+        deals: fbDeals,
+        bundles: bundleCount,
+        label: "F/B (Flip / Bundle)",
       },
       byQueue,
       bySalesperson,

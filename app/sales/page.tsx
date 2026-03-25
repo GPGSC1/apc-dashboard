@@ -58,15 +58,21 @@ interface DailyTrend {
   date: string;
   deals: number;
 }
+interface FBStats {
+  deals: number;
+  bundles: number;
+  label: string;
+}
 interface SalesData {
   companyTotal: TotalStats;
   autoTotal: TotalStats;
   homeTotal: TotalStats;
+  fbTotal?: FBStats;
   byQueue: Record<string, QueueStats>;
   bySalesperson: Record<string, SalespersonStats>;
   teams: Record<string, string[]>;
   dailyTrends: DailyTrend[];
-  staleness: { moxy: string | null; cx: string | null };
+  staleness: { moxy: string | null; moxyHome?: string | null; cx: string | null };
   dateRange: { from: string; to: string };
 }
 
@@ -1056,6 +1062,39 @@ export default function SalesDashboard() {
                     color={C.purpleLight}
                   />
                 </div>
+
+                {/* F/B (Flip / Bundle) */}
+                {data.fbTotal && data.fbTotal.deals > 0 && (
+                  <>
+                    <SectionHeader title="F/B (Flip / Bundle)" color={C.warning} />
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(3, 1fr)",
+                        gap: 16,
+                      }}
+                    >
+                      <MetricCard
+                        label="Flip Deals"
+                        value={fmt(data.fbTotal.deals)}
+                        subtitle="Product sold differs from queue division"
+                        color={C.warning}
+                      />
+                      <MetricCard
+                        label="Bundles"
+                        value={fmt(data.fbTotal.bundles)}
+                        subtitle="Same phone, both auto + home deals"
+                        color={C.warning}
+                      />
+                      <MetricCard
+                        label="Description"
+                        value="F/B"
+                        subtitle="Auto deal from Home queue or Home deal from Auto queue"
+                        color={C.warning}
+                      />
+                    </div>
+                  </>
+                )}
 
                 {/* Queue Breakdown Tables */}
                 <div
