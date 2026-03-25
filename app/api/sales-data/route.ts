@@ -359,15 +359,17 @@ export async function GET(req: Request) {
         }
       }
 
-      // Track per salesperson
-      if (!bySalesperson[sp]) {
-        bySalesperson[sp] = { totalDeals: 0, queues: {} };
+      // Track per salesperson (only if deal has a queue)
+      if (dealQueue) {
+        if (!bySalesperson[sp]) {
+          bySalesperson[sp] = { totalDeals: 0, queues: {} };
+        }
+        bySalesperson[sp].totalDeals++;
+        if (!bySalesperson[sp].queues[dealQueue]) {
+          bySalesperson[sp].queues[dealQueue] = { deals: 0 };
+        }
+        bySalesperson[sp].queues[dealQueue].deals++;
       }
-      bySalesperson[sp].totalDeals++;
-      if (!bySalesperson[sp].queues[dealQueue]) {
-        bySalesperson[sp].queues[dealQueue] = { deals: 0 };
-      }
-      bySalesperson[sp].queues[dealQueue].deals++;
     }
 
     // Count bundles (phones with both auto AND home deals)
