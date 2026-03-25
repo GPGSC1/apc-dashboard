@@ -160,7 +160,7 @@ export async function GET(req: Request) {
     }
 
     // ── 3. CALLS: unique phones per queue in date range ─────────────
-    // Answered calls: has extension, not AI agent
+    // Answered calls: has extension AND not an AI agent
     const callsResult = await query(
       `SELECT queue, COUNT(DISTINCT phone) as cnt
        FROM queue_calls
@@ -181,12 +181,12 @@ export async function GET(req: Request) {
       }
     }
 
-    // Unanswered calls: no extension
+    // Unanswered calls: no extension OR handled by AI agent (AI forwards count as unanswered)
     const unansweredResult = await query(
       `SELECT queue, COUNT(DISTINCT phone) as cnt
        FROM queue_calls
        WHERE call_date BETWEEN $1 AND $2
-         AND (first_ext = '' OR first_ext IS NULL)
+         AND (first_ext = '' OR first_ext IS NULL OR agent_name ILIKE 'AI %')
        GROUP BY queue`,
       [fromDate, toDate]
     );
