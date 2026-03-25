@@ -181,21 +181,38 @@ export async function GET(req: Request) {
       }
     }
 
-    // Unanswered calls: no extension OR handled by AI agent (AI forwards count as unanswered)
-    const unansweredResult = await query(
+    // AI-forwarded calls: has extension but handled by AI agent
+    const aiFwdResult = await query(
       `SELECT queue, COUNT(DISTINCT phone) as cnt
        FROM queue_calls
        WHERE call_date BETWEEN $1 AND $2
-         AND (first_ext = '' OR first_ext IS NULL OR agent_name ILIKE 'AI %')
+         AND first_ext != '' AND first_ext IS NOT NULL
+         AND agent_name ILIKE 'AI %'
        GROUP BY queue`,
       [fromDate, toDate]
     );
-    const queueUnanswered: Record<string, number> = {};
-    for (const row of unansweredResult.rows) {
+    const queueAiFwd: Record<string, number> = {};
+    for (const row of aiFwdResult.rows) {
       const mapped = mapQueue(row.queue);
       if (mapped) {
-        const cnt = parseInt(row.cnt);
-        queueUnanswered[mapped] = (queueUnanswered[mapped] ?? 0) + cnt;
+        queueAiFwd[mapped] = (queueAiFwd[mapped] ?? 0) + parseInt(row.cnt);
+      }
+    }
+
+    // Dropped calls: no extension at all (nobody picked up)
+    const droppedResult = await query(
+      `SELECT queue, COUNT(DISTINCT phone) as cnt
+       FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2
+         AND (first_ext = '' OR first_ext IS NULL)
+       GROUP BY queue`,
+      [fromDate, toDate]
+    );
+    const queueDropped: Record<string, number> = {};
+    for (const row of droppedResult.rows) {
+      const mapped = mapQueue(row.queue);
+      if (mapped) {
+        queueDropped[mapped] = (queueDropped[mapped] ?? 0) + parseInt(row.cnt);
       }
     }
 
@@ -205,7 +222,7 @@ export async function GET(req: Request) {
       queues: Record<string, { deals: number }>;
     }> = {};
 
-    const byQueue: Record<string, { deals: number; calls: number; closeRate: number; unanswered: number }> = {};
+    const byQueue: Record<string, { deals: number; calls: number; closeRate: number; aiFwd: number; dropped: number }> = {};
     let companyDeals = 0;
     let autoDeals = 0, homeDealCount = 0, fbDeals = 0;
     let fbInAutoDeals = 0, fbInHomeDeals = 0;
@@ -213,7 +230,7 @@ export async function GET(req: Request) {
 
     // Initialize queues
     for (const q of ALL_QUEUES) {
-      byQueue[q] = { deals: 0, calls: queueCalls[q] ?? 0, closeRate: 0, unanswered: queueUnanswered[q] ?? 0 };
+      byQueue[q] = { deals: 0, calls: queueCalls[q] ?? 0, closeRate: 0, aiFwd: queueAiFwd[q] ?? 0, dropped: queueDropped[q] ?? 0 };
       if (isAutoQueue(q)) autoCalls += byQueue[q].calls;
       if (isHomeQueue(q)) homeCallCount += byQueue[q].calls;
     }

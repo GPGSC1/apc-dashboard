@@ -41,7 +41,8 @@ interface QueueStats {
   deals: number;
   calls: number;
   closeRate: number;
-  unanswered?: number;
+  aiFwd?: number;
+  dropped?: number;
 }
 interface SalespersonStats {
   totalDeals: number;
@@ -304,7 +305,7 @@ export default function SalesDashboard() {
         >
           <thead>
             <tr>
-              {["Queue", "Deals", "Calls", "Close Rate", "Unanswered"].map(
+              {["Queue", "Deals", "Calls", "Close Rate", "AI-FWD", "Dropped"].map(
                 (h, i) => (
                   <th
                     key={h}
@@ -385,12 +386,24 @@ export default function SalesDashboard() {
                       padding: "10px 14px",
                       fontSize: 13,
                       textAlign: "right",
-                      color: C.warning,
+                      color: C.purpleLight,
                       borderBottom: `1px solid ${C.border}`,
                       fontFamily: FONT,
                     }}
                   >
-                    {fmt(qs?.unanswered ?? 0)}
+                    {fmt(qs?.aiFwd ?? 0)}
+                  </td>
+                  <td
+                    style={{
+                      padding: "10px 14px",
+                      fontSize: 13,
+                      textAlign: "right",
+                      color: C.danger,
+                      borderBottom: `1px solid ${C.border}`,
+                      fontFamily: FONT,
+                    }}
+                  >
+                    {fmt(qs?.dropped ?? 0)}
                   </td>
                 </tr>
               );
@@ -421,6 +434,18 @@ export default function SalesDashboard() {
                   }}
                 >
                   {fmt(fbCount ?? 0)}
+                </td>
+                <td
+                  style={{
+                    padding: "10px 14px",
+                    fontSize: 13,
+                    textAlign: "right",
+                    color: C.muted,
+                    borderBottom: `1px solid ${C.border}`,
+                    fontFamily: FONT,
+                  }}
+                >
+                  —
                 </td>
                 <td
                   style={{
