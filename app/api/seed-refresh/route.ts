@@ -9,7 +9,7 @@ const CT_TZ = "America/Chicago";
 
 const SALES_QUEUES = [
   "mail 1", "mail 2", "mail 3", "mail 4", "mail 5", "mail 6",
-  "home 1", "home 2", "home 4", "home 5",
+  "home 1", "home 2", "home 3", "home 4", "home 5",
 ];
 
 const AGENT_SHORT: Record<string, string> = {
