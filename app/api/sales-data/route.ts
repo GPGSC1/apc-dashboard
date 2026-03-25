@@ -127,6 +127,7 @@ export async function GET(req: Request) {
     const byQueue: Record<string, { deals: number; calls: number; closeRate: number; unanswered: number }> = {};
     let companyDeals = 0;
     let autoDeals = 0, homeDealCount = 0, fbDeals = 0;
+    let fbInAutoDeals = 0, fbInHomeDeals = 0;
     let autoCalls = 0, homeCallCount = 0;
 
     // Initialize queues
@@ -185,7 +186,11 @@ export async function GET(req: Request) {
 
       if (category === "auto") autoDeals++;
       else if (category === "home") homeDealCount++;
-      else fbDeals++;
+      else {
+        fbDeals++;
+        if (queueIsAuto) fbInAutoDeals++;
+        if (queueIsHome) fbInHomeDeals++;
+      }
 
       // Track per salesperson
       if (!bySalesperson[sp]) {
@@ -257,6 +262,8 @@ export async function GET(req: Request) {
       fbTotal: {
         deals: fbDeals,
         bundles: bundleCount,
+        inAuto: fbInAutoDeals,
+        inHome: fbInHomeDeals,
         label: "F/B (Flip / Bundle)",
       },
       byQueue,

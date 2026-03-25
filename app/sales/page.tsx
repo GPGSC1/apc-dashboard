@@ -61,6 +61,8 @@ interface DailyTrend {
 interface FBStats {
   deals: number;
   bundles: number;
+  inAuto: number;
+  inHome: number;
   label: string;
 }
 interface SalesData {
@@ -269,10 +271,12 @@ export default function SalesDashboard() {
     title,
     queues,
     color,
+    fbCount,
   }: {
     title: string;
     queues: string[];
     color: string;
+    fbCount?: number;
   }) => (
     <div style={{ flex: 1, minWidth: 320 }}>
       <div
@@ -391,6 +395,71 @@ export default function SalesDashboard() {
                 </tr>
               );
             })}
+            {(fbCount ?? 0) > 0 && (
+              <tr>
+                <td
+                  style={{
+                    padding: "10px 14px",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: C.warning,
+                    borderBottom: `1px solid ${C.border}`,
+                    fontFamily: FONT,
+                  }}
+                >
+                  F/B
+                </td>
+                <td
+                  style={{
+                    padding: "10px 14px",
+                    fontSize: 13,
+                    textAlign: "right",
+                    color: C.warning,
+                    fontWeight: 700,
+                    borderBottom: `1px solid ${C.border}`,
+                    fontFamily: FONT,
+                  }}
+                >
+                  {fmt(fbCount ?? 0)}
+                </td>
+                <td
+                  style={{
+                    padding: "10px 14px",
+                    fontSize: 13,
+                    textAlign: "right",
+                    color: C.muted,
+                    borderBottom: `1px solid ${C.border}`,
+                    fontFamily: FONT,
+                  }}
+                >
+                  —
+                </td>
+                <td
+                  style={{
+                    padding: "10px 14px",
+                    fontSize: 13,
+                    textAlign: "right",
+                    color: C.muted,
+                    borderBottom: `1px solid ${C.border}`,
+                    fontFamily: FONT,
+                  }}
+                >
+                  —
+                </td>
+                <td
+                  style={{
+                    padding: "10px 14px",
+                    fontSize: 13,
+                    textAlign: "right",
+                    color: C.muted,
+                    borderBottom: `1px solid ${C.border}`,
+                    fontFamily: FONT,
+                  }}
+                >
+                  —
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -1063,39 +1132,6 @@ export default function SalesDashboard() {
                   />
                 </div>
 
-                {/* F/B (Flip / Bundle) */}
-                {data.fbTotal && data.fbTotal.deals > 0 && (
-                  <>
-                    <SectionHeader title="F/B (Flip / Bundle)" color={C.warning} />
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(3, 1fr)",
-                        gap: 16,
-                      }}
-                    >
-                      <MetricCard
-                        label="Flip Deals"
-                        value={fmt(data.fbTotal.deals)}
-                        subtitle="Product sold differs from queue division"
-                        color={C.warning}
-                      />
-                      <MetricCard
-                        label="Bundles"
-                        value={fmt(data.fbTotal.bundles)}
-                        subtitle="Same phone, both auto + home deals"
-                        color={C.warning}
-                      />
-                      <MetricCard
-                        label="Description"
-                        value="F/B"
-                        subtitle="Auto deal from Home queue or Home deal from Auto queue"
-                        color={C.warning}
-                      />
-                    </div>
-                  </>
-                )}
-
                 {/* Queue Breakdown Tables */}
                 <div
                   style={{
@@ -1109,11 +1145,13 @@ export default function SalesDashboard() {
                     title="Auto Queue Breakdown"
                     queues={AUTO_QUEUES}
                     color={C.orange}
+                    fbCount={data.fbTotal?.inAuto ?? 0}
                   />
                   <QueueTable
                     title="Home Queue Breakdown"
                     queues={HOME_QUEUES}
                     color={C.purple}
+                    fbCount={data.fbTotal?.inHome ?? 0}
                   />
                 </div>
               </div>
