@@ -327,8 +327,8 @@ async function main() {
         plqMap.set(phone, { queue: queueName, date: callDate });
       }
 
-      // Opened calls: answered, not AI agent, talk > 0, mail 4
-      if (status === "answered" && talkSec > 0 && queueName.includes("mail 4")) {
+      // Opened calls: answered by human closer (not AI), in mail 4
+      if (status === "answered" && queueName.includes("mail 4")) {
         const isAI = destName.toLowerCase().includes("agent") || destName.toLowerCase().includes("moxy");
         if (!isAI) {
           openedRows.push([callDate, phone]);

@@ -566,11 +566,10 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
         }
       }
 
-      // Opened calls: answered, not AI, talk>0, mail 4
+      // Opened calls: answered by human closer (not AI), in mail 4
       if (
         status === "answered" &&
         destName && !destName.toUpperCase().startsWith("AI F") &&
-        talkSec > 0 &&
         queueName.toLowerCase().includes("mail 4")
       ) {
         const dt = parseDate(startTime);
