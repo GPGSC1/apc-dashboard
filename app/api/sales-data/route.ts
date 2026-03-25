@@ -251,7 +251,8 @@ export async function GET(req: Request) {
       }
 
       companyDeals++;
-      if (byQueue[dealQueue]) byQueue[dealQueue].deals++;
+      // Only count deal in the queue row if product matches division (not F/B)
+      if (category !== "fb" && byQueue[dealQueue]) byQueue[dealQueue].deals++;
 
       if (category === "auto") autoDeals++;
       else if (category === "home") homeDealCount++;
