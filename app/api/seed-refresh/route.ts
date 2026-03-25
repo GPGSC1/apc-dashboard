@@ -570,6 +570,23 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
       dayAdded++;
     }
 
+    // Batch insert queue_calls (all inbound queue visits for sales dashboard)
+    const queueCallRows: string[][] = [];
+    const qcSeen = new Set<string>();
+    for (const [phone, entry] of phoneLastQueueMap) {
+      const key = `${phone}|${entry.queue}|${entry.date}`;
+      if (!qcSeen.has(key)) {
+        qcSeen.add(key);
+        queueCallRows.push([phone, entry.queue, entry.date]);
+      }
+    }
+    if (queueCallRows.length > 0) {
+      await batchInsert(
+        `INSERT INTO queue_calls (phone,queue,call_date) VALUES __VALUES__ ON CONFLICT DO NOTHING`,
+        3, queueCallRows, 200
+      );
+    }
+
     // Batch insert mail4_phones
     if (mail4PhoneRows.length > 0) {
       await batchInsert(

@@ -6,16 +6,17 @@ import { TEAMS, isExcludedSalesperson } from "../../../lib/teams";
 
 /**
  * SALES DATA ROUTE — Powers the /sales dashboard.
- * Queries Postgres directly for salesperson-centric metrics.
- * Attribution: Moxy deal phone must exist in phone_last_queue (3CX).
- * No AIM data used.
+ * Attribution: For each Moxy deal, find the most recent 3CX queue visit
+ * ON or BEFORE the sold date. No AIM data used.
+ *
+ * Calls: Unique phones per queue within the selected date range.
+ * Same phone in different queues counts for each queue.
+ * Same phone calling the same queue twice in the range counts once.
  */
-
-const CAMPAIGN_START = "2026-01-01";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const fromDate = url.searchParams.get("start") ?? CAMPAIGN_START;
+  const fromDate = url.searchParams.get("start") ?? todayLocal();
   const toDate = url.searchParams.get("end") ?? todayLocal();
 
   try {
@@ -30,28 +31,67 @@ export async function GET(req: Request) {
       [fromDate, toDate]
     );
 
-    // ── 2. Phone→queue map (all phones that have been through 3CX) ──
-    const phoneQueueResult = await query(
-      "SELECT phone, queue FROM phone_last_queue"
-    );
-    const phoneToQueue = new Map<string, string>();
-    for (const row of phoneQueueResult.rows) {
-      const mapped = mapQueue(row.queue);
-      if (mapped) phoneToQueue.set(row.phone.trim(), mapped);
+    // ── 2. For each deal, find most recent queue ON or BEFORE sold date ──
+    // Batch: get all queue_calls for deal phones, then match in JS
+    const dealPhones = new Set<string>();
+    for (const deal of dealsResult.rows) {
+      const hp = (deal.home_phone ?? "").replace(/\D/g, "").slice(-10);
+      const mp = (deal.mobile_phone ?? "").replace(/\D/g, "").slice(-10);
+      if (hp.length === 10) dealPhones.add(hp);
+      if (mp.length === 10) dealPhones.add(mp);
     }
 
-    // ── 3. Call counts by queue (phones that came through each queue) ──
-    // Count distinct phones per queue within date range
-    const callsByQueueResult = await query(
-      `SELECT queue, COUNT(*) as cnt
-       FROM phone_last_queue
+    // Load queue history for deal phones (all dates, sorted desc)
+    const phoneArray = Array.from(dealPhones);
+    let phoneQueueHistory: Map<string, { queue: string; date: string }[]> = new Map();
+
+    if (phoneArray.length > 0) {
+      // Batch query in chunks to avoid param limits
+      const chunkSize = 500;
+      for (let i = 0; i < phoneArray.length; i += chunkSize) {
+        const chunk = phoneArray.slice(i, i + chunkSize);
+        const placeholders = chunk.map((_, idx) => `$${idx + 1}`).join(",");
+        const result = await query(
+          `SELECT phone, queue, call_date FROM queue_calls
+           WHERE phone IN (${placeholders})
+           ORDER BY call_date DESC`,
+          chunk
+        );
+        for (const row of result.rows) {
+          const p = row.phone.trim();
+          if (!phoneQueueHistory.has(p)) phoneQueueHistory.set(p, []);
+          phoneQueueHistory.get(p)!.push({
+            queue: row.queue,
+            date: String(row.call_date).slice(0, 10),
+          });
+        }
+      }
+    }
+
+    // Helper: find most recent queue ON or BEFORE a given date
+    function findQueueBeforeDate(phone: string, soldDate: string): string | null {
+      const history = phoneQueueHistory.get(phone);
+      if (!history) return null;
+      for (const entry of history) {
+        // history is sorted desc, so first entry <= soldDate is the answer
+        if (entry.date <= soldDate) {
+          return mapQueue(entry.queue);
+        }
+      }
+      return null;
+    }
+
+    // ── 3. CALLS: unique phones per queue in date range ─────────────
+    const callsResult = await query(
+      `SELECT queue, COUNT(DISTINCT phone) as cnt
+       FROM queue_calls
        WHERE call_date BETWEEN $1 AND $2
        GROUP BY queue`,
       [fromDate, toDate]
     );
     const queueCalls: Record<string, number> = {};
     let totalCalls = 0;
-    for (const row of callsByQueueResult.rows) {
+    for (const row of callsResult.rows) {
       const mapped = mapQueue(row.queue);
       if (mapped) {
         const cnt = parseInt(row.cnt);
@@ -63,9 +103,7 @@ export async function GET(req: Request) {
     // ── 4. ATTRIBUTE deals to queues and salespersons ────────────────
     const bySalesperson: Record<string, {
       totalDeals: number;
-      totalCalls: number;
-      closeRate: number;
-      queues: Record<string, { deals: number; calls: number }>;
+      queues: Record<string, { deals: number }>;
     }> = {};
 
     const byQueue: Record<string, { deals: number; calls: number; closeRate: number; unanswered: number }> = {};
@@ -84,14 +122,15 @@ export async function GET(req: Request) {
       const sp = deal.salesperson?.trim();
       if (!sp || isExcludedSalesperson(sp)) continue;
 
-      // Find which queue this deal came from via phone_last_queue
+      const soldDate = String(deal.sold_date).slice(0, 10);
       const phones = [deal.home_phone, deal.mobile_phone]
         .map((p: string) => (p ?? "").replace(/\D/g, "").slice(-10))
         .filter((p: string) => p.length === 10);
 
+      // Find most recent queue ON or BEFORE the sold date
       let dealQueue: string | null = null;
       for (const p of phones) {
-        const q = phoneToQueue.get(p);
+        const q = findQueueBeforeDate(p, soldDate);
         if (q) { dealQueue = q; break; }
       }
 
@@ -105,25 +144,19 @@ export async function GET(req: Request) {
 
       // Track per salesperson
       if (!bySalesperson[sp]) {
-        bySalesperson[sp] = { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
+        bySalesperson[sp] = { totalDeals: 0, queues: {} };
       }
       bySalesperson[sp].totalDeals++;
       if (!bySalesperson[sp].queues[dealQueue]) {
-        bySalesperson[sp].queues[dealQueue] = { deals: 0, calls: 0 };
+        bySalesperson[sp].queues[dealQueue] = { deals: 0 };
       }
       bySalesperson[sp].queues[dealQueue].deals++;
     }
 
-    // Compute close rates for queues
+    // Compute close rates
     for (const q of ALL_QUEUES) {
       const qs = byQueue[q];
       qs.closeRate = qs.calls > 0 ? qs.deals / qs.calls : 0;
-    }
-
-    // Compute salesperson close rates
-    for (const sp of Object.values(bySalesperson)) {
-      sp.totalCalls = Object.values(sp.queues).reduce((s, q) => s + q.calls, 0);
-      sp.closeRate = sp.totalDeals > 0 ? sp.totalDeals / Math.max(sp.totalCalls, 1) : 0;
     }
 
     // ── 5. DAILY TRENDS ─────────────────────────────────────────────
@@ -132,7 +165,6 @@ export async function GET(req: Request) {
        FROM moxy_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')
-         AND (salesperson IS NULL OR salesperson NOT ILIKE '%fishbein%')
        GROUP BY sold_date
        ORDER BY sold_date`,
       [fromDate, toDate]
