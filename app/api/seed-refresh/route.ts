@@ -818,15 +818,19 @@ async function refreshMoxyHome(dates: string[]): Promise<{ addedDeals: number }>
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: Request) {
   const startTime = Date.now();
   const p = centralParts();
   const ctNow = `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")} ${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")} CT (dow=${p.dow})`;
 
-  console.log(`[seed-refresh] Triggered at ${ctNow}`);
+  // Allow manual date override via ?dates=2026-03-24,2026-03-25
+  const url = new URL(req.url);
+  const forceDates = url.searchParams.get("dates");
 
-  // Gate: only run during business hours (Mon-Sat, 7:30am-7:00pm CT)
-  if (!isWithinBusinessHours()) {
+  console.log(`[seed-refresh] Triggered at ${ctNow}${forceDates ? ` (forced: ${forceDates})` : ""}`);
+
+  // Gate: only run during business hours (Mon-Sat, 7:30am-7:00pm CT) — skip gate if manual
+  if (!forceDates && !isWithinBusinessHours()) {
     console.log(`[seed-refresh] Outside business hours, skipping`);
     return NextResponse.json({ ok: true, skipped: true, reason: "outside business hours", ctNow });
   }
@@ -847,11 +851,24 @@ export async function GET() {
       }
     } catch { /* no metadata yet */ }
 
-    // If max date is before yesterday, we need to catch up yesterday + today
-    // Otherwise just today (dailyCosts get REPLACED so today is always fresh)
-    const datesToFetch = aimMaxDate < yesterday
-      ? [yesterday, today]
-      : [today];
+    // Check for gaps in queue_calls (3CX data may have different gaps than AIM)
+    let tcxMaxDate = "";
+    try {
+      const tcxMeta = await query(`SELECT MAX(call_date)::text as max_d FROM queue_calls`);
+      if (tcxMeta.rows.length > 0 && tcxMeta.rows[0].max_d) {
+        tcxMaxDate = String(tcxMeta.rows[0].max_d).slice(0, 10);
+      }
+    } catch { /* no data yet */ }
+
+    // Use the oldest max_date across all sources to determine catch-up
+    const oldestMax = [aimMaxDate, tcxMaxDate].filter(Boolean).sort()[0] || "";
+
+    // If manual dates are provided, use those. Otherwise auto-detect.
+    const datesToFetch = forceDates
+      ? forceDates.split(",").map((d: string) => d.trim())
+      : oldestMax < yesterday
+        ? [yesterday, today]
+        : [today];
 
     console.log(`[seed-refresh] DB max date: ${aimMaxDate || "(empty)"}, fetching: ${datesToFetch.join(", ")}`);
 
