@@ -260,13 +260,13 @@ export async function GET(req: Request) {
         // Count the sale for the product's division total AND the opposing F/B tracker
         fbDeals++;
         if (queueIsAuto) {
-          // Home product sold through auto queue
-          fbInAutoDeals++;   // F/B row shows in Auto table
+          // Home product sold through auto queue → F/B shows in HOME table
+          fbInHomeDeals++;   // F/B row shows in Home table (product's own table)
           homeDealCount++;   // It IS a home sale, counts in Home total
         }
         if (queueIsHome) {
-          // Auto product sold through home queue
-          fbInHomeDeals++;   // F/B row shows in Home table
+          // Auto product sold through home queue → F/B shows in AUTO table
+          fbInAutoDeals++;   // F/B row shows in Auto table (product's own table)
           autoDeals++;       // It IS an auto sale, counts in Auto total
         }
       }
