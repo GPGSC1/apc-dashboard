@@ -228,7 +228,12 @@ export async function GET(request: Request) {
     let totalOpenedCalls = 0;
 
     const openedResult = await query(
-      "SELECT phone FROM opened_calls WHERE call_date BETWEEN $1 AND $2",
+      `SELECT DISTINCT phone FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2
+         AND queue ILIKE '%mail 4%'
+         AND first_ext IS NOT NULL AND first_ext != ''
+         AND LENGTH(TRIM(first_ext)) <= 4
+         AND TRIM(first_ext) NOT LIKE '99%'`,
       [fromDate, toDate]
     );
     for (const row of openedResult.rows) {
