@@ -241,7 +241,7 @@ export async function GET(req: Request) {
     const byQueue: Record<string, { deals: number; calls: number; closeRate: number; aiFwd: number; dropped: number }> = {};
     let companyDeals = 0;
     let autoDeals = 0, homeDealCount = 0;
-    let csDeals = 0, aiDeals = 0;
+    let csDeals = 0, aiDeals = 0, spDeals = 0;
     // F/B 4-corner breakdown (computed after main loop)
     let autoFlip = 0;    // Home queue → auto policy only (no home for that phone)
     let autoBundle = 0;  // Home queue → auto + home policy
@@ -318,6 +318,7 @@ export async function GET(req: Request) {
       // CS deals: promo_code = 'CS' (case insensitive) — separate from queue attribution
       const pc = ((deal.promo_code ?? "") as string).trim().toUpperCase();
       if (pc === "CS") csDeals++;
+      if (pc === "SP") spDeals++;
 
       // AI deals: salesperson matches AI_SALESPERSONS — separate from queue attribution
       if (isAiDeal(sp)) aiDeals++;
@@ -430,6 +431,7 @@ export async function GET(req: Request) {
       },
       csDeals,
       aiDeals,
+      spDeals,
       fb: {
         autoFlip,
         autoBundle,
