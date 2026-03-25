@@ -73,7 +73,8 @@ async function main() {
         first_ext VARCHAR(20),
         agent_name VARCHAR(100),
         direction VARCHAR(20),
-        status VARCHAR(20)
+        status VARCHAR(20),
+        destination VARCHAR(20)
       )
     `);
     await client.query(`
@@ -91,37 +92,45 @@ async function main() {
     const dataLines = lines.slice(4).filter(l => l.trim().length > 0);
     console.log(`CSV data lines: ${dataLines.length}`);
 
-    // Build map: (phone, queue, call_date) -> best row (prefer one with extension)
+    // Build map: (phone, queue, call_date) -> best row
+    // Priority: 1) human answered (4-digit ext, not 99xx), 2) AI ext (99xx), 3) AI forwarded (11-digit dest), 4) unanswered/dropped
     const dedup = new Map();
     let skippedNoQueue = 0;
     let totalParsed = 0;
+
+    function rowPriority(r) {
+      if (r.first_ext && r.first_ext.length <= 4 && !r.first_ext.startsWith('99')) return 4; // human answered
+      if (r.first_ext && r.first_ext.startsWith('99')) return 3; // AI ext
+      if (r.destination && r.destination.length === 11 && r.destination.startsWith('1')) return 2; // AI forwarded
+      return 1; // dropped
+    }
 
     for (const line of dataLines) {
       const cols = parseCSVLine(line);
       if (cols.length < 22) continue;
       totalParsed++;
 
-      const lastQueueName = (cols[21] || '').trim();
+      // Last Queue Name (col 21) for answered calls, fall back to Queue Name (col 19) for unanswered
+      const lastQueueName = (cols[21] || '').trim() || (cols[19] || '').trim();
       if (!lastQueueName) { skippedNoQueue++; continue; }
 
       const direction = (cols[3] || '').trim();
+      if (direction.toLowerCase() !== 'inbound') continue; // Only inbound calls
+
       const firstExt = (cols[4] || '').trim();
       const agentName = (cols[5] || '').trim();
       const phone = cleanPhone(cols[8] || '');
+      const destination = (cols[10] || '').trim().replace(/\D/g, '');
       const status = (cols[12] || '').trim().toLowerCase();
       const callDate = parseCallDate(cols[1] || '');
 
       if (!callDate || !phone) continue;
 
+      const row = { phone, queue: lastQueueName, call_date: callDate, first_ext: firstExt, agent_name: agentName, direction, status, destination };
       const key = `${phone}|${lastQueueName}|${callDate}`;
       const existing = dedup.get(key);
-      if (!existing) {
-        dedup.set(key, { phone, queue: lastQueueName, call_date: callDate, first_ext: firstExt, agent_name: agentName, direction, status });
-      } else {
-        // Prefer the one with an extension (answered) over blank (unanswered)
-        if (!existing.first_ext && firstExt) {
-          dedup.set(key, { phone, queue: lastQueueName, call_date: callDate, first_ext: firstExt, agent_name: agentName, direction, status });
-        }
+      if (!existing || rowPriority(row) > rowPriority(existing)) {
+        dedup.set(key, row);
       }
     }
 
@@ -140,18 +149,19 @@ async function main() {
       let paramIdx = 1;
 
       for (const r of batch) {
-        values.push(`($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++})`);
-        params.push(r.phone, r.queue, r.call_date, r.first_ext, r.agent_name, r.direction, r.status);
+        values.push(`($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++})`);
+        params.push(r.phone, r.queue, r.call_date, r.first_ext, r.agent_name, r.direction, r.status, r.destination || '');
       }
 
       await client.query(
-        `INSERT INTO queue_calls (phone, queue, call_date, first_ext, agent_name, direction, status)
+        `INSERT INTO queue_calls (phone, queue, call_date, first_ext, agent_name, direction, status, destination)
          VALUES ${values.join(', ')}
          ON CONFLICT (phone, queue, call_date) DO UPDATE SET
            first_ext = CASE WHEN EXCLUDED.first_ext != '' THEN EXCLUDED.first_ext ELSE queue_calls.first_ext END,
            agent_name = CASE WHEN EXCLUDED.first_ext != '' THEN EXCLUDED.agent_name ELSE queue_calls.agent_name END,
            direction = CASE WHEN EXCLUDED.first_ext != '' THEN EXCLUDED.direction ELSE queue_calls.direction END,
-           status = CASE WHEN EXCLUDED.first_ext != '' THEN EXCLUDED.status ELSE queue_calls.status END`,
+           status = CASE WHEN EXCLUDED.first_ext != '' THEN EXCLUDED.status ELSE queue_calls.status END,
+           destination = CASE WHEN EXCLUDED.destination != '' THEN EXCLUDED.destination ELSE queue_calls.destination END`,
         params
       );
       inserted += batch.length;
@@ -174,6 +184,12 @@ async function main() {
 
     const aiRes = await client.query("SELECT COUNT(*) as cnt FROM queue_calls WHERE first_ext LIKE '99%'");
     console.log(`\nAI FWD (first_ext starts with 99): ${aiRes.rows[0].cnt}`);
+
+    const aiDestRes = await client.query("SELECT COUNT(*) as cnt FROM queue_calls WHERE (first_ext = '' OR first_ext IS NULL) AND LENGTH(destination) = 11 AND destination LIKE '1%'");
+    console.log(`AI FWD (11-digit destination, no ext): ${aiDestRes.rows[0].cnt}`);
+
+    const droppedRes = await client.query("SELECT COUNT(*) as cnt FROM queue_calls WHERE (first_ext = '' OR first_ext IS NULL) AND (destination IS NULL OR destination = '' OR LENGTH(destination) != 11)");
+    console.log(`Dropped (no ext, no AI destination): ${droppedRes.rows[0].cnt}`);
 
     const queueRes = await client.query('SELECT queue, COUNT(*) as cnt FROM queue_calls GROUP BY queue ORDER BY cnt DESC LIMIT 15');
     console.log('\nQueue name sample (top 15):');

@@ -182,13 +182,16 @@ export async function GET(req: Request) {
       }
     }
 
-    // AI-forwarded calls: extension starts with 99 (AI FWD agents)
+    // AI-forwarded calls: either ext starts with 99, OR blank ext with 11-digit destination (forwarded to AI)
     const aiFwdResult = await query(
       `SELECT queue, COUNT(DISTINCT phone) as cnt
        FROM queue_calls
        WHERE call_date BETWEEN $1 AND $2
-         AND first_ext IS NOT NULL AND first_ext != ''
-         AND TRIM(first_ext) LIKE '99%'
+         AND (
+           (first_ext IS NOT NULL AND first_ext != '' AND TRIM(first_ext) LIKE '99%')
+           OR
+           ((first_ext IS NULL OR first_ext = '') AND destination IS NOT NULL AND LENGTH(TRIM(destination)) = 11 AND TRIM(destination) LIKE '1%')
+         )
        GROUP BY queue`,
       [fromDate, toDate]
     );
@@ -200,19 +203,23 @@ export async function GET(req: Request) {
       }
     }
 
-    // Dropped calls: phone hit the queue but was NEVER answered (by human or AI)
-    // during the entire date range. If they called back later and got through, not dropped.
+    // Dropped calls: blank ext, NOT forwarded to AI (no 11-digit destination),
+    // and phone was NEVER answered in that queue during the entire date range.
     const droppedResult = await query(
       `SELECT queue, COUNT(DISTINCT phone) as cnt
        FROM queue_calls d
        WHERE d.call_date BETWEEN $1 AND $2
          AND (d.first_ext = '' OR d.first_ext IS NULL)
+         AND (d.destination IS NULL OR LENGTH(TRIM(d.destination)) != 11 OR TRIM(d.destination) NOT LIKE '1%')
          AND NOT EXISTS (
            SELECT 1 FROM queue_calls a
            WHERE a.phone = d.phone
              AND a.queue = d.queue
              AND a.call_date BETWEEN $1 AND $2
-             AND a.first_ext IS NOT NULL AND a.first_ext != ''
+             AND (
+               (a.first_ext IS NOT NULL AND a.first_ext != '')
+               OR (a.destination IS NOT NULL AND LENGTH(TRIM(a.destination)) = 11 AND TRIM(a.destination) LIKE '1%')
+             )
          )
        GROUP BY queue`,
       [fromDate, toDate]
