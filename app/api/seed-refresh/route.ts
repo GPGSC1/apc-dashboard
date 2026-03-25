@@ -509,6 +509,7 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
     const phoneLastQueueRows: any[][] = [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const openedCallRows: any[][] = [];
+    const queueCallDetailRows: string[][] = [];
 
     const mail4PhonesSet = new Set<string>();
     const phoneLastQueueMap = new Map<string, { queue: string; date: string }>();
@@ -527,7 +528,9 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
       if (!phone || phone.length !== 10) continue;
 
       const queueName = (c[QI] || "").trim();
-      const isSalesQueue = SALES_QUEUES.some((q) => queueName.toLowerCase().includes(q));
+      const lastQueueName = (c[QI + 2] || "").trim();
+      const lastQueueFull = lastQueueName || queueName;
+      const isSalesQueue = SALES_QUEUES.some((q) => lastQueueFull.toLowerCase().includes(q));
       if (!isSalesQueue) continue;
 
       const startTime = (c[STI] || "").trim();
@@ -538,7 +541,7 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
 
       // Track inbound Mail 4 phones
       if (inOut.toLowerCase() === "inbound") {
-        const qLower = queueName.toLowerCase();
+        const qLower = lastQueueFull.toLowerCase();
         if (qLower.includes("mail 4") && !mail4PhonesSet.has(phone)) {
           mail4PhonesSet.add(phone);
           mail4PhoneRows.push([phone]);
@@ -551,6 +554,11 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
           if (!existing || dateStr > existing.date) {
             phoneLastQueueMap.set(phone, { queue: qLower, date: dateStr });
           }
+
+          // Collect detailed call row for queue_calls
+          const firstExt = (c[4] || "").trim();
+          const agentName = (c[7] || "").trim();
+          queueCallDetailRows.push([phone, lastQueueFull, dateStr, status, agentName, firstExt, lastQueueFull]);
         }
       }
 
@@ -571,19 +579,18 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
     }
 
     // Batch insert queue_calls (all inbound queue visits for sales dashboard)
-    const queueCallRows: string[][] = [];
-    const qcSeen = new Set<string>();
-    for (const [phone, entry] of phoneLastQueueMap) {
-      const key = `${phone}|${entry.queue}|${entry.date}`;
-      if (!qcSeen.has(key)) {
+    if (queueCallDetailRows.length > 0) {
+      // Deduplicate by phone|queue|call_date
+      const qcSeen = new Set<string>();
+      const uniqueQueueCallRows = queueCallDetailRows.filter((r) => {
+        const key = `${r[0]}|${r[1]}|${r[2]}`;
+        if (qcSeen.has(key)) return false;
         qcSeen.add(key);
-        queueCallRows.push([phone, entry.queue, entry.date]);
-      }
-    }
-    if (queueCallRows.length > 0) {
+        return true;
+      });
       await batchInsert(
-        `INSERT INTO queue_calls (phone,queue,call_date) VALUES __VALUES__ ON CONFLICT DO NOTHING`,
-        3, queueCallRows, 200
+        `INSERT INTO queue_calls (phone,queue,call_date,status,agent_name,first_ext,last_queue) VALUES __VALUES__ ON CONFLICT DO NOTHING`,
+        7, uniqueQueueCallRows, 200
       );
     }
 

@@ -160,10 +160,13 @@ export async function GET(req: Request) {
     }
 
     // ── 3. CALLS: unique phones per queue in date range ─────────────
+    // Answered calls: has extension, not AI agent
     const callsResult = await query(
       `SELECT queue, COUNT(DISTINCT phone) as cnt
        FROM queue_calls
        WHERE call_date BETWEEN $1 AND $2
+         AND first_ext != '' AND first_ext IS NOT NULL
+         AND agent_name NOT ILIKE 'AI %'
        GROUP BY queue`,
       [fromDate, toDate]
     );
@@ -175,6 +178,24 @@ export async function GET(req: Request) {
         const cnt = parseInt(row.cnt);
         queueCalls[mapped] = (queueCalls[mapped] ?? 0) + cnt;
         totalCalls += cnt;
+      }
+    }
+
+    // Unanswered calls: no extension
+    const unansweredResult = await query(
+      `SELECT queue, COUNT(DISTINCT phone) as cnt
+       FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2
+         AND (first_ext = '' OR first_ext IS NULL)
+       GROUP BY queue`,
+      [fromDate, toDate]
+    );
+    const queueUnanswered: Record<string, number> = {};
+    for (const row of unansweredResult.rows) {
+      const mapped = mapQueue(row.queue);
+      if (mapped) {
+        const cnt = parseInt(row.cnt);
+        queueUnanswered[mapped] = (queueUnanswered[mapped] ?? 0) + cnt;
       }
     }
 
@@ -192,7 +213,7 @@ export async function GET(req: Request) {
 
     // Initialize queues
     for (const q of ALL_QUEUES) {
-      byQueue[q] = { deals: 0, calls: queueCalls[q] ?? 0, closeRate: 0, unanswered: 0 };
+      byQueue[q] = { deals: 0, calls: queueCalls[q] ?? 0, closeRate: 0, unanswered: queueUnanswered[q] ?? 0 };
       if (isAutoQueue(q)) autoCalls += byQueue[q].calls;
       if (isHomeQueue(q)) homeCallCount += byQueue[q].calls;
     }
