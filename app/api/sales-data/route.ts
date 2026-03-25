@@ -267,7 +267,17 @@ export async function GET(req: Request) {
 
     for (const deal of dealsResult.rows) {
       const sp = deal.salesperson?.trim();
-      if (!sp || isExcludedSalesperson(sp)) continue;
+      if (!sp) continue;
+
+      // Count AI deals before exclusion check (Fishbein IS excluded from closer stats but counts as AI)
+      if (isAiDeal(sp)) aiDeals++;
+
+      // Count CS/SP deals before exclusion check
+      const pcEarly = ((deal.promo_code ?? "") as string).trim().toUpperCase();
+      if (pcEarly === "CS") csDeals++;
+      if (pcEarly === "SP") spDeals++;
+
+      if (isExcludedSalesperson(sp)) continue;
 
       const soldDate = deal.sold_date instanceof Date ? deal.sold_date.toISOString().slice(0, 10) : String(deal.sold_date).slice(0, 10);
       const product: string = deal.product; // "auto" or "home"
@@ -282,11 +292,7 @@ export async function GET(req: Request) {
         if (q) { dealQueue = q; break; }
       }
 
-      // CS / AI / Spanish deals: count BEFORE queue check (these count even without a queue)
-      const pc = ((deal.promo_code ?? "") as string).trim().toUpperCase();
-      if (pc === "CS") csDeals++;
-      if (pc === "SP") spDeals++;
-      if (isAiDeal(sp)) aiDeals++;
+      const pc = pcEarly;
 
       // Fallback: apply campaign/promo queue rules
       if (!dealQueue) {
