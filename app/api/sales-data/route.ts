@@ -14,6 +14,66 @@ import { TEAMS, isExcludedSalesperson } from "../../../lib/teams";
  * Same phone calling the same queue twice in the range counts once.
  */
 
+/**
+ * Fallback queue attribution using campaign/promo rules when phone
+ * is not found in queue_calls. Rules are applied by priority.
+ */
+function applyQueueRules(
+  campaign: string,
+  promoCode: string,
+  product: "auto" | "home"
+): string | null {
+  const c = (campaign ?? "").trim().toUpperCase();
+  const pc = (promoCode ?? "").trim().toUpperCase();
+
+  if (product === "auto") {
+    // Priority 1: PromoCode exact "API"
+    if (pc === "API") return "A4";
+
+    // Priority 5-8: Campaign starts with FWM / WF / FTD / FD
+    if (c.startsWith("FWM")) return "A3";
+    if (c.startsWith("WF")) return "A3";
+    if (c.startsWith("FTD")) return "A3";
+    if (c.startsWith("FD")) return "A3";
+
+    // Priority 20-37: Various campaign prefixes → A2
+    const a2Prefixes = [
+      "DMW", "MKA", "DMC", "SCD", "APD", "TDM", "SDC", "TDN", "TDS", "MX",
+      "2DMWTD", "PMI", "SAC TD", "TD_", "TDV", "TDSF", "TDT",
+    ];
+    for (const pfx of a2Prefixes) {
+      if (c.startsWith(pfx)) return "A2";
+    }
+    if (c.includes("PMI")) return "A2";
+
+    // Campaign REGEX /^MKA.{3}KA/ → A1
+    if (/^MKA.{3}KA/i.test(c)) return "A1";
+
+    // Campaign MID(4,2) exact matches → A1
+    if (c.length >= 6) {
+      const mid = c.substring(4, 6);
+      const a1Mids = new Set([
+        "KC", "KH", "KL", "LA", "KZ", "KQ", "PB", "KR", "KS", "KT",
+        "KU", "KV", "KM", "KB", "LB", "CA", "KN", "KD", "KE", "CC",
+        "PA", "SA", "KW", "KA", "LC",
+      ]);
+      if (a1Mids.has(mid)) return "A1";
+    }
+
+    // Campaign REGEX /^\d{3}[A-Z]{2}$/ → A1
+    if (/^\d{3}[A-Z]{2}$/.test(c)) return "A1";
+  }
+
+  if (product === "home") {
+    if (c.startsWith("TDH")) return "H2";
+    if (c.startsWith("TAB")) return "H3";
+    if (/^\d{3}[A-Z]{2}$/.test(c)) return "H1";
+    if (c.startsWith("132883-GPGH")) return "H1";
+  }
+
+  return null;
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const fromDate = url.searchParams.get("start") ?? todayLocal();
@@ -23,7 +83,7 @@ export async function GET(req: Request) {
     // ── 1. DEALS from Moxy Auto + Moxy Home ─────────────────────────
     const autoDealsResult = await query(
       `SELECT DISTINCT ON (contract_no)
-         contract_no, salesperson, home_phone, mobile_phone, sold_date, deal_status, make, model
+         contract_no, salesperson, home_phone, mobile_phone, sold_date, deal_status, make, model, campaign, promo_code
        FROM moxy_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')
@@ -32,7 +92,7 @@ export async function GET(req: Request) {
     );
     const homeDealsResult = await query(
       `SELECT DISTINCT ON (contract_no)
-         contract_no, salesperson, home_phone, mobile_phone, sold_date, deal_status
+         contract_no, salesperson, home_phone, mobile_phone, sold_date, deal_status, campaign, promo_code
        FROM moxy_home_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')
@@ -157,7 +217,16 @@ export async function GET(req: Request) {
         if (q) { dealQueue = q; break; }
       }
 
-      // Only count deals that came through a 3CX queue
+      // Fallback: apply campaign/promo queue rules
+      if (!dealQueue) {
+        dealQueue = applyQueueRules(
+          deal.campaign || "",
+          deal.promo_code || "",
+          product as "auto" | "home"
+        );
+      }
+
+      // Only count deals that came through a queue
       if (!dealQueue) continue;
 
       // Determine category: Auto, Home, or F/B (Flip/Bundle)
@@ -187,9 +256,19 @@ export async function GET(req: Request) {
       if (category === "auto") autoDeals++;
       else if (category === "home") homeDealCount++;
       else {
+        // F/B: product doesn't match queue division
+        // Count the sale for the product's division total AND the opposing F/B tracker
         fbDeals++;
-        if (queueIsAuto) fbInAutoDeals++;
-        if (queueIsHome) fbInHomeDeals++;
+        if (queueIsAuto) {
+          // Home product sold through auto queue
+          fbInAutoDeals++;   // F/B row shows in Auto table
+          homeDealCount++;   // It IS a home sale, counts in Home total
+        }
+        if (queueIsHome) {
+          // Auto product sold through home queue
+          fbInHomeDeals++;   // F/B row shows in Home table
+          autoDeals++;       // It IS an auto sale, counts in Auto total
+        }
       }
 
       // Track per salesperson
