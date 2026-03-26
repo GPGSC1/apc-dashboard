@@ -93,7 +93,7 @@ interface SalesData {
 type TabId = "overview" | "performance" | "availability" | "trends" | "textmike";
 type SortKey = "name" | "deals" | "calls" | "closeRate" | string;
 
-interface TeamMember { name: string; role: string }
+interface TeamMember { name: string }
 interface TeamInfo { id: number; name: string; color: string; members: TeamMember[] }
 interface TeamsPayload { teams: TeamInfo[]; unassigned: TeamMember[] }
 
@@ -809,11 +809,15 @@ export default function SalesDashboard() {
       whiteSpace: "nowrap" as const,
     };
 
-    // Order: The Money Team first, then Nothin But a G Thang, then Unassigned
+    // Order: preferred order first, then any other teams
     const teamOrder = ["The Money Team", "Nothin But a G Thang", "T.O."];
-    const orderedTeams = teamOrder.filter(t => data.teams[t]);
+    const allTeamNames = Object.keys(data.teams);
+    const orderedTeams = [
+      ...teamOrder.filter(t => data.teams[t]),
+      ...allTeamNames.filter(t => !teamOrder.includes(t)),
+    ];
 
-    // Collect assigned agents
+    // Collect assigned agents from ALL teams
     const assignedAgents = new Set<string>();
     for (const team of orderedTeams) {
       for (const name of (data.teams[team] || [])) assignedAgents.add(name);
@@ -915,19 +919,62 @@ export default function SalesDashboard() {
                   </tr>
                   {/* Column headers */}
                   <tr>
-                    <th style={{ ...thBase, textAlign: "left", position: "sticky", left: 0, zIndex: 2, minWidth: 140 }}>Name</th>
-                    <th style={thBase}>Deals</th>
-                    <th style={thBase}>Calls</th>
-                    <th style={thBase}>Close %</th>
+                    <th onClick={() => handleSort("name")} style={{ ...thBase, textAlign: "left", position: "sticky", left: 0, zIndex: 2, minWidth: 140, cursor: "pointer", userSelect: "none", color: sortKey === "name" ? C.purpleLight : C.muted }}>
+                      Name {sortKey === "name" ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                    </th>
+                    <th onClick={() => handleSort("deals")} style={{ ...thBase, cursor: "pointer", userSelect: "none", color: sortKey === "deals" ? C.purpleLight : C.muted }}>
+                      Deals {sortKey === "deals" ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                    </th>
+                    <th onClick={() => handleSort("calls")} style={{ ...thBase, cursor: "pointer", userSelect: "none", color: sortKey === "calls" ? C.purpleLight : C.muted }}>
+                      Calls {sortKey === "calls" ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                    </th>
+                    <th onClick={() => handleSort("closeRate")} style={{ ...thBase, cursor: "pointer", userSelect: "none", color: sortKey === "closeRate" ? C.purpleLight : C.muted }}>
+                      Close % {sortKey === "closeRate" ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                    </th>
                     {showQueues && queuesForView.map((q) => ([
-                      <th key={`${q}_d`} style={{ ...thBase, fontSize: 9, padding: "6px 8px", borderLeft: `2px solid ${C.border}` }}>D</th>,
-                      <th key={`${q}_c`} style={{ ...thBase, fontSize: 9, padding: "6px 8px" }}>C</th>,
-                      <th key={`${q}_r`} style={{ ...thBase, fontSize: 9, padding: "6px 8px" }}>%</th>,
+                      <th key={`${q}_d`} onClick={() => handleSort(`${q}_deals`)} style={{ ...thBase, fontSize: 9, padding: "6px 8px", borderLeft: `2px solid ${C.border}`, cursor: "pointer", userSelect: "none", color: sortKey === `${q}_deals` ? C.purpleLight : C.muted }}>
+                        D {sortKey === `${q}_deals` ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                      </th>,
+                      <th key={`${q}_c`} onClick={() => handleSort(`${q}_calls`)} style={{ ...thBase, fontSize: 9, padding: "6px 8px", cursor: "pointer", userSelect: "none", color: sortKey === `${q}_calls` ? C.purpleLight : C.muted }}>
+                        C {sortKey === `${q}_calls` ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                      </th>,
+                      <th key={`${q}_r`} onClick={() => handleSort(`${q}_closeRate`)} style={{ ...thBase, fontSize: 9, padding: "6px 8px", cursor: "pointer", userSelect: "none", color: sortKey === `${q}_closeRate` ? C.purpleLight : C.muted }}>
+                        % {sortKey === `${q}_closeRate` ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                      </th>,
                     ]))}
                   </tr>
                 </thead>
                 <tbody>
-                  {members.map((name) => {
+                  {[...members].sort((a, b) => {
+                    const sa = data.bySalesperson[a] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
+                    const sb = data.bySalesperson[b] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
+                    let va: number | string;
+                    let vb: number | string;
+                    if (sortKey === "name") {
+                      va = a.toLowerCase(); vb = b.toLowerCase();
+                    } else if (sortKey === "deals") {
+                      va = getFilteredTotals(sa).deals; vb = getFilteredTotals(sb).deals;
+                    } else if (sortKey === "calls") {
+                      va = getFilteredTotals(sa).calls; vb = getFilteredTotals(sb).calls;
+                    } else if (sortKey === "closeRate") {
+                      va = getFilteredTotals(sa).rate; vb = getFilteredTotals(sb).rate;
+                    } else if (sortKey.includes("_")) {
+                      const [q, field] = sortKey.split("_");
+                      const aq = sa.queues[q]; const bq = sb.queues[q];
+                      if (field === "deals") { va = aq?.deals ?? 0; vb = bq?.deals ?? 0; }
+                      else if (field === "calls") { va = aq?.calls ?? 0; vb = bq?.calls ?? 0; }
+                      else if (field === "closeRate") {
+                        const ac = aq?.calls ?? 0; const bc = bq?.calls ?? 0;
+                        va = ac > 0 ? (aq?.deals ?? 0) / ac : 0;
+                        vb = bc > 0 ? (bq?.deals ?? 0) / bc : 0;
+                      } else { va = aq?.deals ?? 0; vb = bq?.deals ?? 0; }
+                    } else {
+                      va = sa.queues[sortKey]?.deals ?? 0; vb = sb.queues[sortKey]?.deals ?? 0;
+                    }
+                    if (va < vb) return sortDir === "asc" ? -1 : 1;
+                    if (va > vb) return sortDir === "asc" ? 1 : -1;
+                    return 0;
+                  }).map((name) => {
                     const stats = data.bySalesperson[name] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
                     return <AgentRow key={name} name={name} stats={stats} view={productView} />;
                   })}
@@ -1165,11 +1212,6 @@ export default function SalesDashboard() {
                               <span style={{ fontSize: 13, color: C.text, fontFamily: FONT, fontWeight: 500 }}>
                                 {m.name}
                               </span>
-                              {m.role && (
-                                <span style={{ fontSize: 11, color: C.muted, fontFamily: FONT, marginLeft: 8 }}>
-                                  {m.role}
-                                </span>
-                              )}
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                               <div style={{ position: "relative" }}>
@@ -1262,11 +1304,6 @@ export default function SalesDashboard() {
                             <span style={{ fontSize: 13, color: C.text, fontFamily: FONT, fontWeight: 500 }}>
                               {m.name}
                             </span>
-                            {m.role && (
-                              <span style={{ fontSize: 11, color: C.muted, fontFamily: FONT, marginLeft: 8 }}>
-                                {m.role}
-                              </span>
-                            )}
                           </div>
                           <div style={{ position: "relative" }}>
                             <button

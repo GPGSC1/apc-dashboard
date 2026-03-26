@@ -12,36 +12,70 @@ export async function GET() {
       `SELECT id, name, color FROM teams ORDER BY name`
     );
 
-    // Auto-discover all agent names from 3CX calls, Moxy deals (owner + closer), and Moxy home deals
+    // Auto-discover agent names with activity in last 60 days
     // Insert any new names into team_members as unassigned
+    // Excludes AI forwarding extensions (names starting with "AI ")
     await query(`
       INSERT INTO team_members (agent_name, team_id, role)
       SELECT DISTINCT name, NULL::integer, 'closer' FROM (
         SELECT DISTINCT TRIM(agent_name) as name FROM queue_calls
           WHERE agent_name IS NOT NULL AND TRIM(agent_name) != ''
+          AND call_date >= CURRENT_DATE - INTERVAL '60 days'
         UNION
         SELECT DISTINCT TRIM(owner) as name FROM moxy_deals
           WHERE owner IS NOT NULL AND TRIM(owner) != ''
+          AND sold_date >= CURRENT_DATE - INTERVAL '60 days'
         UNION
         SELECT DISTINCT TRIM(salesperson) as name FROM moxy_deals
           WHERE salesperson IS NOT NULL AND TRIM(salesperson) != ''
+          AND sold_date >= CURRENT_DATE - INTERVAL '60 days'
         UNION
         SELECT DISTINCT TRIM(owner) as name FROM moxy_home_deals
           WHERE owner IS NOT NULL AND TRIM(owner) != ''
+          AND sold_date >= CURRENT_DATE - INTERVAL '60 days'
         UNION
         SELECT DISTINCT TRIM(salesperson) as name FROM moxy_home_deals
           WHERE salesperson IS NOT NULL AND TRIM(salesperson) != ''
+          AND sold_date >= CURRENT_DATE - INTERVAL '60 days'
       ) all_names
       WHERE name IS NOT NULL AND name != ''
+        AND UPPER(name) NOT LIKE 'AI %' AND UPPER(name) NOT LIKE 'AI_%'
       ON CONFLICT (agent_name) DO NOTHING
     `);
 
     const membersResult = await query(
-      `SELECT tm.agent_name, tm.team_id, tm.role, t.name as team_name
+      `SELECT tm.agent_name, tm.team_id, t.name as team_name
        FROM team_members tm
        LEFT JOIN teams t ON t.id = tm.team_id
        ORDER BY tm.agent_name`
     );
+
+    // Find agents with recent activity (last 60 days) for filtering unassigned
+    const activeResult = await query(`
+      SELECT DISTINCT name FROM (
+        SELECT DISTINCT TRIM(agent_name) as name FROM queue_calls
+          WHERE agent_name IS NOT NULL AND TRIM(agent_name) != ''
+          AND call_date >= CURRENT_DATE - INTERVAL '60 days'
+        UNION
+        SELECT DISTINCT TRIM(owner) as name FROM moxy_deals
+          WHERE owner IS NOT NULL AND TRIM(owner) != ''
+          AND sold_date >= CURRENT_DATE - INTERVAL '60 days'
+        UNION
+        SELECT DISTINCT TRIM(salesperson) as name FROM moxy_deals
+          WHERE salesperson IS NOT NULL AND TRIM(salesperson) != ''
+          AND sold_date >= CURRENT_DATE - INTERVAL '60 days'
+        UNION
+        SELECT DISTINCT TRIM(owner) as name FROM moxy_home_deals
+          WHERE owner IS NOT NULL AND TRIM(owner) != ''
+          AND sold_date >= CURRENT_DATE - INTERVAL '60 days'
+        UNION
+        SELECT DISTINCT TRIM(salesperson) as name FROM moxy_home_deals
+          WHERE salesperson IS NOT NULL AND TRIM(salesperson) != ''
+          AND sold_date >= CURRENT_DATE - INTERVAL '60 days'
+      ) recent_names
+      WHERE name IS NOT NULL AND name != ''
+    `);
+    const activeNames = new Set(activeResult.rows.map((r: Record<string, unknown>) => r.name));
 
     const teams = teamsResult.rows.map((t: Record<string, unknown>) => ({
       id: t.id,
@@ -49,12 +83,20 @@ export async function GET() {
       color: t.color,
       members: membersResult.rows
         .filter((m: Record<string, unknown>) => m.team_id === t.id)
-        .map((m: Record<string, unknown>) => ({ name: m.agent_name, role: m.role })),
+        .map((m: Record<string, unknown>) => ({ name: m.agent_name })),
     }));
 
     const unassigned = membersResult.rows
-      .filter((m: Record<string, unknown>) => !m.team_id)
-      .map((m: Record<string, unknown>) => ({ name: m.agent_name, role: m.role }));
+      .filter((m: Record<string, unknown>) => {
+        if (m.team_id) return false;
+        const name = String(m.agent_name);
+        // Filter out AI forwarding extensions
+        if (/^ai[\s_]/i.test(name)) return false;
+        // Only include agents with activity in last 60 days
+        if (!activeNames.has(name)) return false;
+        return true;
+      })
+      .map((m: Record<string, unknown>) => ({ name: m.agent_name }));
 
     return NextResponse.json({ teams, unassigned });
   } catch (err) {
