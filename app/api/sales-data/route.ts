@@ -552,6 +552,16 @@ export async function GET(req: Request) {
       }
     }
 
+    // Count closer deals for T.O. agents (deals where they are the salesperson/closer)
+    const toCloserStats: Record<string, { deals: number }> = {};
+    for (const deal of dealsResult.rows) {
+      const closer = (deal.salesperson ?? "").trim();
+      if (closer && isTO(closer)) {
+        if (!toCloserStats[closer]) toCloserStats[closer] = { deals: 0 };
+        toCloserStats[closer].deals++;
+      }
+    }
+
     // Compute close rates
     for (const q of ALL_QUEUES) {
       const qs = byQueue[q];
@@ -643,6 +653,7 @@ export async function GET(req: Request) {
       staleness,
       dateRange: { from: fromDate, to: toDate },
       toDeals: toDealsList,
+      toCloserStats,
     });
   } catch (err) {
     console.error("[sales-data] Error:", err);

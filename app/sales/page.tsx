@@ -99,6 +99,7 @@ interface SalesData {
   staleness: { moxy: string | null; moxyHome?: string | null; cx: string | null };
   dateRange: { from: string; to: string };
   toDeals?: TODeal[];
+  toCloserStats?: Record<string, { deals: number }>;
 }
 
 type TabId = "overview" | "performance" | "availability" | "trends" | "textmike";
@@ -856,9 +857,14 @@ export default function SalesDashboard() {
 
     const TeamBlock = ({ team, members, color, isUnassigned }: { team: string; members: string[]; color: string; isUnassigned?: boolean }) => {
       const expanded = expandedTeams[team] === true;
-      const totals = computeTeamTotals(members);
-      const cellBase = { padding: "10px 12px", fontSize: 13, textAlign: "right" as const, fontFamily: FONT, borderBottom: `1px solid ${C.border}` };
       const isToTeam = team.toLowerCase() === "t.o." || team.toLowerCase() === "to.";
+      const baseTotals = computeTeamTotals(members);
+      // For T.O. team, compute deals from toCloserStats
+      const toTeamDeals = isToTeam
+        ? members.reduce((sum, name) => sum + (data.toCloserStats?.[name]?.deals ?? 0), 0)
+        : baseTotals.deals;
+      const totals = isToTeam ? { ...baseTotals, deals: toTeamDeals } : baseTotals;
+      const cellBase = { padding: "10px 12px", fontSize: 13, textAlign: "right" as const, fontFamily: FONT, borderBottom: `1px solid ${C.border}` };
       const toDeals = data.toDeals ?? [];
 
       return (
@@ -881,11 +887,36 @@ export default function SalesDashboard() {
               userSelect: "none",
             }}
           >
-            <div style={{ fontSize: 14, fontWeight: 700, color: C.text, fontFamily: FONT }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.text, fontFamily: FONT, display: "flex", alignItems: "center" }}>
               {team}{" "}
               <span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>
                 ({members.length} agents)
               </span>
+              {isToTeam && toDeals.length > 0 && (
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setToOverrideAgent("__all__");
+                    const prefilled: Record<string, string> = {};
+                    for (const d of toDeals) {
+                      if (d.suggestedAgent) prefilled[d.contractNo] = d.suggestedAgent;
+                    }
+                    setToOverrides(prefilled);
+                  }}
+                  style={{
+                    background: C.danger,
+                    color: '#fff',
+                    padding: '2px 10px',
+                    borderRadius: 12,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    marginLeft: 8,
+                  }}
+                >
+                  {toDeals.length} error{toDeals.length !== 1 ? 's' : ''}
+                </span>
+              )}
               <span style={{ color: C.success, fontWeight: 700, fontSize: 13, marginLeft: 20 }}>
                 {totals.deals} deals
               </span>
@@ -976,8 +1007,10 @@ export default function SalesDashboard() {
                 </thead>
                 <tbody>
                   {[...members].sort((a, b) => {
-                    const sa = data.bySalesperson[a] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
-                    const sb = data.bySalesperson[b] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
+                    const rawSa = data.bySalesperson[a] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
+                    const rawSb = data.bySalesperson[b] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
+                    const sa = isToTeam ? { ...rawSa, totalDeals: data.toCloserStats?.[a]?.deals ?? rawSa.totalDeals } : rawSa;
+                    const sb = isToTeam ? { ...rawSb, totalDeals: data.toCloserStats?.[b]?.deals ?? rawSb.totalDeals } : rawSb;
                     let va: number | string;
                     let vb: number | string;
                     if (sortKey === "name") {
@@ -1006,22 +1039,15 @@ export default function SalesDashboard() {
                     return 0;
                   }).map((name) => {
                     const stats = data.bySalesperson[name] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
-                    const agentToDeals = isToTeam ? toDeals.filter(d => d.originalOwner.toLowerCase() === name.toLowerCase()) : [];
                     return (
                       <AgentRow
                         key={name}
                         name={name}
-                        stats={stats}
+                        stats={isToTeam ? {
+                          ...stats,
+                          totalDeals: data.toCloserStats?.[name]?.deals ?? stats.totalDeals,
+                        } : stats}
                         view={productView}
-                        onDealsClick={isToTeam && agentToDeals.length > 0 ? () => {
-                          setToOverrideAgent(name);
-                          // Pre-fill overrides with suggested agents
-                          const prefilled: Record<string, string> = {};
-                          for (const d of agentToDeals) {
-                            if (d.suggestedAgent) prefilled[d.contractNo] = d.suggestedAgent;
-                          }
-                          setToOverrides(prefilled);
-                        } : undefined}
                       />
                     );
                   })}
@@ -2257,7 +2283,9 @@ export default function SalesDashboard() {
 
       {/* ── T.O. deal override modal ───────────────────────────────────────── */}
       {toOverrideAgent && data && (() => {
-        const toDeals = (data.toDeals ?? []).filter(d => d.originalOwner.toLowerCase() === toOverrideAgent.toLowerCase());
+        const toDeals = toOverrideAgent === "__all__"
+          ? (data.toDeals ?? [])
+          : (data.toDeals ?? []).filter(d => d.originalOwner.toLowerCase() === toOverrideAgent.toLowerCase());
         // Build list of assignable agents (all bySalesperson keys, excluding T.O. members and excluded)
         const toTeamMembers = new Set((data.teams["T.O."] ?? data.teams["TO."] ?? []).map(n => n.toLowerCase()));
         const assignableAgents = Object.keys(data.bySalesperson)
@@ -2317,7 +2345,7 @@ export default function SalesDashboard() {
                 display: "flex", alignItems: "center", justifyContent: "space-between",
               }}>
                 <div style={{ fontSize: 16, fontWeight: 700, color: C.text, fontFamily: FONT }}>
-                  {toOverrideAgent} &mdash; {toDeals.length} deal{toDeals.length !== 1 ? "s" : ""} to review
+                  {toOverrideAgent === "__all__" ? "T.O. Errors" : toOverrideAgent} &mdash; {toDeals.length} deal{toDeals.length !== 1 ? "s" : ""} to review
                 </div>
                 <div
                   onClick={() => { setToOverrideAgent(null); setToOverrides({}); }}
@@ -2335,7 +2363,7 @@ export default function SalesDashboard() {
               <div style={{ padding: 24, overflowY: "auto", flex: 1 }}>
                 {toDeals.length === 0 ? (
                   <div style={{ textAlign: "center", padding: 40, color: C.muted, fontFamily: FONT }}>
-                    No unassigned T.O. deals for this agent.
+                    No unassigned T.O. deals{toOverrideAgent !== "__all__" ? " for this agent" : ""}.
                   </div>
                 ) : (
                   <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: FONT }}>
