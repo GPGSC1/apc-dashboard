@@ -94,7 +94,7 @@ export async function GET(req: Request) {
     // ── 1. DEALS from Moxy Auto + Moxy Home ─────────────────────────
     const autoDealsResult = await query(
       `SELECT DISTINCT ON (customer_id || '|' || contract_no)
-         customer_id, contract_no, salesperson, home_phone, mobile_phone, sold_date, deal_status, make, model, campaign, promo_code
+         customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, make, model, campaign, promo_code
        FROM moxy_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')
@@ -103,7 +103,7 @@ export async function GET(req: Request) {
     );
     const homeDealsResult = await query(
       `SELECT DISTINCT ON (customer_id || '|' || contract_no)
-         customer_id, contract_no, salesperson, home_phone, mobile_phone, sold_date, deal_status, campaign, promo_code
+         customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, campaign, promo_code
        FROM moxy_home_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')
@@ -303,7 +303,8 @@ export async function GET(req: Request) {
     const phoneProductSet = new Map<string, Set<string>>();
 
     for (const deal of dealsResult.rows) {
-      const sp = deal.salesperson?.trim() || "";
+      const closer = deal.salesperson?.trim() || "";  // T.O. / closer
+      const salesRep = deal.owner?.trim() || closer;  // Sales Rep (falls back to closer if no owner)
 
       const product: string = deal.product; // "auto" or "home"
 
@@ -317,7 +318,7 @@ export async function GET(req: Request) {
         if (product === "auto") autoDeals++; else homeDealCount++;
         continue;
       }
-      if (isAiDeal(sp)) {
+      if (isAiDeal(closer)) {
         aiDeals++;
         if (product === "auto") aiAutoDeals++; else aiHomeDeals++;
         companyDeals++;
@@ -332,7 +333,7 @@ export async function GET(req: Request) {
         continue;
       }
 
-      if (isExcludedSalesperson(sp)) continue;
+      if (isExcludedSalesperson(salesRep) && isExcludedSalesperson(closer)) continue;
 
       const soldDate = deal.sold_date instanceof Date ? deal.sold_date.toISOString().slice(0, 10) : String(deal.sold_date).slice(0, 10);
       const phones = [deal.home_phone, deal.mobile_phone]
@@ -403,16 +404,16 @@ export async function GET(req: Request) {
         }
       }
 
-      // Track per salesperson (only if deal has a queue AND a name)
-      if (dealQueue && sp) {
-        if (!bySalesperson[sp]) {
-          bySalesperson[sp] = { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
+      // Track per salesperson using owner (Sales Rep), not closer (T.O.)
+      if (dealQueue && salesRep) {
+        if (!bySalesperson[salesRep]) {
+          bySalesperson[salesRep] = { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
         }
-        bySalesperson[sp].totalDeals++;
-        if (!bySalesperson[sp].queues[dealQueue]) {
-          bySalesperson[sp].queues[dealQueue] = { deals: 0, calls: 0 };
+        bySalesperson[salesRep].totalDeals++;
+        if (!bySalesperson[salesRep].queues[dealQueue]) {
+          bySalesperson[salesRep].queues[dealQueue] = { deals: 0, calls: 0 };
         }
-        bySalesperson[sp].queues[dealQueue].deals++;
+        bySalesperson[salesRep].queues[dealQueue].deals++;
       }
     }
 

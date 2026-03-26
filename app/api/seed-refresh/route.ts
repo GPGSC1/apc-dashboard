@@ -704,6 +704,7 @@ async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number }> {
       String(da.model ?? ""),
       String(da.state ?? ""),
       parseFloat(String(da.admin ?? "0")) || 0,
+      String(da.owner ?? da.closer ?? da.salesRep ?? ""),
     ]);
   }
 
@@ -714,18 +715,18 @@ async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number }> {
 
   if (withContract.length > 0) {
     addedDeals += await batchInsert(
-      `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin)
+      `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin,owner)
        VALUES __VALUES__
-       ON CONFLICT (contract_no) WHERE contract_no IS NOT NULL AND contract_no != '' DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason, customer_id = EXCLUDED.customer_id`,
-      17, withContract, 100
+       ON CONFLICT (contract_no) WHERE contract_no IS NOT NULL AND contract_no != '' DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason, customer_id = EXCLUDED.customer_id, owner = EXCLUDED.owner`,
+      18, withContract, 100
     );
   }
   if (withoutContract.length > 0) {
     addedDeals += await batchInsert(
-      `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin)
+      `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin,owner)
        VALUES __VALUES__
-       ON CONFLICT (customer_id) WHERE (contract_no IS NULL OR contract_no = '') AND customer_id IS NOT NULL AND customer_id != '' DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason`,
-      17, withoutContract, 100
+       ON CONFLICT (customer_id) WHERE (contract_no IS NULL OR contract_no = '') AND customer_id IS NOT NULL AND customer_id != '' DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason, owner = EXCLUDED.owner`,
+      18, withoutContract, 100
     );
   }
 
@@ -802,16 +803,17 @@ async function refreshMoxyHome(dates: string[]): Promise<{ addedDeals: number }>
       String(da.cancelReason ?? ""),
       String(da.state ?? ""),
       parseFloat(String(da.admin ?? "0")) || 0,
+      String(da.owner ?? da.closer ?? da.salesRep ?? ""),
     ]);
   }
 
   let addedDeals = 0;
   if (dealRows.length > 0) {
     addedDeals = await batchInsert(
-      `INSERT INTO moxy_home_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,state,admin)
+      `INSERT INTO moxy_home_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,state,admin,owner)
        VALUES __VALUES__
-       ON CONFLICT (customer_id, contract_no) DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason`,
-      15, dealRows, 100
+       ON CONFLICT (customer_id, contract_no) DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason, owner = EXCLUDED.owner`,
+      16, dealRows, 100
     );
   }
 
