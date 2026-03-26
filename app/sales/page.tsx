@@ -127,6 +127,13 @@ export default function SalesDashboard() {
   const [newTeamName, setNewTeamName] = useState("");
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
+  /* availability tab state */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [availData, setAvailData] = useState<any>(null);
+  const [availLoading, setAvailLoading] = useState(false);
+  const [availSortKey, setAvailSortKey] = useState<string>("totalLoginTime");
+  const [availSortDir, setAvailSortDir] = useState<"asc" | "desc">("desc");
+
   /* team management API */
   const fetchTeams = useCallback(async () => {
     setTeamsLoading(true);
@@ -183,6 +190,26 @@ export default function SalesDashboard() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  /* availability fetch */
+  useEffect(() => {
+    if (activeTab !== "availability") return;
+    let cancelled = false;
+    (async () => {
+      setAvailLoading(true);
+      try {
+        const res = await fetch(`/api/availability?date=${fromDate}`);
+        if (!res.ok) throw new Error("availability fetch failed");
+        const json = await res.json();
+        if (!cancelled) setAvailData(json);
+      } catch (e) {
+        console.error("Availability fetch error:", e);
+      } finally {
+        if (!cancelled) setAvailLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeTab, fromDate]);
 
   /* sort helper */
   const handleSort = (key: SortKey) => {
@@ -1852,10 +1879,275 @@ export default function SalesDashboard() {
 
             {/* ── AVAILABILITY TAB ────────────────────────────────────────── */}
             {activeTab === "availability" && (
-              <ComingSoon
-                title="Coming Soon"
-                desc="Real-time queue monitoring and agent availability tracking will be available here."
-              />
+              <div>
+                {availLoading && (
+                  <div style={{ textAlign: "center", padding: 60, color: C.secondary, fontFamily: FONT }}>
+                    Loading availability data...
+                  </div>
+                )}
+                {!availLoading && !availData && (
+                  <div style={{ textAlign: "center", padding: 60, color: C.muted, fontFamily: FONT }}>
+                    No availability data. Select a date and switch to this tab.
+                  </div>
+                )}
+                {!availLoading && availData && (() => {
+                  const fmtTime = (secs: number) => {
+                    const h = Math.floor(secs / 3600);
+                    const m = Math.floor((secs % 3600) / 60);
+                    return `${h}:${String(m).padStart(2, "0")}`;
+                  };
+
+                  const getStatus = (a: typeof availData.agents[0]) => {
+                    if (a.loggedOutTime > a.totalLoginTime || a.totalLoginTime === 0)
+                      return { label: "Logged Out", color: C.danger };
+                    if (a.breakTime > a.totalLoginTime * 0.3)
+                      return { label: "On Break", color: C.warning };
+                    return { label: "Active", color: C.success };
+                  };
+
+                  const handleAvailSort = (key: string) => {
+                    if (availSortKey === key) setAvailSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                    else { setAvailSortKey(key); setAvailSortDir("desc"); }
+                  };
+
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const sorted = [...availData.agents].sort((a: any, b: any) => {
+                    let va: number | string, vb: number | string;
+                    if (availSortKey === "name") { va = a.name.toLowerCase(); vb = b.name.toLowerCase(); }
+                    else if (availSortKey === "status") { va = getStatus(a).label; vb = getStatus(b).label; }
+                    else if (availSortKey === "talkTime") { va = a.inboundTalkTime + a.outboundTalkTime; vb = b.inboundTalkTime + b.outboundTalkTime; }
+                    else { va = a[availSortKey] ?? 0; vb = b[availSortKey] ?? 0; }
+                    if (va < vb) return availSortDir === "asc" ? -1 : 1;
+                    if (va > vb) return availSortDir === "asc" ? 1 : -1;
+                    return 0;
+                  });
+
+                  const AvailSortTh = ({ label, sKey, left }: { label: string; sKey: string; left?: boolean }) => (
+                    <th
+                      onClick={() => handleAvailSort(sKey)}
+                      style={{
+                        background: C.card, color: availSortKey === sKey ? C.purpleLight : C.muted,
+                        fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase",
+                        padding: "10px 12px", textAlign: left ? "left" : "right",
+                        borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap",
+                        cursor: "pointer", userSelect: "none", fontWeight: 600, fontFamily: FONT,
+                      }}
+                    >
+                      {label} {availSortKey === sKey ? (availSortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                    </th>
+                  );
+
+                  // Team grouping
+                  const teamOrder = ["The Money Team", "Nothin But a G Thang"];
+                  const orderedTeams = data ? teamOrder.filter(t => data.teams[t]) : [];
+                  const assignedNames = new Set<string>();
+                  for (const team of orderedTeams) {
+                    for (const n of (data?.teams[team] || [])) assignedNames.add(n);
+                  }
+
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const agentsByName: Record<string, any> = {};
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  for (const a of availData.agents) agentsByName[a.name] = a;
+
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const renderAgentRow = (a: any) => {
+                    const st = getStatus(a);
+                    const totalTalk = a.inboundTalkTime + a.outboundTalkTime;
+                    const breakTotal = a.breakTime + a.lunchTime;
+                    const occColor = a.occupancy >= 80 ? C.success : a.occupancy >= 60 ? C.warning : C.danger;
+                    const cellBase = {
+                      padding: "10px 12px", fontSize: 13, textAlign: "right" as const,
+                      borderBottom: `1px solid ${C.border}`, fontFamily: FONT,
+                    };
+                    return (
+                      <tr
+                        key={a.extension}
+                        style={{ transition: "background 0.15s" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = C.cardHover)}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                      >
+                        <td style={{ padding: "10px 12px", fontSize: 13, fontWeight: 600, color: C.text, borderBottom: `1px solid ${C.border}`, fontFamily: FONT, whiteSpace: "nowrap" }}>
+                          {a.name}
+                        </td>
+                        <td style={{ ...cellBase, textAlign: "center" }}>
+                          <span style={{
+                            display: "inline-block", padding: "3px 10px", borderRadius: 12,
+                            fontSize: 11, fontWeight: 700, fontFamily: FONT,
+                            background: `${st.color}22`, color: st.color,
+                          }}>
+                            {st.label}
+                          </span>
+                        </td>
+                        <td style={{ ...cellBase, color: C.text }}>{fmtTime(a.totalLoginTime)}</td>
+                        <td style={{ ...cellBase, color: C.success, fontWeight: 600 }}>{a.inboundCalls}</td>
+                        <td style={{ ...cellBase, color: C.secondary }}>{a.outboundCalls}</td>
+                        <td style={{ ...cellBase, color: C.text }}>{fmtTime(totalTalk)}</td>
+                        <td style={{ ...cellBase, color: breakTotal > 0 ? C.warning : C.muted }}>{fmtTime(breakTotal)}</td>
+                        <td style={{ ...cellBase, color: occColor, fontWeight: 700 }}>{a.occupancy.toFixed(1)}%</td>
+                        <td style={{ ...cellBase, color: a.ronaCount > 5 ? C.danger : a.ronaCount > 0 ? C.warning : C.muted, fontWeight: a.ronaCount > 5 ? 700 : 400 }}>
+                          {a.ronaCount}
+                        </td>
+                      </tr>
+                    );
+                  };
+
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const computeTeamAvailTotals = (members: any[]) => {
+                    const loggedIn = members.filter((a) => a.totalLoginTime > 0);
+                    const avgOcc = loggedIn.length > 0 ? loggedIn.reduce((s, a) => s + a.occupancy, 0) / loggedIn.length : 0;
+                    const totalRona = members.reduce((s, a) => s + a.ronaCount, 0);
+                    const totalInbound = members.reduce((s, a) => s + a.inboundCalls, 0);
+                    const totalOutbound = members.reduce((s, a) => s + a.outboundCalls, 0);
+                    return { loggedIn: loggedIn.length, avgOcc, totalRona, totalInbound, totalOutbound };
+                  };
+
+                  return (
+                    <>
+                      {/* Summary Cards */}
+                      <SectionHeader title={`Agent Availability - ${availData.date}`} color={C.greenLight} />
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
+                        <MetricCard label="Agents Logged In" value={String(availData.summary.loggedIn)} subtitle={`of ${availData.summary.totalAgents} total`} color={C.success} />
+                        <MetricCard label="Avg Occupancy" value={`${availData.summary.avgOccupancy.toFixed(1)}%`} subtitle="Logged-in agents" color={C.orange} />
+                        <MetricCard label="Total RONA" value={String(availData.summary.totalRona)} subtitle="Missed rings" color={C.danger} />
+                        <MetricCard label="On Break / Lunch" value={String(availData.summary.onBreak)} subtitle="Agents with break time" color={C.purple} />
+                      </div>
+
+                      {/* Toggle */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 24, marginBottom: 16 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: !byTeamMode ? C.text : C.muted, fontFamily: FONT }}>All Agents</span>
+                        <div
+                          onClick={() => setByTeamMode((v) => !v)}
+                          style={{
+                            width: 48, height: 24, borderRadius: 12,
+                            background: byTeamMode ? `linear-gradient(135deg, ${C.purple}, ${C.purpleDark})` : C.border,
+                            cursor: "pointer", position: "relative", transition: "background 0.2s",
+                          }}
+                        >
+                          <div style={{
+                            width: 18, height: 18, borderRadius: "50%", background: "#fff",
+                            position: "absolute", top: 3, left: byTeamMode ? 27 : 3,
+                            transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+                          }} />
+                        </div>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: byTeamMode ? C.text : C.muted, fontFamily: FONT }}>By Team</span>
+                      </div>
+
+                      {/* Agent Table - All Agents mode */}
+                      {!byTeamMode && (
+                        <div style={{ overflowX: "auto", borderRadius: 12, border: `1px solid ${C.border}` }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: FONT, minWidth: 800 }}>
+                            <thead>
+                              <tr>
+                                <AvailSortTh label="Name" sKey="name" left />
+                                <AvailSortTh label="Status" sKey="status" />
+                                <AvailSortTh label="Login Time" sKey="totalLoginTime" />
+                                <AvailSortTh label="Inbound" sKey="inboundCalls" />
+                                <AvailSortTh label="Outbound" sKey="outboundCalls" />
+                                <AvailSortTh label="Talk Time" sKey="talkTime" />
+                                <AvailSortTh label="Break" sKey="breakTime" />
+                                <AvailSortTh label="Occupancy" sKey="occupancy" />
+                                <AvailSortTh label="RONA" sKey="ronaCount" />
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {sorted.map(renderAgentRow)}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+
+                      {/* Agent Table - By Team mode */}
+                      {byTeamMode && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                          {orderedTeams.map((team, idx) => {
+                            const members = (data?.teams[team] || [])
+                              .map((n: string) => agentsByName[n])
+                              .filter(Boolean);
+                            if (members.length === 0) return null;
+                            const totals = computeTeamAvailTotals(members);
+                            const color = TEAM_COLORS[idx % TEAM_COLORS.length];
+                            const expanded = expandedTeams[team] === true;
+
+                            return (
+                              <div key={team} style={{ background: C.card, borderRadius: 12, borderLeft: `4px solid ${color}`, overflow: "hidden" }}>
+                                <div
+                                  onClick={() => toggleTeam(team)}
+                                  style={{ padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", userSelect: "none" }}
+                                >
+                                  <div style={{ fontSize: 14, fontWeight: 700, color: C.text, fontFamily: FONT }}>
+                                    {team}{" "}
+                                    <span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>({members.length} agents)</span>
+                                    <span style={{ color: C.success, fontWeight: 700, fontSize: 13, marginLeft: 20 }}>{totals.loggedIn} logged in</span>
+                                    <span style={{ color: C.orange, fontSize: 13, marginLeft: 12 }}>{totals.avgOcc.toFixed(1)}% occ</span>
+                                    <span style={{ color: C.danger, fontSize: 13, marginLeft: 12 }}>{totals.totalRona} RONA</span>
+                                  </div>
+                                  <div style={{ color: C.muted, fontSize: 18, transition: "transform 0.2s", transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}>&#9660;</div>
+                                </div>
+                                {expanded && (
+                                  <div style={{ overflowX: "auto" }}>
+                                    <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: FONT, minWidth: 800 }}>
+                                      <thead>
+                                        <tr>
+                                          <th style={{ background: C.card, color: C.muted, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", padding: "10px 12px", textAlign: "left", borderBottom: `1px solid ${C.border}`, fontWeight: 600, fontFamily: FONT }}>Name</th>
+                                          {["Status", "Login Time", "Inbound", "Outbound", "Talk Time", "Break", "Occupancy", "RONA"].map((h) => (
+                                            <th key={h} style={{ background: C.card, color: C.muted, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", padding: "10px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}`, fontWeight: 600, fontFamily: FONT, whiteSpace: "nowrap" }}>{h}</th>
+                                          ))}
+                                        </tr>
+                                      </thead>
+                                      <tbody>{members.map(renderAgentRow)}</tbody>
+                                    </table>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {/* Unassigned */}
+                          {(() => {
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            const unassignedMembers = availData.agents.filter((a: any) => !assignedNames.has(a.name));
+                            if (unassignedMembers.length === 0) return null;
+                            const totals = computeTeamAvailTotals(unassignedMembers);
+                            const expanded = expandedTeams["Unassigned"] === true;
+                            return (
+                              <div style={{ background: C.card, borderRadius: 12, borderLeft: `4px solid ${C.muted}`, overflow: "hidden" }}>
+                                <div
+                                  onClick={() => toggleTeam("Unassigned")}
+                                  style={{ padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", userSelect: "none" }}
+                                >
+                                  <div style={{ fontSize: 14, fontWeight: 700, color: C.text, fontFamily: FONT }}>
+                                    Unassigned{" "}
+                                    <span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>({unassignedMembers.length} agents)</span>
+                                    <span style={{ color: C.success, fontWeight: 700, fontSize: 13, marginLeft: 20 }}>{totals.loggedIn} logged in</span>
+                                    <span style={{ color: C.orange, fontSize: 13, marginLeft: 12 }}>{totals.avgOcc.toFixed(1)}% occ</span>
+                                    <span style={{ color: C.danger, fontSize: 13, marginLeft: 12 }}>{totals.totalRona} RONA</span>
+                                  </div>
+                                  <div style={{ color: C.muted, fontSize: 18, transition: "transform 0.2s", transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}>&#9660;</div>
+                                </div>
+                                {expanded && (
+                                  <div style={{ overflowX: "auto" }}>
+                                    <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: FONT, minWidth: 800 }}>
+                                      <thead>
+                                        <tr>
+                                          <th style={{ background: C.card, color: C.muted, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", padding: "10px 12px", textAlign: "left", borderBottom: `1px solid ${C.border}`, fontWeight: 600, fontFamily: FONT }}>Name</th>
+                                          {["Status", "Login Time", "Inbound", "Outbound", "Talk Time", "Break", "Occupancy", "RONA"].map((h) => (
+                                            <th key={h} style={{ background: C.card, color: C.muted, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", padding: "10px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}`, fontWeight: 600, fontFamily: FONT, whiteSpace: "nowrap" }}>{h}</th>
+                                          ))}
+                                        </tr>
+                                      </thead>
+                                      <tbody>{unassignedMembers.map(renderAgentRow)}</tbody>
+                                    </table>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
             )}
 
             {/* ── TRENDS TAB ─────────────────────────────────────────────── */}
