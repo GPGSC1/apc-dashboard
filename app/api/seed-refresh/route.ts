@@ -712,7 +712,7 @@ async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number }> {
     addedDeals = await batchInsert(
       `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin)
        VALUES __VALUES__
-       ON CONFLICT (contract_no) WHERE contract_no IS NOT NULL AND contract_no != '' DO NOTHING`,
+       ON CONFLICT (contract_no) WHERE contract_no IS NOT NULL AND contract_no != '' DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason`,
       17, dealRows, 100
     );
   }
@@ -798,7 +798,7 @@ async function refreshMoxyHome(dates: string[]): Promise<{ addedDeals: number }>
     addedDeals = await batchInsert(
       `INSERT INTO moxy_home_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,state,admin)
        VALUES __VALUES__
-       ON CONFLICT (customer_id, contract_no) DO NOTHING`,
+       ON CONFLICT (customer_id, contract_no) DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason`,
       15, dealRows, 100
     );
   }
