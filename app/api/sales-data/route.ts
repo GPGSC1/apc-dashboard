@@ -243,10 +243,34 @@ export async function GET(req: Request) {
       }
     }
 
+    // ── 3b. CALLS per agent per queue ──────────────────────────────
+    const agentCallsResult = await query(
+      `SELECT agent_name, queue, COUNT(DISTINCT phone) as cnt
+       FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2
+         AND first_ext IS NOT NULL AND first_ext != ''
+         AND LENGTH(TRIM(first_ext)) <= 4
+         AND TRIM(first_ext) NOT LIKE '99%'
+       GROUP BY agent_name, queue`,
+      [fromDate, toDate]
+    );
+    // Map: agentName -> queue -> calls
+    const agentQueueCalls: Map<string, Record<string, number>> = new Map();
+    for (const row of agentCallsResult.rows) {
+      const agent = (row.agent_name ?? "").trim();
+      const mapped = mapQueue(row.queue);
+      if (!agent || !mapped) continue;
+      if (!agentQueueCalls.has(agent)) agentQueueCalls.set(agent, {});
+      const rec = agentQueueCalls.get(agent)!;
+      rec[mapped] = (rec[mapped] ?? 0) + parseInt(row.cnt);
+    }
+
     // ── 4. ATTRIBUTE deals to queues and salespersons ────────────────
     const bySalesperson: Record<string, {
       totalDeals: number;
-      queues: Record<string, { deals: number }>;
+      totalCalls: number;
+      closeRate: number;
+      queues: Record<string, { deals: number; calls: number }>;
     }> = {};
 
     const byQueue: Record<string, { deals: number; calls: number; closeRate: number; aiFwd: number; dropped: number }> = {};
@@ -382,11 +406,11 @@ export async function GET(req: Request) {
       // Track per salesperson (only if deal has a queue)
       if (dealQueue) {
         if (!bySalesperson[sp]) {
-          bySalesperson[sp] = { totalDeals: 0, queues: {} };
+          bySalesperson[sp] = { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
         }
         bySalesperson[sp].totalDeals++;
         if (!bySalesperson[sp].queues[dealQueue]) {
-          bySalesperson[sp].queues[dealQueue] = { deals: 0 };
+          bySalesperson[sp].queues[dealQueue] = { deals: 0, calls: 0 };
         }
         bySalesperson[sp].queues[dealQueue].deals++;
       }
@@ -410,6 +434,30 @@ export async function GET(req: Request) {
       if (entry.queueIsAuto && entry.product === "home") {
         // Home product sold through auto queue
         if (hasBoth) homeBundle++; else homeFlip++;
+      }
+    }
+
+    // Populate agent-level calls from agentQueueCalls into bySalesperson
+    for (const [agent, queueCallMap] of agentQueueCalls) {
+      if (!bySalesperson[agent]) {
+        bySalesperson[agent] = { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
+      }
+      let agentTotalCalls = 0;
+      for (const [q, cnt] of Object.entries(queueCallMap)) {
+        if (!bySalesperson[agent].queues[q]) {
+          bySalesperson[agent].queues[q] = { deals: 0, calls: 0 };
+        }
+        bySalesperson[agent].queues[q].calls = cnt;
+        agentTotalCalls += cnt;
+      }
+      bySalesperson[agent].totalCalls = agentTotalCalls;
+      bySalesperson[agent].closeRate = agentTotalCalls > 0 ? bySalesperson[agent].totalDeals / agentTotalCalls : 0;
+    }
+    // For agents with deals but no calls data, ensure totalCalls/closeRate are set
+    for (const sp of Object.keys(bySalesperson)) {
+      if (!agentQueueCalls.has(sp)) {
+        bySalesperson[sp].totalCalls = 0;
+        bySalesperson[sp].closeRate = 0;
       }
     }
 

@@ -116,6 +116,7 @@ export default function SalesDashboard() {
   const [fromDate, setFromDate] = useState(todayStr);
   const [toDate, setToDate] = useState(todayStr);
   const [byTeamMode, setByTeamMode] = useState(false);
+  const [productView, setProductView] = useState<"combined" | "auto" | "home">("combined");
   const [sortKey, setSortKey] = useState<SortKey>("deals");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [expandedTeams, setExpandedTeams] = useState<Record<string, boolean>>({});
@@ -210,6 +211,18 @@ export default function SalesDashboard() {
       } else if (sortKey === "closeRate") {
         va = a[1].closeRate;
         vb = b[1].closeRate;
+      } else if (sortKey.includes("_")) {
+        // Queue sub-column sort: "A1_deals", "A1_calls", "A1_closeRate"
+        const [q, field] = sortKey.split("_");
+        const aq = a[1].queues[q];
+        const bq = b[1].queues[q];
+        if (field === "deals") { va = aq?.deals ?? 0; vb = bq?.deals ?? 0; }
+        else if (field === "calls") { va = aq?.calls ?? 0; vb = bq?.calls ?? 0; }
+        else if (field === "closeRate") {
+          const ac = aq?.calls ?? 0; const bc = bq?.calls ?? 0;
+          va = ac > 0 ? (aq?.deals ?? 0) / ac : 0;
+          vb = bc > 0 ? (bq?.deals ?? 0) / bc : 0;
+        } else { va = aq?.deals ?? 0; vb = bq?.deals ?? 0; }
       } else {
         va = a[1].queues[sortKey]?.deals ?? 0;
         vb = b[1].queues[sortKey]?.deals ?? 0;
@@ -518,91 +531,78 @@ export default function SalesDashboard() {
   const AgentRow = ({
     name,
     stats,
+    view,
   }: {
     name: string;
     stats: SalespersonStats;
-  }) => (
-    <tr
-      style={{ transition: "background 0.15s" }}
-      onMouseEnter={(e) => (e.currentTarget.style.background = C.cardHover)}
-      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-    >
-      <td
-        style={{
-          padding: "10px 12px",
-          fontSize: 13,
-          fontWeight: 600,
-          color: C.text,
-          borderBottom: `1px solid ${C.border}`,
-          fontFamily: FONT,
-          position: "sticky",
-          left: 0,
-          background: C.bg,
-          zIndex: 1,
-          boxShadow: "2px 0 4px rgba(0,0,0,0.3)",
-          whiteSpace: "nowrap",
-        }}
+    view: "combined" | "auto" | "home";
+  }) => {
+    const queuesForView = view === "auto" ? AUTO_QUEUES : view === "home" ? HOME_QUEUES : [];
+    const cellBase = {
+      padding: "10px 12px",
+      fontSize: 13,
+      textAlign: "right" as const,
+      borderBottom: `1px solid ${C.border}`,
+      fontFamily: FONT,
+    };
+    return (
+      <tr
+        style={{ transition: "background 0.15s" }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = C.cardHover)}
+        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
       >
-        {name}
-      </td>
-      <td
-        style={{
-          padding: "10px 12px",
-          fontSize: 13,
-          textAlign: "right",
-          color: C.success,
-          fontWeight: 700,
-          borderBottom: `1px solid ${C.border}`,
-          fontFamily: FONT,
-        }}
-      >
-        {fmt(stats.totalDeals)}
-      </td>
-      <td
-        style={{
-          padding: "10px 12px",
-          fontSize: 13,
-          textAlign: "right",
-          color: C.secondary,
-          borderBottom: `1px solid ${C.border}`,
-          fontFamily: FONT,
-        }}
-      >
-        {fmt(stats.totalCalls)}
-      </td>
-      <td
-        style={{
-          padding: "10px 12px",
-          fontSize: 13,
-          textAlign: "right",
-          color: C.success,
-          borderBottom: `1px solid ${C.border}`,
-          fontFamily: FONT,
-        }}
-      >
-        {pct(stats.closeRate)}
-      </td>
-      {ALL_QUEUES.map((q) => (
         <td
-          key={q}
           style={{
             padding: "10px 12px",
             fontSize: 13,
-            textAlign: "right",
-            color: (stats.queues[q]?.deals ?? 0) > 0 ? C.text : C.muted,
+            fontWeight: 600,
+            color: C.text,
             borderBottom: `1px solid ${C.border}`,
             fontFamily: FONT,
+            position: "sticky",
+            left: 0,
+            background: C.bg,
+            zIndex: 1,
+            boxShadow: "2px 0 4px rgba(0,0,0,0.3)",
+            whiteSpace: "nowrap",
           }}
         >
-          {stats.queues[q]?.deals ?? 0}
+          {name}
         </td>
-      ))}
-    </tr>
-  );
+        <td style={{ ...cellBase, color: C.success, fontWeight: 700 }}>
+          {fmt(stats.totalDeals)}
+        </td>
+        <td style={{ ...cellBase, color: C.secondary }}>
+          {fmt(stats.totalCalls)}
+        </td>
+        <td style={{ ...cellBase, color: C.success }}>
+          {pct(stats.closeRate)}
+        </td>
+        {view === "combined" ? null : queuesForView.map((q, qi) => {
+          const qd = stats.queues[q]?.deals ?? 0;
+          const qc = stats.queues[q]?.calls ?? 0;
+          const qr = qc > 0 ? qd / qc : 0;
+          return [
+            <td key={`${q}_d`} style={{ ...cellBase, color: qd > 0 ? C.text : C.muted, borderLeft: `2px solid ${C.border}` }}>
+              {qd}
+            </td>,
+            <td key={`${q}_c`} style={{ ...cellBase, color: qc > 0 ? C.secondary : C.muted }}>
+              {qc}
+            </td>,
+            <td key={`${q}_r`} style={{ ...cellBase, color: C.success }}>
+              {pct(qr)}
+            </td>,
+          ];
+        })}
+      </tr>
+    );
+  };
 
   /* ── performance table (all agents) ───────────────────────────────────────── */
   const AllAgentsTable = () => {
     const agents = sortedAgents();
+    const queuesForView = productView === "auto" ? AUTO_QUEUES : productView === "home" ? HOME_QUEUES : [];
+    const showQueues = productView !== "combined";
     return (
       <div style={{ overflowX: "auto", borderRadius: 12, border: `1px solid ${C.border}` }}>
         <table
@@ -610,23 +610,116 @@ export default function SalesDashboard() {
             width: "100%",
             borderCollapse: "collapse",
             fontFamily: FONT,
-            minWidth: 900,
+            minWidth: showQueues ? 900 : 500,
           }}
         >
           <thead>
+            {showQueues && (
+              <tr>
+                <th style={{ background: C.card, borderBottom: `1px solid ${C.border}`, position: "sticky", left: 0, zIndex: 3 }} />
+                <th style={{ background: C.card, borderBottom: `1px solid ${C.border}` }} />
+                <th style={{ background: C.card, borderBottom: `1px solid ${C.border}` }} />
+                <th style={{ background: C.card, borderBottom: `1px solid ${C.border}` }} />
+                {queuesForView.map((q) => (
+                  <th
+                    key={q}
+                    colSpan={3}
+                    style={{
+                      background: C.card,
+                      color: C.text,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      textAlign: "center",
+                      padding: "8px 4px",
+                      borderBottom: `1px solid ${C.border}`,
+                      borderLeft: `2px solid ${C.border}`,
+                      fontFamily: FONT,
+                      letterSpacing: "0.5px",
+                    }}
+                  >
+                    {q}
+                  </th>
+                ))}
+              </tr>
+            )}
             <tr>
               <SortTh label="Name" sKey="name" left />
               <SortTh label="Deals" sKey="deals" />
               <SortTh label="Calls" sKey="calls" />
-              <SortTh label="%" sKey="closeRate" />
-              {ALL_QUEUES.map((q) => (
-                <SortTh key={q} label={q} sKey={q} />
+              <SortTh label="Close %" sKey="closeRate" />
+              {showQueues && queuesForView.map((q) => (
+                [
+                  <th
+                    key={`${q}_d`}
+                    onClick={() => handleSort(`${q}_deals`)}
+                    style={{
+                      background: C.card,
+                      color: sortKey === `${q}_deals` ? C.purpleLight : C.muted,
+                      fontSize: 9,
+                      letterSpacing: "0.05em",
+                      textTransform: "uppercase",
+                      padding: "6px 8px",
+                      textAlign: "right",
+                      borderBottom: `1px solid ${C.border}`,
+                      borderLeft: `2px solid ${C.border}`,
+                      whiteSpace: "nowrap",
+                      cursor: "pointer",
+                      userSelect: "none",
+                      fontWeight: 600,
+                      fontFamily: FONT,
+                    }}
+                  >
+                    D {sortKey === `${q}_deals` ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                  </th>,
+                  <th
+                    key={`${q}_c`}
+                    onClick={() => handleSort(`${q}_calls`)}
+                    style={{
+                      background: C.card,
+                      color: sortKey === `${q}_calls` ? C.purpleLight : C.muted,
+                      fontSize: 9,
+                      letterSpacing: "0.05em",
+                      textTransform: "uppercase",
+                      padding: "6px 8px",
+                      textAlign: "right",
+                      borderBottom: `1px solid ${C.border}`,
+                      whiteSpace: "nowrap",
+                      cursor: "pointer",
+                      userSelect: "none",
+                      fontWeight: 600,
+                      fontFamily: FONT,
+                    }}
+                  >
+                    C {sortKey === `${q}_calls` ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                  </th>,
+                  <th
+                    key={`${q}_r`}
+                    onClick={() => handleSort(`${q}_closeRate`)}
+                    style={{
+                      background: C.card,
+                      color: sortKey === `${q}_closeRate` ? C.purpleLight : C.muted,
+                      fontSize: 9,
+                      letterSpacing: "0.05em",
+                      textTransform: "uppercase",
+                      padding: "6px 8px",
+                      textAlign: "right",
+                      borderBottom: `1px solid ${C.border}`,
+                      whiteSpace: "nowrap",
+                      cursor: "pointer",
+                      userSelect: "none",
+                      fontWeight: 600,
+                      fontFamily: FONT,
+                    }}
+                  >
+                    % {sortKey === `${q}_closeRate` ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                  </th>,
+                ]
               ))}
             </tr>
           </thead>
           <tbody>
             {agents.map(([name, stats]) => (
-              <AgentRow key={name} name={name} stats={stats} />
+              <AgentRow key={name} name={name} stats={stats} view={productView} />
             ))}
           </tbody>
         </table>
@@ -638,6 +731,21 @@ export default function SalesDashboard() {
   const ByTeamView = () => {
     if (!data) return null;
     const teamNames = Object.keys(data.teams);
+    const queuesForView = productView === "auto" ? AUTO_QUEUES : productView === "home" ? HOME_QUEUES : [];
+    const showQueues = productView !== "combined";
+    const thBase = {
+      background: C.card,
+      color: C.muted,
+      fontSize: 10,
+      letterSpacing: "0.1em" as const,
+      textTransform: "uppercase" as const,
+      padding: "10px 12px",
+      textAlign: "right" as const,
+      borderBottom: `1px solid ${C.border}`,
+      fontWeight: 600,
+      fontFamily: FONT,
+      whiteSpace: "nowrap" as const,
+    };
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {teamNames.map((team, idx) => {
@@ -696,23 +804,43 @@ export default function SalesDashboard() {
                       width: "100%",
                       borderCollapse: "collapse",
                       fontFamily: FONT,
-                      minWidth: 900,
+                      minWidth: showQueues ? 900 : 500,
                     }}
                   >
                     <thead>
+                      {showQueues && (
+                        <tr>
+                          <th style={{ background: C.card, borderBottom: `1px solid ${C.border}`, position: "sticky", left: 0, zIndex: 3, minWidth: 140 }} />
+                          <th style={{ background: C.card, borderBottom: `1px solid ${C.border}` }} />
+                          <th style={{ background: C.card, borderBottom: `1px solid ${C.border}` }} />
+                          <th style={{ background: C.card, borderBottom: `1px solid ${C.border}` }} />
+                          {queuesForView.map((q) => (
+                            <th
+                              key={q}
+                              colSpan={3}
+                              style={{
+                                background: C.card,
+                                color: C.text,
+                                fontSize: 11,
+                                fontWeight: 700,
+                                textAlign: "center",
+                                padding: "8px 4px",
+                                borderBottom: `1px solid ${C.border}`,
+                                borderLeft: `2px solid ${C.border}`,
+                                fontFamily: FONT,
+                                letterSpacing: "0.5px",
+                              }}
+                            >
+                              {q}
+                            </th>
+                          ))}
+                        </tr>
+                      )}
                       <tr>
                         <th
                           style={{
-                            background: C.card,
-                            color: C.muted,
-                            fontSize: 10,
-                            letterSpacing: "0.1em",
-                            textTransform: "uppercase",
-                            padding: "10px 12px",
+                            ...thBase,
                             textAlign: "left",
-                            borderBottom: `1px solid ${C.border}`,
-                            fontWeight: 600,
-                            fontFamily: FONT,
                             position: "sticky",
                             left: 0,
                             zIndex: 2,
@@ -721,25 +849,15 @@ export default function SalesDashboard() {
                         >
                           Name
                         </th>
-                        {["Deals", "Calls", "%", ...ALL_QUEUES].map((h) => (
-                          <th
-                            key={h}
-                            style={{
-                              background: C.card,
-                              color: C.muted,
-                              fontSize: 10,
-                              letterSpacing: "0.1em",
-                              textTransform: "uppercase",
-                              padding: "10px 12px",
-                              textAlign: "right",
-                              borderBottom: `1px solid ${C.border}`,
-                              fontWeight: 600,
-                              fontFamily: FONT,
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {h}
-                          </th>
+                        <th style={thBase}>Deals</th>
+                        <th style={thBase}>Calls</th>
+                        <th style={thBase}>Close %</th>
+                        {showQueues && queuesForView.map((q) => (
+                          [
+                            <th key={`${q}_d`} style={{ ...thBase, fontSize: 9, padding: "6px 8px", borderLeft: `2px solid ${C.border}` }}>D</th>,
+                            <th key={`${q}_c`} style={{ ...thBase, fontSize: 9, padding: "6px 8px" }}>C</th>,
+                            <th key={`${q}_r`} style={{ ...thBase, fontSize: 9, padding: "6px 8px" }}>%</th>,
+                          ]
                         ))}
                       </tr>
                     </thead>
@@ -747,7 +865,7 @@ export default function SalesDashboard() {
                       {members.map((name) => {
                         const stats = data.bySalesperson[name];
                         if (!stats) return null;
-                        return <AgentRow key={name} name={name} stats={stats} />;
+                        return <AgentRow key={name} name={name} stats={stats} view={productView} />;
                       })}
                     </tbody>
                   </table>
@@ -1603,6 +1721,43 @@ export default function SalesDashboard() {
                   >
                     By Team
                   </span>
+                  {/* Product toggle */}
+                  <div
+                    style={{
+                      display: "flex",
+                      background: C.card,
+                      borderRadius: 8,
+                      padding: 3,
+                      gap: 2,
+                      border: `1px solid ${C.border}`,
+                    }}
+                  >
+                    {(["combined", "auto", "home"] as const).map((v) => (
+                      <button
+                        key={v}
+                        onClick={() => setProductView(v)}
+                        style={{
+                          padding: "5px 14px",
+                          border: "none",
+                          borderRadius: 6,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          fontFamily: FONT,
+                          cursor: "pointer",
+                          transition: "all 0.2s",
+                          color: productView === v ? C.text : C.muted,
+                          background:
+                            productView === v
+                              ? `linear-gradient(135deg, ${C.purple}, ${C.purpleDark})`
+                              : "transparent",
+                          textTransform: "capitalize",
+                        }}
+                      >
+                        {v === "combined" ? "Combined" : v === "auto" ? "Auto" : "Home"}
+                      </button>
+                    ))}
+                  </div>
+
                   <button
                     onClick={() => setShowTeamManager(true)}
                     style={{
