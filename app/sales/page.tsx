@@ -93,6 +93,10 @@ interface SalesData {
 type TabId = "overview" | "performance" | "availability" | "trends" | "textmike";
 type SortKey = "name" | "deals" | "calls" | "closeRate" | string;
 
+interface TeamMember { name: string; role: string }
+interface TeamInfo { id: number; name: string; color: string; members: TeamMember[] }
+interface TeamsPayload { teams: TeamInfo[]; unassigned: TeamMember[] }
+
 /* ── tab definitions ────────────────────────────────────────────────────────── */
 const TABS: { id: TabId; label: string }[] = [
   { id: "overview", label: "\u{1F4CA} Overview" },
@@ -116,6 +120,44 @@ export default function SalesDashboard() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [expandedTeams, setExpandedTeams] = useState<Record<string, boolean>>({});
   const [manualLoading, setManualLoading] = useState(false);
+  const [showTeamManager, setShowTeamManager] = useState(false);
+  const [teamsData, setTeamsData] = useState<TeamsPayload | null>(null);
+  const [teamsLoading, setTeamsLoading] = useState(false);
+  const [newTeamName, setNewTeamName] = useState("");
+  const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+
+  /* team management API */
+  const fetchTeams = useCallback(async () => {
+    setTeamsLoading(true);
+    try {
+      const res = await fetch("/api/teams");
+      if (!res.ok) throw new Error("fetch teams failed");
+      const json: TeamsPayload = await res.json();
+      setTeamsData(json);
+    } catch (e) {
+      console.error("Teams fetch error:", e);
+    } finally {
+      setTeamsLoading(false);
+    }
+  }, []);
+
+  const teamAction = async (body: Record<string, unknown>) => {
+    try {
+      const res = await fetch("/api/teams", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error("team action failed");
+      await fetchTeams();
+    } catch (e) {
+      console.error("Team action error:", e);
+    }
+  };
+
+  useEffect(() => {
+    if (showTeamManager) fetchTeams();
+  }, [showTeamManager, fetchTeams]);
 
   /* fetch */
   const fetchData = useCallback(
@@ -790,6 +832,300 @@ export default function SalesDashboard() {
     </div>
   );
 
+  /* ── team management modal ────────────────────────────────────────────────── */
+  const TeamManageModal = () => {
+    if (!showTeamManager) return null;
+    const MANAGE_COLORS = ["#6B2D99", "#F37021", "#EF4444", "#2D7A5F", "#F59E0B", "#3B82F6", "#EC4899", "#14B8A6"];
+    return (
+      <div
+        onClick={() => { setShowTeamManager(false); setOpenDropdown(null); }}
+        style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)",
+          zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center",
+        }}
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            background: C.bg, borderRadius: 16, border: `1px solid ${C.border}`,
+            width: "90%", maxWidth: 680, maxHeight: "85vh", overflow: "hidden",
+            display: "flex", flexDirection: "column",
+            boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
+          }}
+        >
+          {/* header */}
+          <div style={{
+            padding: "20px 24px", borderBottom: `1px solid ${C.border}`,
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+          }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.text, fontFamily: FONT }}>
+              Manage Teams
+            </div>
+            <div
+              onClick={() => { setShowTeamManager(false); setOpenDropdown(null); }}
+              style={{
+                width: 28, height: 28, borderRadius: 8, background: C.card,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                cursor: "pointer", color: C.muted, fontSize: 16, fontWeight: 700,
+              }}
+            >
+              &#10005;
+            </div>
+          </div>
+
+          {/* body */}
+          <div style={{ padding: 24, overflowY: "auto", flex: 1 }}>
+            {teamsLoading && !teamsData ? (
+              <div style={{ textAlign: "center", padding: 40, color: C.muted, fontFamily: FONT }}>Loading...</div>
+            ) : teamsData ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+                {/* create team */}
+                <div style={{
+                  display: "flex", gap: 8, alignItems: "center",
+                  padding: "12px 16px", background: C.card, borderRadius: 10,
+                }}>
+                  <input
+                    type="text"
+                    placeholder="New team manager name..."
+                    value={newTeamName}
+                    onChange={(e) => setNewTeamName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && newTeamName.trim()) {
+                        const color = MANAGE_COLORS[(teamsData?.teams.length ?? 0) % MANAGE_COLORS.length];
+                        teamAction({ action: "create_team", name: newTeamName.trim(), color });
+                        setNewTeamName("");
+                      }
+                    }}
+                    style={{
+                      flex: 1, background: C.input, color: C.text,
+                      border: `1px solid ${C.border}`, borderRadius: 8,
+                      padding: "8px 12px", fontSize: 13, fontFamily: FONT, outline: "none",
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      if (!newTeamName.trim()) return;
+                      const color = MANAGE_COLORS[(teamsData?.teams.length ?? 0) % MANAGE_COLORS.length];
+                      teamAction({ action: "create_team", name: newTeamName.trim(), color });
+                      setNewTeamName("");
+                    }}
+                    style={{
+                      background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDark})`,
+                      color: "#fff", border: "none", borderRadius: 8,
+                      padding: "8px 16px", fontSize: 12, fontWeight: 700,
+                      fontFamily: FONT, cursor: "pointer", whiteSpace: "nowrap",
+                    }}
+                  >
+                    + Create Team
+                  </button>
+                </div>
+
+                {/* existing teams */}
+                {teamsData.teams.map((team) => (
+                  <div key={team.id} style={{
+                    background: C.card, borderRadius: 10,
+                    borderLeft: `4px solid ${team.color || C.purple}`, overflow: "hidden",
+                  }}>
+                    <div style={{
+                      padding: "12px 16px", display: "flex",
+                      alignItems: "center", justifyContent: "space-between",
+                      borderBottom: team.members.length > 0 ? `1px solid ${C.border}` : "none",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 14, fontWeight: 700, color: C.text, fontFamily: FONT }}>
+                          {team.name}
+                        </span>
+                        <span style={{ fontSize: 11, color: C.muted, fontFamily: FONT }}>
+                          ({team.members.length} agent{team.members.length !== 1 ? "s" : ""})
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => teamAction({ action: "delete_team", teamId: team.id })}
+                        style={{
+                          background: "transparent", border: `1px solid ${C.danger}`,
+                          color: C.danger, borderRadius: 6, padding: "4px 10px",
+                          fontSize: 11, fontWeight: 600, fontFamily: FONT,
+                          cursor: "pointer", transition: "all 0.15s",
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = C.danger; e.currentTarget.style.color = "#fff"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = C.danger; }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                    {team.members.length > 0 && (
+                      <div style={{ padding: "8px 16px" }}>
+                        {team.members.map((m) => (
+                          <div key={m.name} style={{
+                            display: "flex", alignItems: "center", justifyContent: "space-between",
+                            padding: "6px 0", borderBottom: `1px solid ${C.border}`,
+                          }}>
+                            <div>
+                              <span style={{ fontSize: 13, color: C.text, fontFamily: FONT, fontWeight: 500 }}>
+                                {m.name}
+                              </span>
+                              {m.role && (
+                                <span style={{ fontSize: 11, color: C.muted, fontFamily: FONT, marginLeft: 8 }}>
+                                  {m.role}
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <div style={{ position: "relative" }}>
+                                <button
+                                  onClick={() => setOpenDropdown(openDropdown === `team-${team.id}-${m.name}` ? null : `team-${team.id}-${m.name}`)}
+                                  style={{
+                                    background: C.input, color: C.secondary, border: `1px solid ${C.border}`,
+                                    borderRadius: 6, padding: "3px 8px", fontSize: 11, fontFamily: FONT,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Move &#9662;
+                                </button>
+                                {openDropdown === `team-${team.id}-${m.name}` && (
+                                  <div style={{
+                                    position: "absolute", top: "100%", right: 0, marginTop: 4,
+                                    background: C.card, border: `1px solid ${C.border}`, borderRadius: 8,
+                                    zIndex: 10, minWidth: 150, boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                                    overflow: "hidden",
+                                  }}>
+                                    {teamsData.teams.filter((t) => t.id !== team.id).map((t) => (
+                                      <div
+                                        key={t.id}
+                                        onClick={() => { teamAction({ action: "assign", agentName: m.name, teamId: t.id }); setOpenDropdown(null); }}
+                                        style={{
+                                          padding: "8px 12px", fontSize: 12, color: C.text, fontFamily: FONT,
+                                          cursor: "pointer", borderBottom: `1px solid ${C.border}`,
+                                          display: "flex", alignItems: "center", gap: 8,
+                                        }}
+                                        onMouseEnter={(e) => (e.currentTarget.style.background = C.cardHover)}
+                                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                                      >
+                                        <div style={{ width: 8, height: 8, borderRadius: "50%", background: t.color || C.purple }} />
+                                        {t.name}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                              <div
+                                onClick={() => teamAction({ action: "assign", agentName: m.name, teamId: null })}
+                                style={{
+                                  width: 22, height: 22, borderRadius: 6,
+                                  display: "flex", alignItems: "center", justifyContent: "center",
+                                  cursor: "pointer", color: C.muted, fontSize: 13,
+                                  background: "transparent", transition: "all 0.15s",
+                                }}
+                                title="Unassign"
+                                onMouseEnter={(e) => { e.currentTarget.style.background = C.danger; e.currentTarget.style.color = "#fff"; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = C.muted; }}
+                              >
+                                &#10005;
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {team.members.length === 0 && (
+                      <div style={{ padding: "12px 16px", fontSize: 12, color: C.muted, fontFamily: FONT, fontStyle: "italic" }}>
+                        No agents assigned
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                {/* unassigned */}
+                <div style={{
+                  background: C.card, borderRadius: 10,
+                  borderLeft: `4px solid ${C.muted}`, overflow: "hidden",
+                }}>
+                  <div style={{
+                    padding: "12px 16px", borderBottom: teamsData.unassigned.length > 0 ? `1px solid ${C.border}` : "none",
+                  }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: C.text, fontFamily: FONT }}>
+                      Unassigned
+                    </span>
+                    <span style={{ fontSize: 11, color: C.muted, fontFamily: FONT, marginLeft: 8 }}>
+                      ({teamsData.unassigned.length} agent{teamsData.unassigned.length !== 1 ? "s" : ""})
+                    </span>
+                  </div>
+                  {teamsData.unassigned.length > 0 ? (
+                    <div style={{ padding: "8px 16px" }}>
+                      {teamsData.unassigned.map((m) => (
+                        <div key={m.name} style={{
+                          display: "flex", alignItems: "center", justifyContent: "space-between",
+                          padding: "6px 0", borderBottom: `1px solid ${C.border}`,
+                        }}>
+                          <div>
+                            <span style={{ fontSize: 13, color: C.text, fontFamily: FONT, fontWeight: 500 }}>
+                              {m.name}
+                            </span>
+                            {m.role && (
+                              <span style={{ fontSize: 11, color: C.muted, fontFamily: FONT, marginLeft: 8 }}>
+                                {m.role}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ position: "relative" }}>
+                            <button
+                              onClick={() => setOpenDropdown(openDropdown === `unassigned-${m.name}` ? null : `unassigned-${m.name}`)}
+                              style={{
+                                background: C.input, color: C.secondary, border: `1px solid ${C.border}`,
+                                borderRadius: 6, padding: "3px 8px", fontSize: 11, fontFamily: FONT,
+                                cursor: "pointer",
+                              }}
+                            >
+                              Assign &#9662;
+                            </button>
+                            {openDropdown === `unassigned-${m.name}` && (
+                              <div style={{
+                                position: "absolute", top: "100%", right: 0, marginTop: 4,
+                                background: C.card, border: `1px solid ${C.border}`, borderRadius: 8,
+                                zIndex: 10, minWidth: 150, boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                                overflow: "hidden",
+                              }}>
+                                {teamsData.teams.map((t) => (
+                                  <div
+                                    key={t.id}
+                                    onClick={() => { teamAction({ action: "assign", agentName: m.name, teamId: t.id }); setOpenDropdown(null); }}
+                                    style={{
+                                      padding: "8px 12px", fontSize: 12, color: C.text, fontFamily: FONT,
+                                      cursor: "pointer", borderBottom: `1px solid ${C.border}`,
+                                      display: "flex", alignItems: "center", gap: 8,
+                                    }}
+                                    onMouseEnter={(e) => (e.currentTarget.style.background = C.cardHover)}
+                                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                                  >
+                                    <div style={{ width: 8, height: 8, borderRadius: "50%", background: t.color || C.purple }} />
+                                    {t.name}
+                                  </div>
+                                ))}
+                                {teamsData.teams.length === 0 && (
+                                  <div style={{ padding: "8px 12px", fontSize: 12, color: C.muted, fontFamily: FONT }}>
+                                    No teams yet
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ padding: "12px 16px", fontSize: 12, color: C.muted, fontFamily: FONT, fontStyle: "italic" }}>
+                      All agents assigned
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   /* ── render ───────────────────────────────────────────────────────────────── */
   return (
     <div
@@ -1267,6 +1603,35 @@ export default function SalesDashboard() {
                   >
                     By Team
                   </span>
+                  <button
+                    onClick={() => setShowTeamManager(true)}
+                    style={{
+                      marginLeft: "auto",
+                      background: C.card,
+                      color: C.secondary,
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 8,
+                      padding: "6px 14px",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      fontFamily: FONT,
+                      cursor: "pointer",
+                      transition: "all 0.2s",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = C.purpleLight;
+                      e.currentTarget.style.color = C.text;
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = C.border;
+                      e.currentTarget.style.color = C.secondary;
+                    }}
+                  >
+                    &#9881; Manage Teams
+                  </button>
                 </div>
 
                 {byTeamMode ? <ByTeamView /> : <AllAgentsTable />}
@@ -1299,6 +1664,9 @@ export default function SalesDashboard() {
           </>
         )}
       </div>
+
+      {/* ── team management modal ────────────────────────────────────────── */}
+      <TeamManageModal />
 
       {/* ── responsive media query ───────────────────────────────────────── */}
       <style>{`
