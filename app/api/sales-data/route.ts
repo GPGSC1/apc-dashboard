@@ -94,7 +94,7 @@ export async function GET(req: Request) {
     // ── 1. DEALS from Moxy Auto + Moxy Home ─────────────────────────
     const autoDealsResult = await query(
       `SELECT DISTINCT ON (customer_id || '|' || contract_no)
-         customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, make, model, campaign, promo_code
+         customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, make, model, campaign, promo_code, first_name, last_name
        FROM moxy_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')
@@ -103,7 +103,7 @@ export async function GET(req: Request) {
     );
     const homeDealsResult = await query(
       `SELECT DISTINCT ON (customer_id || '|' || contract_no)
-         customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, campaign, promo_code
+         customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, campaign, promo_code, first_name, last_name
        FROM moxy_home_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')
@@ -265,6 +265,19 @@ export async function GET(req: Request) {
       rec[mapped] = (rec[mapped] ?? 0) + parseInt(row.cnt);
     }
 
+    // ── 3c. LOAD deal overrides for manual T.O. reassignment ────────
+    let overrideByContract = new Map<string, string>();
+    let overrideByCid = new Map<string, string>();
+    try {
+      const overrideResult = await query(`SELECT contract_no, customer_id, corrected_owner FROM deal_overrides`);
+      for (const row of overrideResult.rows) {
+        if (row.contract_no) overrideByContract.set(row.contract_no, row.corrected_owner);
+        if (row.customer_id) overrideByCid.set(row.customer_id, row.corrected_owner);
+      }
+    } catch {
+      // Table may not exist yet — ignore
+    }
+
     // ── 4. ATTRIBUTE deals to queues and salespersons ────────────────
     const bySalesperson: Record<string, {
       totalDeals: number;
@@ -331,21 +344,55 @@ export async function GET(req: Request) {
     // Track phones that have BOTH auto and home deals in the same month (bundles)
     const phoneProductSet = new Map<string, Set<string>>();
 
+    // Collect T.O. deals that have no override (for the override popup)
+    interface TODeal {
+      contractNo: string;
+      customerId: string;
+      firstName: string;
+      lastName: string;
+      soldDate: string;
+      phone: string;
+      originalOwner: string;
+      suggestedAgent: string | null;
+    }
+    const toDealsList: TODeal[] = [];
+
     for (const deal of dealsResult.rows) {
       const closer = deal.salesperson?.trim() || "";  // T.O. / closer
       let salesRep = deal.owner?.trim() || closer;  // Sales Rep (falls back to closer if no owner)
 
-      // T.O. fallback: if owner is a known T.O., look up 3CX to find the real sales rep
-      if (isTO(salesRep)) {
+      // Check for manual override FIRST (highest priority)
+      const override = overrideByContract.get(deal.contract_no) || overrideByCid.get(deal.customer_id);
+      if (override) {
+        salesRep = override;
+      } else if (isTO(salesRep)) {
+        // T.O. fallback: if owner is a known T.O., look up 3CX to find the real sales rep
         const dealPhonesList = [deal.home_phone, deal.mobile_phone]
           .map((p: string) => (p ?? "").replace(/\D/g, "").slice(-10))
           .filter((p: string) => p.length === 10);
+        let found3cx = false;
         for (const ph of dealPhonesList) {
           const realAgent = phoneToAgent.get(ph);
           if (realAgent) {
             salesRep = realAgent;
+            found3cx = true;
             break;
           }
+        }
+        // If still a T.O. after 3CX lookup (no agent found), collect for override popup
+        if (!found3cx) {
+          const soldDate = deal.sold_date instanceof Date ? deal.sold_date.toISOString().slice(0, 10) : String(deal.sold_date).slice(0, 10);
+          const phones = dealPhonesList;
+          toDealsList.push({
+            contractNo: deal.contract_no || '',
+            customerId: deal.customer_id || '',
+            firstName: deal.first_name || '',
+            lastName: deal.last_name || '',
+            soldDate,
+            phone: phones[0] || '',
+            originalOwner: deal.owner || '',
+            suggestedAgent: phones.length > 0 ? (phoneToAgent.get(phones[0]) || null) : null,
+          });
         }
       }
 
@@ -595,6 +642,7 @@ export async function GET(req: Request) {
       dailyTrends,
       staleness,
       dateRange: { from: fromDate, to: toDate },
+      toDeals: toDealsList,
     });
   } catch (err) {
     console.error("[sales-data] Error:", err);

@@ -73,6 +73,16 @@ interface FBDetail {
   homeBundle: number;
   total: number;
 }
+interface TODeal {
+  contractNo: string;
+  customerId: string;
+  firstName: string;
+  lastName: string;
+  soldDate: string;
+  phone: string;
+  originalOwner: string;
+  suggestedAgent: string | null;
+}
 interface SalesData {
   companyTotal: TotalStats;
   autoTotal: TotalStats;
@@ -88,6 +98,7 @@ interface SalesData {
   dailyTrends: DailyTrend[];
   staleness: { moxy: string | null; moxyHome?: string | null; cx: string | null };
   dateRange: { from: string; to: string };
+  toDeals?: TODeal[];
 }
 
 type TabId = "overview" | "performance" | "availability" | "trends" | "textmike";
@@ -126,6 +137,11 @@ export default function SalesDashboard() {
   const [teamsLoading, setTeamsLoading] = useState(false);
   const [newTeamName, setNewTeamName] = useState("");
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+
+  /* T.O. deal override popup state */
+  const [toOverrideAgent, setToOverrideAgent] = useState<string | null>(null);
+  const [toOverrides, setToOverrides] = useState<Record<string, string>>({});
+  const [toSaving, setToSaving] = useState(false);
 
   /* availability tab state */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -568,10 +584,12 @@ export default function SalesDashboard() {
     name,
     stats,
     view,
+    onDealsClick,
   }: {
     name: string;
     stats: SalespersonStats;
     view: "combined" | "auto" | "home";
+    onDealsClick?: () => void;
   }) => {
     const queuesForView = view === "auto" ? AUTO_QUEUES : view === "home" ? HOME_QUEUES : [];
     // When a product is selected, filter totals to only that product's queues
@@ -611,7 +629,17 @@ export default function SalesDashboard() {
         >
           {name}
         </td>
-        <td style={{ ...cellBase, color: C.success, fontWeight: 700 }}>
+        <td
+          onClick={onDealsClick && filteredDeals > 0 ? (e) => { e.stopPropagation(); onDealsClick(); } : undefined}
+          style={{
+            ...cellBase,
+            color: C.success,
+            fontWeight: 700,
+            cursor: onDealsClick && filteredDeals > 0 ? "pointer" : undefined,
+            textDecoration: onDealsClick && filteredDeals > 0 ? "underline" : undefined,
+            textDecorationColor: onDealsClick && filteredDeals > 0 ? C.purpleLight : undefined,
+          }}
+        >
           {fmt(filteredDeals)}
         </td>
         <td style={{ ...cellBase, color: C.secondary }}>
@@ -830,6 +858,8 @@ export default function SalesDashboard() {
       const expanded = expandedTeams[team] === true;
       const totals = computeTeamTotals(members);
       const cellBase = { padding: "10px 12px", fontSize: 13, textAlign: "right" as const, fontFamily: FONT, borderBottom: `1px solid ${C.border}` };
+      const isToTeam = team.toLowerCase() === "t.o." || team.toLowerCase() === "to.";
+      const toDeals = data.toDeals ?? [];
 
       return (
         <div
@@ -976,7 +1006,24 @@ export default function SalesDashboard() {
                     return 0;
                   }).map((name) => {
                     const stats = data.bySalesperson[name] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
-                    return <AgentRow key={name} name={name} stats={stats} view={productView} />;
+                    const agentToDeals = isToTeam ? toDeals.filter(d => d.originalOwner.toLowerCase() === name.toLowerCase()) : [];
+                    return (
+                      <AgentRow
+                        key={name}
+                        name={name}
+                        stats={stats}
+                        view={productView}
+                        onDealsClick={isToTeam && agentToDeals.length > 0 ? () => {
+                          setToOverrideAgent(name);
+                          // Pre-fill overrides with suggested agents
+                          const prefilled: Record<string, string> = {};
+                          for (const d of agentToDeals) {
+                            if (d.suggestedAgent) prefilled[d.contractNo] = d.suggestedAgent;
+                          }
+                          setToOverrides(prefilled);
+                        } : undefined}
+                      />
+                    );
                   })}
                 </tbody>
               </table>
@@ -2207,6 +2254,198 @@ export default function SalesDashboard() {
 
       {/* ── team management modal ────────────────────────────────────────── */}
       <TeamManageModal />
+
+      {/* ── T.O. deal override modal ───────────────────────────────────────── */}
+      {toOverrideAgent && data && (() => {
+        const toDeals = (data.toDeals ?? []).filter(d => d.originalOwner.toLowerCase() === toOverrideAgent.toLowerCase());
+        // Build list of assignable agents (all bySalesperson keys, excluding T.O. members and excluded)
+        const toTeamMembers = new Set((data.teams["T.O."] ?? data.teams["TO."] ?? []).map(n => n.toLowerCase()));
+        const assignableAgents = Object.keys(data.bySalesperson)
+          .filter(n => !toTeamMembers.has(n.toLowerCase()) && n.trim())
+          .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+        const handleSaveOverrides = async () => {
+          const entries = Object.entries(toOverrides).filter(([, agent]) => agent && agent.trim());
+          if (entries.length === 0) return;
+          setToSaving(true);
+          try {
+            const overridesPayload = entries.map(([contractNo, correctedOwner]) => {
+              const deal = toDeals.find(d => d.contractNo === contractNo);
+              return {
+                contract_no: contractNo,
+                customer_id: deal?.customerId || '',
+                original_owner: deal?.originalOwner || '',
+                corrected_owner: correctedOwner,
+              };
+            });
+            const res = await fetch("/api/deal-overrides", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ overrides: overridesPayload }),
+            });
+            if (!res.ok) throw new Error("save failed");
+            setToOverrideAgent(null);
+            setToOverrides({});
+            fetchData(true);
+          } catch (e) {
+            console.error("Save overrides error:", e);
+          } finally {
+            setToSaving(false);
+          }
+        };
+
+        return (
+          <div
+            onClick={() => { setToOverrideAgent(null); setToOverrides({}); }}
+            style={{
+              position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)",
+              zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center",
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                background: C.bg, borderRadius: 16, border: `1px solid ${C.border}`,
+                width: "90%", maxWidth: 780, maxHeight: "85vh", overflow: "hidden",
+                display: "flex", flexDirection: "column",
+                boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
+              }}
+            >
+              {/* header */}
+              <div style={{
+                padding: "20px 24px", borderBottom: `1px solid ${C.border}`,
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+              }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: C.text, fontFamily: FONT }}>
+                  {toOverrideAgent} &mdash; {toDeals.length} deal{toDeals.length !== 1 ? "s" : ""} to review
+                </div>
+                <div
+                  onClick={() => { setToOverrideAgent(null); setToOverrides({}); }}
+                  style={{
+                    width: 28, height: 28, borderRadius: 8, background: C.card,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    cursor: "pointer", color: C.muted, fontSize: 16, fontWeight: 700,
+                  }}
+                >
+                  &#10005;
+                </div>
+              </div>
+
+              {/* body */}
+              <div style={{ padding: 24, overflowY: "auto", flex: 1 }}>
+                {toDeals.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: 40, color: C.muted, fontFamily: FONT }}>
+                    No unassigned T.O. deals for this agent.
+                  </div>
+                ) : (
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: FONT }}>
+                    <thead>
+                      <tr>
+                        {["Customer", "Sold Date", "Phone", "Assign To"].map((h, i) => (
+                          <th
+                            key={h}
+                            style={{
+                              background: C.card,
+                              color: C.muted,
+                              fontSize: 10,
+                              letterSpacing: "0.1em",
+                              textTransform: "uppercase",
+                              padding: "10px 14px",
+                              textAlign: i === 3 ? "center" : "left",
+                              borderBottom: `1px solid ${C.border}`,
+                              whiteSpace: "nowrap",
+                              fontWeight: 600,
+                            }}
+                          >
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {toDeals.map((deal) => (
+                        <tr key={deal.contractNo}>
+                          <td style={{
+                            padding: "10px 14px", fontSize: 13, color: C.text,
+                            borderBottom: `1px solid ${C.border}`, fontFamily: FONT, whiteSpace: "nowrap",
+                          }}>
+                            {deal.firstName} {deal.lastName}
+                          </td>
+                          <td style={{
+                            padding: "10px 14px", fontSize: 13, color: C.secondary,
+                            borderBottom: `1px solid ${C.border}`, fontFamily: FONT, whiteSpace: "nowrap",
+                          }}>
+                            {deal.soldDate}
+                          </td>
+                          <td style={{
+                            padding: "10px 14px", fontSize: 13, color: C.secondary,
+                            borderBottom: `1px solid ${C.border}`, fontFamily: FONT, whiteSpace: "nowrap",
+                          }}>
+                            {deal.phone ? deal.phone.replace(/(\d{3})(\d{3})(\d{4})/, "($1) $2-$3") : "\u2014"}
+                          </td>
+                          <td style={{
+                            padding: "10px 14px", borderBottom: `1px solid ${C.border}`, textAlign: "center",
+                          }}>
+                            <select
+                              value={toOverrides[deal.contractNo] || ""}
+                              onChange={(e) => setToOverrides(prev => ({ ...prev, [deal.contractNo]: e.target.value }))}
+                              style={{
+                                background: C.input, color: C.text,
+                                border: `1px solid ${C.border}`, borderRadius: 8,
+                                padding: "6px 10px", fontSize: 12, fontFamily: FONT,
+                                outline: "none", width: "100%", maxWidth: 200,
+                                cursor: "pointer",
+                              }}
+                            >
+                              <option value="">-- Select Agent --</option>
+                              {assignableAgents.map(agent => (
+                                <option key={agent} value={agent}>{agent}</option>
+                              ))}
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {/* footer */}
+              <div style={{
+                padding: "16px 24px", borderTop: `1px solid ${C.border}`,
+                display: "flex", justifyContent: "flex-end", gap: 12,
+              }}>
+                <button
+                  onClick={() => { setToOverrideAgent(null); setToOverrides({}); }}
+                  style={{
+                    background: C.card, color: C.muted, border: `1px solid ${C.border}`,
+                    borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 600,
+                    fontFamily: FONT, cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveOverrides}
+                  disabled={toSaving || Object.values(toOverrides).filter(v => v).length === 0}
+                  style={{
+                    background: Object.values(toOverrides).filter(v => v).length > 0
+                      ? `linear-gradient(135deg, ${C.purple}, ${C.purpleDark})`
+                      : C.card,
+                    color: Object.values(toOverrides).filter(v => v).length > 0 ? "#fff" : C.muted,
+                    border: "none", borderRadius: 8, padding: "8px 20px",
+                    fontSize: 13, fontWeight: 700, fontFamily: FONT,
+                    cursor: Object.values(toOverrides).filter(v => v).length > 0 ? "pointer" : "not-allowed",
+                    opacity: toSaving ? 0.6 : 1,
+                  }}
+                >
+                  {toSaving ? "Saving..." : `Save ${Object.values(toOverrides).filter(v => v).length} Override${Object.values(toOverrides).filter(v => v).length !== 1 ? "s" : ""}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── responsive media query ───────────────────────────────────────── */}
       <style>{`
