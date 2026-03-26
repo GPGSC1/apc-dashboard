@@ -742,10 +742,30 @@ export default function SalesDashboard() {
     );
   };
 
+  /* ── team totals helper ───────────────────────────────────────────────────── */
+  const computeTeamTotals = (members: string[]) => {
+    if (!data) return { deals: 0, calls: 0, rate: 0, queues: {} as Record<string, { deals: number; calls: number }> };
+    const queues: Record<string, { deals: number; calls: number }> = {};
+    let deals = 0, calls = 0;
+    const qList = productView === "auto" ? AUTO_QUEUES : productView === "home" ? HOME_QUEUES : ALL_QUEUES;
+    for (const name of members) {
+      const s = data.bySalesperson[name];
+      if (!s) continue;
+      const ft = getFilteredTotals(s);
+      deals += ft.deals;
+      calls += ft.calls;
+      for (const q of qList) {
+        if (!queues[q]) queues[q] = { deals: 0, calls: 0 };
+        queues[q].deals += s.queues[q]?.deals ?? 0;
+        queues[q].calls += s.queues[q]?.calls ?? 0;
+      }
+    }
+    return { deals, calls, rate: calls > 0 ? deals / calls : 0, queues };
+  };
+
   /* ── performance table (by team) ──────────────────────────────────────────── */
   const ByTeamView = () => {
     if (!data) return null;
-    const teamNames = Object.keys(data.teams);
     const queuesForView = productView === "auto" ? AUTO_QUEUES : productView === "home" ? HOME_QUEUES : [];
     const showQueues = productView !== "combined";
     const thBase = {
@@ -761,134 +781,156 @@ export default function SalesDashboard() {
       fontFamily: FONT,
       whiteSpace: "nowrap" as const,
     };
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        {teamNames.map((team, idx) => {
-          const color = TEAM_COLORS[idx % TEAM_COLORS.length];
-          const expanded = expandedTeams[team] !== false;
-          const members = data.teams[team] || [];
-          return (
+
+    // Order: The Money Team first, then Nothin But a G Thang, then Unassigned
+    const teamOrder = ["The Money Team", "Nothin But a G Thang"];
+    const orderedTeams = teamOrder.filter(t => data.teams[t]);
+
+    // Collect assigned agents
+    const assignedAgents = new Set<string>();
+    for (const team of orderedTeams) {
+      for (const name of (data.teams[team] || [])) assignedAgents.add(name);
+    }
+
+    // Unassigned: agents in bySalesperson but not in any team
+    const unassigned = Object.keys(data.bySalesperson).filter(n => !assignedAgents.has(n) && n.trim());
+
+    const TeamBlock = ({ team, members, color, isUnassigned }: { team: string; members: string[]; color: string; isUnassigned?: boolean }) => {
+      const expanded = expandedTeams[team] !== false;
+      const totals = computeTeamTotals(members);
+      const cellBase = { padding: "10px 12px", fontSize: 13, textAlign: "right" as const, fontFamily: FONT, borderBottom: `1px solid ${C.border}` };
+
+      return (
+        <div
+          style={{
+            background: C.card,
+            borderRadius: 12,
+            borderLeft: `4px solid ${color}`,
+            overflow: "hidden",
+          }}
+        >
+          <div
+            onClick={() => toggleTeam(team)}
+            style={{
+              padding: "14px 20px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              cursor: "pointer",
+              userSelect: "none",
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.text, fontFamily: FONT }}>
+              {team}{" "}
+              <span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>
+                ({members.length} agents)
+              </span>
+              <span style={{ color: C.success, fontWeight: 700, fontSize: 13, marginLeft: 20 }}>
+                {totals.deals} deals
+              </span>
+              <span style={{ color: C.secondary, fontSize: 13, marginLeft: 12 }}>
+                {fmt(totals.calls)} calls
+              </span>
+              <span style={{ color: C.success, fontSize: 13, marginLeft: 12 }}>
+                {pct(totals.rate)}
+              </span>
+            </div>
             <div
-              key={team}
               style={{
-                background: C.card,
-                borderRadius: 12,
-                borderLeft: `4px solid ${color}`,
-                overflow: "hidden",
+                color: C.muted,
+                fontSize: 18,
+                transition: "transform 0.2s",
+                transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
               }}
             >
-              <div
-                onClick={() => toggleTeam(team)}
-                style={{
-                  padding: "14px 20px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  cursor: "pointer",
-                  userSelect: "none",
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: 14,
-                    fontWeight: 700,
-                    color: C.text,
-                    fontFamily: FONT,
-                  }}
-                >
-                  {team}{" "}
-                  <span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>
-                    ({members.length} agents)
-                  </span>
-                </div>
-                <div
-                  style={{
-                    color: C.muted,
-                    fontSize: 18,
-                    transition: "transform 0.2s",
-                    transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
-                  }}
-                >
-                  &#9660;
-                </div>
-              </div>
-              {expanded && (
-                <div style={{ overflowX: "auto" }}>
-                  <table
-                    style={{
-                      width: "100%",
-                      borderCollapse: "collapse",
-                      fontFamily: FONT,
-                      minWidth: showQueues ? 900 : 500,
-                    }}
-                  >
-                    <thead>
-                      {showQueues && (
-                        <tr>
-                          <th style={{ background: C.card, borderBottom: `1px solid ${C.border}`, position: "sticky", left: 0, zIndex: 3, minWidth: 140 }} />
-                          <th style={{ background: C.card, borderBottom: `1px solid ${C.border}` }} />
-                          <th style={{ background: C.card, borderBottom: `1px solid ${C.border}` }} />
-                          <th style={{ background: C.card, borderBottom: `1px solid ${C.border}` }} />
-                          {queuesForView.map((q) => (
-                            <th
-                              key={q}
-                              colSpan={3}
-                              style={{
-                                background: C.card,
-                                color: C.text,
-                                fontSize: 11,
-                                fontWeight: 700,
-                                textAlign: "center",
-                                padding: "8px 4px",
-                                borderBottom: `1px solid ${C.border}`,
-                                borderLeft: `2px solid ${C.border}`,
-                                fontFamily: FONT,
-                                letterSpacing: "0.5px",
-                              }}
-                            >
-                              {q}
-                            </th>
-                          ))}
-                        </tr>
-                      )}
-                      <tr>
-                        <th
-                          style={{
-                            ...thBase,
-                            textAlign: "left",
-                            position: "sticky",
-                            left: 0,
-                            zIndex: 2,
-                            minWidth: 140,
-                          }}
-                        >
-                          Name
-                        </th>
-                        <th style={thBase}>Deals</th>
-                        <th style={thBase}>Calls</th>
-                        <th style={thBase}>Close %</th>
-                        {showQueues && queuesForView.map((q) => (
-                          [
-                            <th key={`${q}_d`} style={{ ...thBase, fontSize: 9, padding: "6px 8px", borderLeft: `2px solid ${C.border}` }}>D</th>,
-                            <th key={`${q}_c`} style={{ ...thBase, fontSize: 9, padding: "6px 8px" }}>C</th>,
-                            <th key={`${q}_r`} style={{ ...thBase, fontSize: 9, padding: "6px 8px" }}>%</th>,
-                          ]
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {members.map((name) => {
-                        const stats = data.bySalesperson[name];
-                        if (!stats) return null;
-                        return <AgentRow key={name} name={name} stats={stats} view={productView} />;
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+              &#9660;
             </div>
-          );
-        })}
+          </div>
+          {expanded && (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: FONT, minWidth: showQueues ? 900 : 500 }}>
+                <thead>
+                  {showQueues && (
+                    <tr>
+                      <th style={{ background: C.card, borderBottom: `1px solid ${C.border}`, position: "sticky", left: 0, zIndex: 3, minWidth: 140 }} />
+                      <th style={{ background: C.card, borderBottom: `1px solid ${C.border}` }} />
+                      <th style={{ background: C.card, borderBottom: `1px solid ${C.border}` }} />
+                      <th style={{ background: C.card, borderBottom: `1px solid ${C.border}` }} />
+                      {queuesForView.map((q) => (
+                        <th key={q} colSpan={3} style={{
+                          background: C.card, color: C.text, fontSize: 11, fontWeight: 700,
+                          textAlign: "center", padding: "8px 4px", borderBottom: `1px solid ${C.border}`,
+                          borderLeft: `2px solid ${C.border}`, fontFamily: FONT, letterSpacing: "0.5px",
+                        }}>
+                          {q}
+                        </th>
+                      ))}
+                    </tr>
+                  )}
+                  {/* Team totals row */}
+                  <tr style={{ background: `${color}22` }}>
+                    <td style={{ ...cellBase, textAlign: "left", fontWeight: 700, color, position: "sticky", left: 0, zIndex: 2, background: `${color}22` }}>
+                      TEAM TOTAL
+                    </td>
+                    <td style={{ ...cellBase, color: C.success, fontWeight: 700 }}>{totals.deals}</td>
+                    <td style={{ ...cellBase, color: C.secondary, fontWeight: 700 }}>{fmt(totals.calls)}</td>
+                    <td style={{ ...cellBase, color: C.success, fontWeight: 700 }}>{pct(totals.rate)}</td>
+                    {showQueues && queuesForView.map((q) => {
+                      const qd = totals.queues[q]?.deals ?? 0;
+                      const qc = totals.queues[q]?.calls ?? 0;
+                      const qr = qc > 0 ? qd / qc : 0;
+                      return [
+                        <td key={`t${q}_d`} style={{ ...cellBase, color: qd > 0 ? C.text : C.muted, fontWeight: 700, borderLeft: `2px solid ${C.border}` }}>{qd}</td>,
+                        <td key={`t${q}_c`} style={{ ...cellBase, color: qc > 0 ? C.secondary : C.muted, fontWeight: 700 }}>{qc}</td>,
+                        <td key={`t${q}_r`} style={{ ...cellBase, color: C.success, fontWeight: 700 }}>{pct(qr)}</td>,
+                      ];
+                    })}
+                  </tr>
+                  {/* Column headers */}
+                  <tr>
+                    <th style={{ ...thBase, textAlign: "left", position: "sticky", left: 0, zIndex: 2, minWidth: 140 }}>Name</th>
+                    <th style={thBase}>Deals</th>
+                    <th style={thBase}>Calls</th>
+                    <th style={thBase}>Close %</th>
+                    {showQueues && queuesForView.map((q) => ([
+                      <th key={`${q}_d`} style={{ ...thBase, fontSize: 9, padding: "6px 8px", borderLeft: `2px solid ${C.border}` }}>D</th>,
+                      <th key={`${q}_c`} style={{ ...thBase, fontSize: 9, padding: "6px 8px" }}>C</th>,
+                      <th key={`${q}_r`} style={{ ...thBase, fontSize: 9, padding: "6px 8px" }}>%</th>,
+                    ]))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {members.map((name) => {
+                    const stats = data.bySalesperson[name];
+                    if (!stats) return null;
+                    return <AgentRow key={name} name={name} stats={stats} view={productView} />;
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {orderedTeams.map((team, idx) => (
+          <TeamBlock
+            key={team}
+            team={team}
+            members={data.teams[team] || []}
+            color={TEAM_COLORS[idx % TEAM_COLORS.length]}
+          />
+        ))}
+        {unassigned.length > 0 && (
+          <TeamBlock
+            team="Unassigned"
+            members={unassigned}
+            color={C.muted}
+            isUnassigned
+          />
+        )}
       </div>
     );
   };
