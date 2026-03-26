@@ -78,9 +78,9 @@ interface SalesData {
   autoTotal: TotalStats;
   homeTotal: TotalStats;
   fbTotal?: FBStats;
-  csDeals?: number;
-  aiDeals?: number;
-  spDeals?: number;
+  csDeals?: { total: number; auto: number; home: number };
+  aiDeals?: { total: number; auto: number; home: number };
+  spDeals?: { total: number; auto: number; home: number };
   fb?: FBDetail;
   byQueue: Record<string, QueueStats>;
   bySalesperson: Record<string, SalespersonStats>;
@@ -1111,24 +1111,75 @@ export default function SalesDashboard() {
                     gap: 16,
                   }}
                 >
-                  <MetricCard
-                    label="CS DEALS"
-                    value={fmt(data.csDeals ?? 0)}
-                    subtitle="Promo code: CS"
-                    color={C.danger}
-                  />
-                  <MetricCard
-                    label="AI DEALS"
-                    value={fmt(data.aiDeals ?? 0)}
-                    subtitle="Front-to-back AI sales"
-                    color={C.purple}
-                  />
-                  <MetricCard
-                    label="SPANISH DEALS"
-                    value={fmt(data.spDeals ?? 0)}
-                    subtitle="Promo code: SP"
-                    color={C.orangeLight}
-                  />
+                  {/* CS Deals with Auto/Home split */}
+                  <div
+                    style={{
+                      background: C.card,
+                      borderRadius: 12,
+                      padding: "20px 24px",
+                      borderLeft: `3px solid ${C.danger}`,
+                      textAlign: "center",
+                    }}
+                  >
+                    <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: C.secondary, marginBottom: 8, fontFamily: FONT }}>CS DEALS</div>
+                    <div style={{ fontSize: 28, fontWeight: 800, color: C.danger, fontFamily: FONT, lineHeight: 1.1 }}>{fmt(data.csDeals?.total ?? 0)}</div>
+                    <div style={{ display: "flex", justifyContent: "center", gap: 24, marginTop: 10 }}>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", fontFamily: FONT }}>Auto</div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: C.orange, fontFamily: FONT }}>{fmt(data.csDeals?.auto ?? 0)}</div>
+                      </div>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", fontFamily: FONT }}>Home</div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: C.purpleLight, fontFamily: FONT }}>{fmt(data.csDeals?.home ?? 0)}</div>
+                      </div>
+                    </div>
+                  </div>
+                  {/* AI Deals with Auto/Home split */}
+                  <div
+                    style={{
+                      background: C.card,
+                      borderRadius: 12,
+                      padding: "20px 24px",
+                      borderLeft: `3px solid ${C.purple}`,
+                      textAlign: "center",
+                    }}
+                  >
+                    <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: C.secondary, marginBottom: 8, fontFamily: FONT }}>AI DEALS</div>
+                    <div style={{ fontSize: 28, fontWeight: 800, color: C.purple, fontFamily: FONT, lineHeight: 1.1 }}>{fmt(data.aiDeals?.total ?? 0)}</div>
+                    <div style={{ display: "flex", justifyContent: "center", gap: 24, marginTop: 10 }}>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", fontFamily: FONT }}>Auto</div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: C.orange, fontFamily: FONT }}>{fmt(data.aiDeals?.auto ?? 0)}</div>
+                      </div>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", fontFamily: FONT }}>Home</div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: C.purpleLight, fontFamily: FONT }}>{fmt(data.aiDeals?.home ?? 0)}</div>
+                      </div>
+                    </div>
+                  </div>
+                  {/* Spanish Deals with Auto/Home split */}
+                  <div
+                    style={{
+                      background: C.card,
+                      borderRadius: 12,
+                      padding: "20px 24px",
+                      borderLeft: `3px solid ${C.orangeLight}`,
+                      textAlign: "center",
+                    }}
+                  >
+                    <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", color: C.secondary, marginBottom: 8, fontFamily: FONT }}>SPANISH DEALS</div>
+                    <div style={{ fontSize: 28, fontWeight: 800, color: C.orangeLight, fontFamily: FONT, lineHeight: 1.1 }}>{fmt(data.spDeals?.total ?? 0)}</div>
+                    <div style={{ display: "flex", justifyContent: "center", gap: 24, marginTop: 10 }}>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", fontFamily: FONT }}>Auto</div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: C.orange, fontFamily: FONT }}>{fmt(data.spDeals?.auto ?? 0)}</div>
+                      </div>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", fontFamily: FONT }}>Home</div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: C.purpleLight, fontFamily: FONT }}>{fmt(data.spDeals?.home ?? 0)}</div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Queue Breakdown Tables */}

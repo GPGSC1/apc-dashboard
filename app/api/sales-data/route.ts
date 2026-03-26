@@ -241,7 +241,9 @@ export async function GET(req: Request) {
     const byQueue: Record<string, { deals: number; calls: number; closeRate: number; aiFwd: number; dropped: number }> = {};
     let companyDeals = 0;
     let autoDeals = 0, homeDealCount = 0;
-    let csDeals = 0, aiDeals = 0, spDeals = 0;
+    let csDeals = 0, csAutoDeals = 0, csHomeDeals = 0;
+    let aiDeals = 0, aiAutoDeals = 0, aiHomeDeals = 0;
+    let spDeals = 0, spAutoDeals = 0, spHomeDeals = 0;
     // F/B 4-corner breakdown (computed after main loop)
     let autoFlip = 0;    // Home queue → auto policy only (no home for that phone)
     let autoBundle = 0;  // Home queue → auto + home policy
@@ -269,18 +271,28 @@ export async function GET(req: Request) {
       const sp = deal.salesperson?.trim();
       if (!sp) continue;
 
+      const product: string = deal.product; // "auto" or "home"
+
       // Count AI deals before exclusion check (Fishbein IS excluded from closer stats but counts as AI)
-      if (isAiDeal(sp)) aiDeals++;
+      if (isAiDeal(sp)) {
+        aiDeals++;
+        if (product === "auto") aiAutoDeals++; else aiHomeDeals++;
+      }
 
       // Count CS/SP deals before exclusion check
       const pcEarly = ((deal.promo_code ?? "") as string).trim().toUpperCase();
-      if (pcEarly === "CS") csDeals++;
-      if (pcEarly === "SP") spDeals++;
+      if (pcEarly === "CS") {
+        csDeals++;
+        if (product === "auto") csAutoDeals++; else csHomeDeals++;
+      }
+      if (pcEarly === "SP") {
+        spDeals++;
+        if (product === "auto") spAutoDeals++; else spHomeDeals++;
+      }
 
       if (isExcludedSalesperson(sp)) continue;
 
       const soldDate = deal.sold_date instanceof Date ? deal.sold_date.toISOString().slice(0, 10) : String(deal.sold_date).slice(0, 10);
-      const product: string = deal.product; // "auto" or "home"
       const phones = [deal.home_phone, deal.mobile_phone]
         .map((p: string) => (p ?? "").replace(/\D/g, "").slice(-10))
         .filter((p: string) => p.length === 10);
@@ -443,9 +455,9 @@ export async function GET(req: Request) {
         calls: homeCallCount,
         closeRate: homeCallCount > 0 ? homeDealCount / homeCallCount : 0,
       },
-      csDeals,
-      aiDeals,
-      spDeals,
+      csDeals: { total: csDeals, auto: csAutoDeals, home: csHomeDeals },
+      aiDeals: { total: aiDeals, auto: aiAutoDeals, home: aiHomeDeals },
+      spDeals: { total: spDeals, auto: spAutoDeals, home: spHomeDeals },
       fb: {
         autoFlip,
         autoBundle,
