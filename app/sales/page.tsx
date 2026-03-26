@@ -928,8 +928,7 @@ export default function SalesDashboard() {
                 </thead>
                 <tbody>
                   {members.map((name) => {
-                    const stats = data.bySalesperson[name];
-                    if (!stats) return null;
+                    const stats = data.bySalesperson[name] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
                     return <AgentRow key={name} name={name} stats={stats} view={productView} />;
                   })}
                 </tbody>
