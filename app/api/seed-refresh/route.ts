@@ -679,7 +679,7 @@ async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number }> {
   for (const d of deals) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const da = d as any;
-    const cid = String(da.customerId ?? da.customerID ?? da.customerNo ?? "").trim();
+    const cid = String(da.vchCampaignId ?? da.customerId ?? da.customerID ?? da.customerNo ?? "").trim();
     const cno = String(da.contractNo ?? "").trim();
     if (!cid && !cno) continue; // no identifier at all
 
@@ -708,12 +708,24 @@ async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number }> {
   }
 
   let addedDeals = 0;
-  if (dealRows.length > 0) {
-    addedDeals = await batchInsert(
+  // Split into deals with contract_no and deals without
+  const withContract = dealRows.filter(r => r[1] && String(r[1]).trim() !== "");
+  const withoutContract = dealRows.filter(r => !r[1] || String(r[1]).trim() === "");
+
+  if (withContract.length > 0) {
+    addedDeals += await batchInsert(
       `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin)
        VALUES __VALUES__
-       ON CONFLICT (contract_no) WHERE contract_no IS NOT NULL AND contract_no != '' DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason`,
-      17, dealRows, 100
+       ON CONFLICT (contract_no) WHERE contract_no IS NOT NULL AND contract_no != '' DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason, customer_id = EXCLUDED.customer_id`,
+      17, withContract, 100
+    );
+  }
+  if (withoutContract.length > 0) {
+    addedDeals += await batchInsert(
+      `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin)
+       VALUES __VALUES__
+       ON CONFLICT (customer_id) WHERE (contract_no IS NULL OR contract_no = '') AND customer_id IS NOT NULL AND customer_id != '' DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason`,
+      17, withoutContract, 100
     );
   }
 
