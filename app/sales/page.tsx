@@ -193,6 +193,15 @@ export default function SalesDashboard() {
     }
   };
 
+  // Helper: compute filtered totals for an agent based on product view
+  const getFilteredTotals = (stats: SalespersonStats) => {
+    if (productView === "combined") return { deals: stats.totalDeals, calls: stats.totalCalls, rate: stats.closeRate };
+    const queues = productView === "auto" ? AUTO_QUEUES : HOME_QUEUES;
+    const deals = queues.reduce((s, q) => s + (stats.queues[q]?.deals ?? 0), 0);
+    const calls = queues.reduce((s, q) => s + (stats.queues[q]?.calls ?? 0), 0);
+    return { deals, calls, rate: calls > 0 ? deals / calls : 0 };
+  };
+
   const sortedAgents = (): [string, SalespersonStats][] => {
     if (!data) return [];
     const entries = Object.entries(data.bySalesperson);
@@ -203,14 +212,14 @@ export default function SalesDashboard() {
         va = a[0].toLowerCase();
         vb = b[0].toLowerCase();
       } else if (sortKey === "deals") {
-        va = a[1].totalDeals;
-        vb = b[1].totalDeals;
+        va = getFilteredTotals(a[1]).deals;
+        vb = getFilteredTotals(b[1]).deals;
       } else if (sortKey === "calls") {
-        va = a[1].totalCalls;
-        vb = b[1].totalCalls;
+        va = getFilteredTotals(a[1]).calls;
+        vb = getFilteredTotals(b[1]).calls;
       } else if (sortKey === "closeRate") {
-        va = a[1].closeRate;
-        vb = b[1].closeRate;
+        va = getFilteredTotals(a[1]).rate;
+        vb = getFilteredTotals(b[1]).rate;
       } else if (sortKey.includes("_")) {
         // Queue sub-column sort: "A1_deals", "A1_calls", "A1_closeRate"
         const [q, field] = sortKey.split("_");
@@ -538,6 +547,12 @@ export default function SalesDashboard() {
     view: "combined" | "auto" | "home";
   }) => {
     const queuesForView = view === "auto" ? AUTO_QUEUES : view === "home" ? HOME_QUEUES : [];
+    // When a product is selected, filter totals to only that product's queues
+    const filteredDeals = view === "combined" ? stats.totalDeals
+      : queuesForView.reduce((sum, q) => sum + (stats.queues[q]?.deals ?? 0), 0);
+    const filteredCalls = view === "combined" ? stats.totalCalls
+      : queuesForView.reduce((sum, q) => sum + (stats.queues[q]?.calls ?? 0), 0);
+    const filteredRate = filteredCalls > 0 ? filteredDeals / filteredCalls : 0;
     const cellBase = {
       padding: "10px 12px",
       fontSize: 13,
@@ -570,13 +585,13 @@ export default function SalesDashboard() {
           {name}
         </td>
         <td style={{ ...cellBase, color: C.success, fontWeight: 700 }}>
-          {fmt(stats.totalDeals)}
+          {fmt(filteredDeals)}
         </td>
         <td style={{ ...cellBase, color: C.secondary }}>
-          {fmt(stats.totalCalls)}
+          {fmt(filteredCalls)}
         </td>
         <td style={{ ...cellBase, color: C.success }}>
-          {pct(stats.closeRate)}
+          {pct(filteredRate)}
         </td>
         {view === "combined" ? null : queuesForView.map((q, qi) => {
           const qd = stats.queues[q]?.deals ?? 0;
