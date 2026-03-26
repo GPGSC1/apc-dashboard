@@ -273,21 +273,29 @@ export async function GET(req: Request) {
 
       const product: string = deal.product; // "auto" or "home"
 
-      // Count AI deals before exclusion check (Fishbein IS excluded from closer stats but counts as AI)
-      if (isAiDeal(sp)) {
-        aiDeals++;
-        if (product === "auto") aiAutoDeals++; else aiHomeDeals++;
-      }
-
-      // Count CS/SP deals before exclusion check
       const pcEarly = ((deal.promo_code ?? "") as string).trim().toUpperCase();
+
+      // CS, AI, and SP deals count ONLY in Additional Sales — not in queue breakdown
       if (pcEarly === "CS") {
         csDeals++;
         if (product === "auto") csAutoDeals++; else csHomeDeals++;
+        companyDeals++;
+        if (product === "auto") autoDeals++; else homeDealCount++;
+        continue;
+      }
+      if (isAiDeal(sp)) {
+        aiDeals++;
+        if (product === "auto") aiAutoDeals++; else aiHomeDeals++;
+        companyDeals++;
+        if (product === "auto") autoDeals++; else homeDealCount++;
+        continue;
       }
       if (pcEarly === "SP") {
         spDeals++;
         if (product === "auto") spAutoDeals++; else spHomeDeals++;
+        companyDeals++;
+        if (product === "auto") autoDeals++; else homeDealCount++;
+        continue;
       }
 
       if (isExcludedSalesperson(sp)) continue;
@@ -304,8 +312,6 @@ export async function GET(req: Request) {
         if (q) { dealQueue = q; break; }
       }
 
-      const pc = pcEarly;
-
       // Fallback: apply campaign/promo queue rules
       if (!dealQueue) {
         dealQueue = applyQueueRules(
@@ -315,19 +321,15 @@ export async function GET(req: Request) {
         );
       }
 
-      // Skip deals with no queue — UNLESS it's a CS, SP, or AI deal (those count regardless)
-      const isSpecialDeal = pc === "CS" || pc === "SP" || isAiDeal(sp);
-      if (!dealQueue && !isSpecialDeal) continue;
+      // CS/AI/SP already handled above via continue — remaining deals need a queue
+      if (!dealQueue) continue;
 
       // Determine category: Auto, Home, or F/B (Flip/Bundle)
-      const queueIsAuto = dealQueue ? isAutoQueue(dealQueue) : false;
-      const queueIsHome = dealQueue ? isHomeQueue(dealQueue) : false;
-      let category: "auto" | "home" | "fb" | "none";
+      const queueIsAuto = isAutoQueue(dealQueue);
+      const queueIsHome = isHomeQueue(dealQueue);
+      let category: "auto" | "home" | "fb";
 
-      if (!dealQueue) {
-        // Special deal (CS/SP/AI) with no queue — classify by product
-        category = "none";
-      } else if (product === "auto" && queueIsAuto) {
+      if (product === "auto" && queueIsAuto) {
         category = "auto";
       } else if (product === "home" && queueIsHome) {
         category = "home";
@@ -343,16 +345,11 @@ export async function GET(req: Request) {
       }
 
       companyDeals++;
-      // Only count deal in the queue row if product matches division (not F/B or none)
-      if (dealQueue && category !== "fb" && category !== "none" && byQueue[dealQueue]) byQueue[dealQueue].deals++;
+      // Only count deal in the queue row if product matches division (not F/B)
+      if (category !== "fb" && byQueue[dealQueue]) byQueue[dealQueue].deals++;
 
       if (category === "auto") autoDeals++;
       else if (category === "home") homeDealCount++;
-      else if (category === "none") {
-        // No queue — count by product type
-        if (product === "auto") autoDeals++;
-        else homeDealCount++;
-      }
       else {
         // F/B: product doesn't match queue division
         fbDeals++;
