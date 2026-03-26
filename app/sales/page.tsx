@@ -810,7 +810,7 @@ export default function SalesDashboard() {
     };
 
     // Order: The Money Team first, then Nothin But a G Thang, then Unassigned
-    const teamOrder = ["The Money Team", "Nothin But a G Thang"];
+    const teamOrder = ["The Money Team", "Nothin But a G Thang", "T.O."];
     const orderedTeams = teamOrder.filter(t => data.teams[t]);
 
     // Collect assigned agents
@@ -1938,7 +1938,7 @@ export default function SalesDashboard() {
                   );
 
                   // Team grouping
-                  const teamOrder = ["The Money Team", "Nothin But a G Thang"];
+                  const teamOrder = ["The Money Team", "Nothin But a G Thang", "T.O."];
                   const orderedTeams = data ? teamOrder.filter(t => data.teams[t]) : [];
                   const assignedNames = new Set<string>();
                   for (const team of orderedTeams) {
