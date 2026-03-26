@@ -21,14 +21,21 @@ import { TEAMS, isExcludedSalesperson } from "../../../lib/teams";
 function applyQueueRules(
   campaign: string,
   promoCode: string,
-  product: "auto" | "home"
+  product: "auto" | "home",
+  customerId?: string
 ): string | null {
-  const c = (campaign ?? "").trim().toUpperCase();
+  // Use campaign first, fall back to customerId if campaign is empty
+  const rawCampaign = (campaign ?? "").trim().toUpperCase();
+  const cid = (customerId ?? "").trim().toUpperCase();
+  const c = rawCampaign || cid; // fallback to customer_id when campaign is empty
   const pc = (promoCode ?? "").trim().toUpperCase();
 
   if (product === "auto") {
     // Priority 1: PromoCode exact "API"
     if (pc === "API") return "A4";
+
+    // Customer ID or campaign starts with GPG → A1
+    if (c.startsWith("GPG")) return "A1";
 
     // Priority 5-8: Campaign starts with FWM / WF / FTD / FD
     if (c.startsWith("FWM")) return "A3";
@@ -45,6 +52,9 @@ function applyQueueRules(
       if (c.startsWith(pfx)) return "A2";
     }
     if (c.includes("PMI")) return "A2";
+
+    // TD prefix (from customer_id or campaign) → A2
+    if (c.startsWith("TD")) return "A2";
 
     // Campaign REGEX /^MKA.{3}KA/ → A1
     if (/^MKA.{3}KA/i.test(c)) return "A1";
@@ -69,6 +79,7 @@ function applyQueueRules(
     if (c.startsWith("TAB")) return "H3";
     if (/^\d{3}[A-Z]{2}$/.test(c)) return "H1";
     if (c.startsWith("132883-GPGH")) return "H1";
+    if (c.startsWith("GPGH")) return "H1";
   }
 
   return null;
@@ -268,8 +279,7 @@ export async function GET(req: Request) {
     const phoneProductSet = new Map<string, Set<string>>();
 
     for (const deal of dealsResult.rows) {
-      const sp = deal.salesperson?.trim();
-      if (!sp) continue;
+      const sp = deal.salesperson?.trim() || "";
 
       const product: string = deal.product; // "auto" or "home"
 
@@ -317,7 +327,8 @@ export async function GET(req: Request) {
         dealQueue = applyQueueRules(
           deal.campaign || "",
           deal.promo_code || "",
-          product as "auto" | "home"
+          product as "auto" | "home",
+          deal.customer_id || ""
         );
       }
 
