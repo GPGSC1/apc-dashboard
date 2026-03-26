@@ -16,7 +16,7 @@ export async function GET() {
     // Insert any new names into team_members as unassigned
     await query(`
       INSERT INTO team_members (agent_name, team_id, role)
-      SELECT DISTINCT name, NULL, 'closer' FROM (
+      SELECT DISTINCT name, NULL::integer, 'closer' FROM (
         SELECT DISTINCT TRIM(agent_name) as name FROM queue_calls
           WHERE agent_name IS NOT NULL AND TRIM(agent_name) != ''
         UNION
