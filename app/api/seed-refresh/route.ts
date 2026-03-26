@@ -646,7 +646,7 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
 
 // ─── Moxy: Direct to Postgres ─────────────────────────────────────────────────
 
-async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number }> {
+async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number; backedOut?: number }> {
   const moxyKey = process.env.MOXY_API_KEY ?? "a242ccb0-738e-4e4f-a418-facf89297904";
 
   // Ensure unique constraint exists (idempotent)
@@ -773,7 +773,7 @@ async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number }> {
 
 // ─── Moxy Home: Direct to Postgres ───────────────────────────────────────────
 
-async function refreshMoxyHome(dates: string[]): Promise<{ addedDeals: number }> {
+async function refreshMoxyHome(dates: string[]): Promise<{ addedDeals: number; backedOut?: number }> {
   const moxyHomeKey = process.env.MOXY_HOME_KEY ?? "3f7c2b0a-9e4d-4f6e-b1a8-8c9a6e2d7b54";
 
   await query(`CREATE TABLE IF NOT EXISTS moxy_home_deals (
