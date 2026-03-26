@@ -403,8 +403,8 @@ export async function GET(req: Request) {
         }
       }
 
-      // Track per salesperson (only if deal has a queue)
-      if (dealQueue) {
+      // Track per salesperson (only if deal has a queue AND a name)
+      if (dealQueue && sp) {
         if (!bySalesperson[sp]) {
           bySalesperson[sp] = { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
         }
