@@ -732,13 +732,43 @@ async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number }> {
 
   console.log(`[seed-refresh/Moxy] Inserted ${addedDeals} new deals (${dealRows.length} total from API)`);
 
+  // ── Backout detection: Moxy REMOVES backed-out deals from the API response.
+  // Any deal in our DB for the fetched dates that is NOT in the API response has been backed out.
+  const apiContractNos = new Set(dealRows.map(r => String(r[1]).trim()).filter(Boolean));
+  const apiCustomerIds = new Set(dealRows.map(r => String(r[0]).trim()).filter(Boolean));
+
+  const sortedDates2 = [...dates].sort();
+  const dbDeals = await query(
+    `SELECT contract_no, customer_id FROM moxy_deals
+     WHERE sold_date BETWEEN $1 AND $2
+       AND deal_status NOT IN ('Back Out', 'VOID')`,
+    [sortedDates2[0], sortedDates2[sortedDates2.length - 1]]
+  );
+
+  let backedOut = 0;
+  for (const row of dbDeals.rows) {
+    const cno = (row.contract_no ?? "").trim();
+    const cid = (row.customer_id ?? "").trim();
+    // If this deal is NOT in the API response, it was backed out
+    const inApi = (cno && apiContractNos.has(cno)) || (cid && apiCustomerIds.has(cid));
+    if (!inApi) {
+      if (cno) {
+        await query(`UPDATE moxy_deals SET deal_status = 'Back Out' WHERE contract_no = $1`, [cno]);
+      } else if (cid) {
+        await query(`UPDATE moxy_deals SET deal_status = 'Back Out' WHERE customer_id = $1 AND (contract_no IS NULL OR contract_no = '')`, [cid]);
+      }
+      backedOut++;
+    }
+  }
+  if (backedOut > 0) console.log(`[seed-refresh/Moxy] Detected ${backedOut} backouts (removed from API)`);
+
   // Update metadata
   await query(
     `INSERT INTO seed_metadata (source, max_date, updated_at) VALUES ('moxy', $1, NOW()) ON CONFLICT (source) DO UPDATE SET max_date=GREATEST(seed_metadata.max_date, $1), updated_at=NOW()`,
     [dates[dates.length - 1]]
   );
 
-  return { addedDeals };
+  return { addedDeals, backedOut };
 }
 
 // ─── Moxy Home: Direct to Postgres ───────────────────────────────────────────
@@ -819,12 +849,40 @@ async function refreshMoxyHome(dates: string[]): Promise<{ addedDeals: number }>
 
   console.log(`[seed-refresh/MoxyHome] Inserted ${addedDeals} new deals (${dealRows.length} total from API)`);
 
+  // ── Backout detection for Home deals
+  const homeApiContractNos = new Set(dealRows.map(r => String(r[1]).trim()).filter(Boolean));
+  const homeApiCustomerIds = new Set(dealRows.map(r => String(r[0]).trim()).filter(Boolean));
+
+  const sortedHomeD = [...dates].sort();
+  const dbHomeDeals = await query(
+    `SELECT contract_no, customer_id FROM moxy_home_deals
+     WHERE sold_date BETWEEN $1 AND $2
+       AND deal_status NOT IN ('Back Out', 'VOID')`,
+    [sortedHomeD[0], sortedHomeD[sortedHomeD.length - 1]]
+  );
+
+  let homeBackedOut = 0;
+  for (const row of dbHomeDeals.rows) {
+    const cno = (row.contract_no ?? "").trim();
+    const cid = (row.customer_id ?? "").trim();
+    const inApi = (cno && homeApiContractNos.has(cno)) || (cid && homeApiCustomerIds.has(cid));
+    if (!inApi) {
+      if (cno) {
+        await query(`UPDATE moxy_home_deals SET deal_status = 'Back Out' WHERE contract_no = $1`, [cno]);
+      } else if (cid) {
+        await query(`UPDATE moxy_home_deals SET deal_status = 'Back Out' WHERE customer_id = $1 AND (contract_no IS NULL OR contract_no = '')`, [cid]);
+      }
+      homeBackedOut++;
+    }
+  }
+  if (homeBackedOut > 0) console.log(`[seed-refresh/MoxyHome] Detected ${homeBackedOut} backouts (removed from API)`);
+
   await query(
     `INSERT INTO seed_metadata (source, max_date, updated_at) VALUES ('moxy_home', $1, NOW()) ON CONFLICT (source) DO UPDATE SET max_date=GREATEST(seed_metadata.max_date, $1), updated_at=NOW()`,
     [dates[dates.length - 1]]
   );
 
-  return { addedDeals };
+  return { addedDeals, backedOut: homeBackedOut };
 }
 
 // ─── Main Route Handler ───────────────────────────────────────────────────────
