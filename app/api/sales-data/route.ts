@@ -292,6 +292,35 @@ export async function GET(req: Request) {
     const AI_SALESPERSONS = new Set(["jeremy fishbein"]);
     function isAiDeal(sp: string) { return AI_SALESPERSONS.has(sp.toLowerCase()); }
 
+    // Load T.O. team members from Postgres — when owner is a T.O., use 3CX to find real sales rep
+    const toTeamResult = await query(
+      `SELECT tm.agent_name FROM team_members tm JOIN teams t ON t.id = tm.team_id WHERE LOWER(t.name) = 'to.' OR LOWER(t.name) = 't.o.'`
+    );
+    const toNames = new Set(toTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.toLowerCase()));
+    function isTO(name: string) { return toNames.has(name.toLowerCase()); }
+
+    // Build phone → agent lookup from queue_calls (most recent human-answered call per phone)
+    // Only needed if there are T.O.s
+    const phoneToAgent = new Map<string, string>();
+    if (toNames.size > 0) {
+      const phoneAgentResult = await query(
+        `SELECT DISTINCT ON (phone) phone, agent_name, call_date
+         FROM queue_calls
+         WHERE first_ext IS NOT NULL AND first_ext != ''
+           AND LENGTH(TRIM(first_ext)) <= 4
+           AND TRIM(first_ext) NOT LIKE '99%'
+           AND agent_name IS NOT NULL AND agent_name != ''
+         ORDER BY phone, call_date DESC`
+      );
+      for (const row of phoneAgentResult.rows) {
+        const p = (row.phone ?? "").trim();
+        const agent = (row.agent_name ?? "").trim();
+        if (p && agent && !isTO(agent)) {
+          phoneToAgent.set(p, agent);
+        }
+      }
+    }
+
     // Initialize queues
     for (const q of ALL_QUEUES) {
       byQueue[q] = { deals: 0, calls: queueCalls[q] ?? 0, closeRate: 0, aiFwd: queueAiFwd[q] ?? 0, dropped: queueDropped[q] ?? 0 };
@@ -304,7 +333,21 @@ export async function GET(req: Request) {
 
     for (const deal of dealsResult.rows) {
       const closer = deal.salesperson?.trim() || "";  // T.O. / closer
-      const salesRep = deal.owner?.trim() || closer;  // Sales Rep (falls back to closer if no owner)
+      let salesRep = deal.owner?.trim() || closer;  // Sales Rep (falls back to closer if no owner)
+
+      // T.O. fallback: if owner is a known T.O., look up 3CX to find the real sales rep
+      if (isTO(salesRep)) {
+        const dealPhonesList = [deal.home_phone, deal.mobile_phone]
+          .map((p: string) => (p ?? "").replace(/\D/g, "").slice(-10))
+          .filter((p: string) => p.length === 10);
+        for (const ph of dealPhonesList) {
+          const realAgent = phoneToAgent.get(ph);
+          if (realAgent) {
+            salesRep = realAgent;
+            break;
+          }
+        }
+      }
 
       const product: string = deal.product; // "auto" or "home"
 
