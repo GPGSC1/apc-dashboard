@@ -796,7 +796,7 @@ export default function SalesDashboard() {
     const unassigned = Object.keys(data.bySalesperson).filter(n => !assignedAgents.has(n) && n.trim());
 
     const TeamBlock = ({ team, members, color, isUnassigned }: { team: string; members: string[]; color: string; isUnassigned?: boolean }) => {
-      const expanded = expandedTeams[team] !== false;
+      const expanded = expandedTeams[team] === true;
       const totals = computeTeamTotals(members);
       const cellBase = { padding: "10px 12px", fontSize: 13, textAlign: "right" as const, fontFamily: FONT, borderBottom: `1px solid ${C.border}` };
 
