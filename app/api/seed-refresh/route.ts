@@ -864,11 +864,13 @@ export async function GET(req: Request) {
     const oldestMax = [aimMaxDate, tcxMaxDate].filter(Boolean).sort()[0] || "";
 
     // If manual dates are provided, use those. Otherwise auto-detect.
+    // ALWAYS include yesterday to catch late-entered deals (after 7pm previous day).
+    // The upsert logic handles dedup so re-fetching yesterday is safe.
     const datesToFetch = forceDates
       ? forceDates.split(",").map((d: string) => d.trim())
       : oldestMax < yesterday
         ? [yesterday, today]
-        : [today];
+        : [yesterday, today];
 
     console.log(`[seed-refresh] DB max date: ${aimMaxDate || "(empty)"}, fetching: ${datesToFetch.join(", ")}`);
 
