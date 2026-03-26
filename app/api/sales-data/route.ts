@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { query } from "../../../lib/db/connection";
 import { todayLocal } from "../../../lib/date-utils";
 import { mapQueue, isAutoQueue, isHomeQueue, ALL_QUEUES } from "../../../lib/queue-map";
-import { TEAMS, isExcludedSalesperson } from "../../../lib/teams";
+import { isExcludedSalesperson } from "../../../lib/teams";
 
 /**
  * SALES DATA ROUTE — Powers the /sales dashboard.
@@ -531,7 +531,24 @@ export async function GET(req: Request) {
       },
       byQueue,
       bySalesperson,
-      teams: TEAMS,
+      teams: await (async () => {
+        try {
+          const teamsResult = await query(
+            `SELECT t.name as team_name, tm.agent_name
+             FROM teams t
+             LEFT JOIN team_members tm ON tm.team_id = t.id
+             ORDER BY t.id`
+          );
+          const teams: Record<string, string[]> = {};
+          for (const row of teamsResult.rows) {
+            if (!teams[row.team_name]) teams[row.team_name] = [];
+            if (row.agent_name) teams[row.team_name].push(row.agent_name);
+          }
+          return teams;
+        } catch {
+          return {};
+        }
+      })(),
       dailyTrends,
       staleness,
       dateRange: { from: fromDate, to: toDate },
