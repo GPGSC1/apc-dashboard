@@ -12,6 +12,30 @@ export async function GET() {
       `SELECT id, name, color FROM teams ORDER BY name`
     );
 
+    // Auto-discover all agent names from 3CX calls, Moxy deals (owner + closer), and Moxy home deals
+    // Insert any new names into team_members as unassigned
+    await query(`
+      INSERT INTO team_members (agent_name, team_id, role)
+      SELECT DISTINCT name, NULL, 'closer' FROM (
+        SELECT DISTINCT TRIM(agent_name) as name FROM queue_calls
+          WHERE agent_name IS NOT NULL AND TRIM(agent_name) != ''
+        UNION
+        SELECT DISTINCT TRIM(owner) as name FROM moxy_deals
+          WHERE owner IS NOT NULL AND TRIM(owner) != ''
+        UNION
+        SELECT DISTINCT TRIM(salesperson) as name FROM moxy_deals
+          WHERE salesperson IS NOT NULL AND TRIM(salesperson) != ''
+        UNION
+        SELECT DISTINCT TRIM(owner) as name FROM moxy_home_deals
+          WHERE owner IS NOT NULL AND TRIM(owner) != ''
+        UNION
+        SELECT DISTINCT TRIM(salesperson) as name FROM moxy_home_deals
+          WHERE salesperson IS NOT NULL AND TRIM(salesperson) != ''
+      ) all_names
+      WHERE name IS NOT NULL AND name != ''
+      ON CONFLICT (agent_name) DO NOTHING
+    `);
+
     const membersResult = await query(
       `SELECT tm.agent_name, tm.team_id, tm.role, t.name as team_name
        FROM team_members tm
