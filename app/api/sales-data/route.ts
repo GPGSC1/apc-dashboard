@@ -82,21 +82,21 @@ export async function GET(req: Request) {
   try {
     // ── 1. DEALS from Moxy Auto + Moxy Home ─────────────────────────
     const autoDealsResult = await query(
-      `SELECT DISTINCT ON (contract_no)
-         contract_no, salesperson, home_phone, mobile_phone, sold_date, deal_status, make, model, campaign, promo_code
+      `SELECT DISTINCT ON (customer_id || '|' || contract_no)
+         customer_id, contract_no, salesperson, home_phone, mobile_phone, sold_date, deal_status, make, model, campaign, promo_code
        FROM moxy_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')
-       ORDER BY contract_no, sold_date DESC`,
+       ORDER BY customer_id || '|' || contract_no, sold_date DESC`,
       [fromDate, toDate]
     );
     const homeDealsResult = await query(
-      `SELECT DISTINCT ON (contract_no)
-         contract_no, salesperson, home_phone, mobile_phone, sold_date, deal_status, campaign, promo_code
+      `SELECT DISTINCT ON (customer_id || '|' || contract_no)
+         customer_id, contract_no, salesperson, home_phone, mobile_phone, sold_date, deal_status, campaign, promo_code
        FROM moxy_home_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')
-       ORDER BY contract_no, sold_date DESC`,
+       ORDER BY customer_id || '|' || contract_no, sold_date DESC`,
       [fromDate, toDate]
     );
 
