@@ -432,12 +432,21 @@ export async function GET(req: Request) {
         continue;
       }
       const originalOwner = (deal.owner ?? "").trim();
-      if (pcEarly === "SP" || isSpanishRep(salesRep) || isSpanishRep(closer) || isSpanishRep(originalOwner)) {
+      const isSpanishDeal = pcEarly === "SP" || isSpanishRep(salesRep) || isSpanishRep(closer) || isSpanishRep(originalOwner);
+      if (isSpanishDeal) {
         spDeals++;
         if (product === "auto") spAutoDeals++; else spHomeDeals++;
         companyDeals++;
         if (product === "auto") autoDeals++; else homeDealCount++;
-        continue;
+        // Don't continue — fall through to bySalesperson attribution so Spanish reps get credit on Performance tab
+        // But mark as Spanish so we skip queue breakdown
+        if (salesRep) {
+          if (!bySalesperson[salesRep]) {
+            bySalesperson[salesRep] = { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
+          }
+          bySalesperson[salesRep].totalDeals++;
+        }
+        continue; // skip queue breakdown
       }
 
       if (isExcludedSalesperson(salesRep) && isExcludedSalesperson(closer)) continue;
