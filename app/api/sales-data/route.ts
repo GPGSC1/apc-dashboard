@@ -40,12 +40,10 @@ function applyQueueRules(
   for (const c of candidates) {
     if (product === "auto") {
       if (c.startsWith("GPG")) return "A1";
-      if (c.startsWith("CC")) return "A3";
       if (c.startsWith("FWM")) return "A3";
       if (c.startsWith("WF")) return "A3";
       if (c.startsWith("FTD")) return "A3";
       if (c.startsWith("FD")) return "A3";
-      if (c.startsWith("IN")) return "A3";
 
       const a2Prefixes = [
         "DMW", "MKA", "DMC", "SCD", "APD", "TDM", "SDC", "TDN", "TDS", "MX",
