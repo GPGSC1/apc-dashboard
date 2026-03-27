@@ -938,11 +938,26 @@ export async function GET(req: Request) {
     // If manual dates are provided, use those. Otherwise auto-detect.
     // ALWAYS include yesterday to catch late-entered deals (after 7pm previous day).
     // The upsert logic handles dedup so re-fetching yesterday is safe.
-    const datesToFetch = forceDates
-      ? forceDates.split(",").map((d: string) => d.trim())
-      : oldestMax < yesterday
-        ? [yesterday, today]
-        : [yesterday, today];
+    //
+    // MONTHLY CATCH-UP: On the first refresh of each day (7:30-7:44 AM),
+    // also fetch the 1st of the current month. This catches deals entered
+    // retroactively (e.g., sold 3/14, entered into Moxy on 3/20, missed by
+    // our daily refresh). The Moxy API returns all deals in the fromDate-toDate
+    // range regardless of when they were entered, so fetching from the 1st
+    // sweeps up everything. The upsert handles dedup.
+    const isFirstRefreshOfDay = p.hour === 7 && p.minute < 45;
+    const monthStart = `${p.year}-${String(p.month).padStart(2, "0")}-01`;
+
+    let datesToFetch: string[];
+    if (forceDates) {
+      datesToFetch = forceDates.split(",").map((d: string) => d.trim());
+    } else if (isFirstRefreshOfDay) {
+      // First refresh: fetch entire month (1st through today) to catch retroactive entries
+      datesToFetch = [monthStart, today];
+    } else {
+      // Regular refresh: just yesterday + today
+      datesToFetch = [yesterday, today];
+    }
 
     console.log(`[seed-refresh] DB max date: ${aimMaxDate || "(empty)"}, fetching: ${datesToFetch.join(", ")}`);
 
