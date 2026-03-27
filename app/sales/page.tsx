@@ -132,7 +132,7 @@ export default function SalesDashboard() {
   const [loading, setLoading] = useState(true);
   const [fromDate, setFromDate] = useState(todayStr);
   const [toDate, setToDate] = useState(todayStr);
-  const [soldOnly, setSoldOnly] = useState(false);
+  const [soldOnly, setSoldOnly] = useState(true);
   const [byTeamMode, setByTeamMode] = useState(false);
   const [productView, setProductView] = useState<"combined" | "auto" | "home">("combined");
   const [sortKey, setSortKey] = useState<SortKey>("deals");
