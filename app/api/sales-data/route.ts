@@ -24,63 +24,55 @@ function applyQueueRules(
   product: "auto" | "home",
   customerId?: string
 ): string | null {
-  // Use campaign first, fall back to customerId if campaign is empty
   const rawCampaign = (campaign ?? "").trim().toUpperCase();
   const cid = (customerId ?? "").trim().toUpperCase();
-  const c = rawCampaign || cid; // fallback to customer_id when campaign is empty
   const pc = (promoCode ?? "").trim().toUpperCase();
 
-  if (product === "auto") {
-    // Priority 1: PromoCode exact "API"
-    if (pc === "API") return "A4";
+  // Try campaign first, then customer_id — check BOTH independently
+  const candidates = [rawCampaign, cid].filter(Boolean);
 
-    // Customer ID or campaign starts with GPG → A1
-    if (c.startsWith("GPG")) return "A1";
+  // PromoCode check outside the loop (not candidate-dependent)
+  if (product === "auto" && pc === "API") return "A4";
 
-    // Priority 5-8: Campaign starts with FWM / WF / FTD / FD
-    if (c.startsWith("FWM")) return "A3";
-    if (c.startsWith("WF")) return "A3";
-    if (c.startsWith("FTD")) return "A3";
-    if (c.startsWith("FD")) return "A3";
+  for (const c of candidates) {
+    if (product === "auto") {
+      if (c.startsWith("GPG")) return "A1";
+      if (c.startsWith("FWM")) return "A3";
+      if (c.startsWith("WF")) return "A3";
+      if (c.startsWith("FTD")) return "A3";
+      if (c.startsWith("FD")) return "A3";
 
-    // Priority 20-37: Various campaign prefixes → A2
-    const a2Prefixes = [
-      "DMW", "MKA", "DMC", "SCD", "APD", "TDM", "SDC", "TDN", "TDS", "MX",
-      "2DMWTD", "PMI", "SAC TD", "TD_", "TDV", "TDSF", "TDT",
-    ];
-    for (const pfx of a2Prefixes) {
-      if (c.startsWith(pfx)) return "A2";
-    }
-    if (c.includes("PMI")) return "A2";
+      const a2Prefixes = [
+        "DMW", "MKA", "DMC", "SCD", "APD", "TDM", "SDC", "TDN", "TDS", "MX",
+        "2DMWTD", "PMI", "SAC TD", "TD_", "TDV", "TDSF", "TDT",
+      ];
+      for (const pfx of a2Prefixes) {
+        if (c.startsWith(pfx)) return "A2";
+      }
+      if (c.includes("PMI")) return "A2";
+      if (c.startsWith("TD")) return "A2";
+      if (/^MKA.{3}KA/i.test(c)) return "A1";
 
-    // TD prefix (from customer_id or campaign) → A2
-    if (c.startsWith("TD")) return "A2";
-
-    // Campaign REGEX /^MKA.{3}KA/ → A1
-    if (/^MKA.{3}KA/i.test(c)) return "A1";
-
-    // Campaign MID(4,2) exact matches → A1
-    if (c.length >= 6) {
-      const mid = c.substring(4, 6);
-      const a1Mids = new Set([
-        "KC", "KH", "KL", "LA", "KZ", "KQ", "PB", "KR", "KS", "KT",
-        "KU", "KV", "KM", "KB", "LB", "CA", "KN", "KD", "KE", "CC",
-        "PA", "SA", "KW", "KA", "LC",
-      ]);
-      if (a1Mids.has(mid)) return "A1";
+      if (c.length >= 6) {
+        const mid = c.substring(4, 6);
+        const a1Mids = new Set([
+          "KC", "KH", "KL", "LA", "KZ", "KQ", "PB", "KR", "KS", "KT",
+          "KU", "KV", "KM", "KB", "LB", "CA", "KN", "KD", "KE", "CC",
+          "PA", "SA", "KW", "KA", "LC",
+        ]);
+        if (a1Mids.has(mid)) return "A1";
+      }
+      if (/^\d{3}[A-Z]{2}$/.test(c)) return "A1";
     }
 
-    // Campaign REGEX /^\d{3}[A-Z]{2}$/ → A1
-    if (/^\d{3}[A-Z]{2}$/.test(c)) return "A1";
-  }
-
-  if (product === "home") {
-    if (c.startsWith("TDH")) return "H2";
-    if (c.startsWith("TAB")) return "H3";
-    if (/^\d{3}[A-Z]{2}$/.test(c)) return "H1";
-    if (c.startsWith("132883-GPGH")) return "H1";
-    if (c.startsWith("GPGH")) return "H1";
-  }
+    if (product === "home") {
+      if (c.startsWith("TDH")) return "H2";
+      if (c.startsWith("TAB")) return "H3";
+      if (/^\d{3}[A-Z]{2}$/.test(c)) return "H1";
+      if (c.startsWith("132883-GPGH")) return "H1";
+      if (c.startsWith("GPGH")) return "H1";
+    }
+  } // end for loop over candidates
 
   return null;
 }
