@@ -67,13 +67,20 @@ function addDays(dateStr: string, n: number): string {
 
 function isWithinBusinessHours(): boolean {
   const p = centralParts();
-  // Mon-Sat (1-6), 7:30am - 7:00pm CT
+  // Mon-Sat (1-6), 7:05am - 7:05pm CT
   if (p.dow === 0) return false; // Sunday
   if (p.dow > 6) return false;
   const timeMinutes = p.hour * 60 + p.minute;
-  if (timeMinutes < 7 * 60 + 30) return false;  // before 7:30am
-  if (timeMinutes >= 19 * 60) return false;      // after 7:00pm
+  if (timeMinutes < 7 * 60 + 5) return false;   // before 7:05am
+  if (timeMinutes >= 19 * 60 + 5) return false;  // after 7:05pm
   return true;
+}
+
+function isCatchupHour(): boolean {
+  const p = centralParts();
+  // 4:00 AM CT, Mon-Sat
+  if (p.dow === 0) return false; // Sunday
+  return p.hour === 4 && p.minute < 10; // 4:00-4:09 AM window
 }
 
 // ─── Date parsing ─────────────────────────────────────────────────────────────
@@ -898,11 +905,12 @@ export async function GET(req: Request) {
   // Allow manual date override via ?dates=2026-03-24,2026-03-25
   const url = new URL(req.url);
   const forceDates = url.searchParams.get("dates");
+  const mode = url.searchParams.get("mode"); // "catchup" = 4am full previous day
 
-  console.log(`[seed-refresh] Triggered at ${ctNow}${forceDates ? ` (forced: ${forceDates})` : ""}`);
+  console.log(`[seed-refresh] Triggered at ${ctNow}${forceDates ? ` (forced: ${forceDates})` : ""}${mode ? ` (mode: ${mode})` : ""}`);
 
-  // Gate: only run during business hours (Mon-Sat, 7:30am-7:00pm CT) — skip gate if manual
-  if (!forceDates && !isWithinBusinessHours()) {
+  // Gate: allow if manual, catchup (4am), or within business hours (7:05am-7:05pm CT)
+  if (!forceDates && mode !== "catchup" && !isCatchupHour() && !isWithinBusinessHours()) {
     console.log(`[seed-refresh] Outside business hours, skipping`);
     return NextResponse.json({ ok: true, skipped: true, reason: "outside business hours", ctNow });
   }
@@ -911,55 +919,29 @@ export async function GET(req: Request) {
     const today = todayCentral();
     const yesterday = yesterdayCentral();
 
-    // Determine which dates to fetch.
-    // Check Postgres seed_metadata to decide if we need yesterday too.
-    let aimMaxDate = "";
-    try {
-      const metaResult = await query(`SELECT max_date FROM seed_metadata WHERE source = 'aim'`);
-      if (metaResult.rows.length > 0 && metaResult.rows[0].max_date) {
-        aimMaxDate = metaResult.rows[0].max_date instanceof Date
-          ? metaResult.rows[0].max_date.toISOString().slice(0, 10)
-          : String(metaResult.rows[0].max_date).slice(0, 10);
-      }
-    } catch { /* no metadata yet */ }
-
-    // Check for gaps in queue_calls (3CX data may have different gaps than AIM)
-    let tcxMaxDate = "";
-    try {
-      const tcxMeta = await query(`SELECT MAX(call_date)::text as max_d FROM queue_calls`);
-      if (tcxMeta.rows.length > 0 && tcxMeta.rows[0].max_d) {
-        tcxMaxDate = String(tcxMeta.rows[0].max_d).slice(0, 10);
-      }
-    } catch { /* no data yet */ }
-
-    // Use the oldest max_date across all sources to determine catch-up
-    const oldestMax = [aimMaxDate, tcxMaxDate].filter(Boolean).sort()[0] || "";
-
-    // If manual dates are provided, use those. Otherwise auto-detect.
-    // ALWAYS include yesterday to catch late-entered deals (after 7pm previous day).
-    // The upsert logic handles dedup so re-fetching yesterday is safe.
-    //
-    // MONTHLY CATCH-UP: On the first refresh of each day (7:30-7:44 AM),
-    // also fetch the 1st of the current month. This catches deals entered
-    // retroactively (e.g., sold 3/14, entered into Moxy on 3/20, missed by
-    // our daily refresh). The Moxy API returns all deals in the fromDate-toDate
-    // range regardless of when they were entered, so fetching from the 1st
-    // sweeps up everything. The upsert handles dedup.
-    const isFirstRefreshOfDay = p.hour === 7 && p.minute < 45;
+    // Determine which dates to fetch based on mode:
+    // - catchup (4am): yesterday ONLY (full previous day sync)
+    // - first refresh of day (7:05-7:14am): month start through today
+    // - regular (every 5 min during business hours): today ONLY
+    // - manual: whatever dates are specified
+    const isFirstRefreshOfDay = p.hour === 7 && p.minute < 15;
     const monthStart = `${p.year}-${String(p.month).padStart(2, "0")}-01`;
 
     let datesToFetch: string[];
     if (forceDates) {
       datesToFetch = forceDates.split(",").map((d: string) => d.trim());
+    } else if (mode === "catchup" || isCatchupHour()) {
+      // 4am catchup: full previous day only
+      datesToFetch = [yesterday];
     } else if (isFirstRefreshOfDay) {
-      // First refresh: fetch entire month (1st through today) to catch retroactive entries
+      // First business hours refresh: month start through today (catches retroactive entries)
       datesToFetch = [monthStart, today];
     } else {
-      // Regular refresh: just yesterday + today
-      datesToFetch = [yesterday, today];
+      // Regular 5-min refresh: today only
+      datesToFetch = [today];
     }
 
-    console.log(`[seed-refresh] DB max date: ${aimMaxDate || "(empty)"}, fetching: ${datesToFetch.join(", ")}`);
+    console.log(`[seed-refresh] Fetching: ${datesToFetch.join(", ")}`);
 
     // Run all four source refreshes
     const results = await Promise.allSettled([

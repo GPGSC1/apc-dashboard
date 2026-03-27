@@ -120,7 +120,12 @@ const TABS: { id: TabId; label: string }[] = [
 
 /* ── component ──────────────────────────────────────────────────────────────── */
 export default function SalesDashboard() {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Chicago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
 
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [data, setData] = useState<SalesData | null>(null);
