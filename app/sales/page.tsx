@@ -2075,10 +2075,13 @@ export default function SalesDashboard() {
                       onClick={() => {
                         if (!data) return;
                         const agents = sortedAgents();
-                        const header = "Name\tDeals\tCalls\tClose %";
-                        const rows = agents.map(([name, stats]) =>
-                          `${name}\t${stats.totalDeals}\t${stats.totalCalls}\t${stats.totalCalls > 0 ? ((stats.totalDeals / stats.totalCalls) * 100).toFixed(1) + "%" : "0.0%"}`
-                        );
+                        const pad = (s: string, len: number) => s + " ".repeat(Math.max(0, len - s.length));
+                        const maxName = Math.max(4, ...agents.map(([n]) => n.length));
+                        const header = `${pad("Name", maxName)}  Deals  Calls  Close %`;
+                        const rows = agents.map(([name, stats]) => {
+                          const cr = stats.totalCalls > 0 ? ((stats.totalDeals / stats.totalCalls) * 100).toFixed(1) + "%" : "0.0%";
+                          return `${pad(name, maxName)}  ${pad(String(stats.totalDeals), 5)}  ${pad(String(stats.totalCalls), 5)}  ${cr}`;
+                        });
                         const dateLabel = fromDate === toDate ? fromDate : `${fromDate} to ${toDate}`;
                         const text = `Performance ${dateLabel}${soldOnly ? " (Sold Only)" : ""}\n${header}\n${rows.join("\n")}`;
                         navigator.clipboard.writeText(text).then(() => {
