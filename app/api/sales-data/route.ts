@@ -66,6 +66,7 @@ function applyQueueRules(
         if (a1Mids.has(mid)) return "A1";
       }
       if (/^\d{3}[A-Z]{2}$/.test(c)) return "A1";
+      if (c.startsWith("CC")) return "A3";
     }
 
     if (product === "home") {
@@ -431,7 +432,8 @@ export async function GET(req: Request) {
         if (product === "auto") autoDeals++; else homeDealCount++;
         continue;
       }
-      if (isAiDeal(closer)) {
+      const cidUpper = ((deal.customer_id ?? "") as string).trim().toUpperCase();
+      if (isAiDeal(closer) || cidUpper.startsWith("OR")) {
         aiDeals++;
         if (product === "auto") aiAutoDeals++; else aiHomeDeals++;
         companyDeals++;
