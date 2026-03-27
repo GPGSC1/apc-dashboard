@@ -87,7 +87,7 @@ export async function GET(req: Request) {
   const soldOnly = url.searchParams.get("soldOnly") === "true";
   const statusFilter = soldOnly
     ? "AND deal_status = 'Sold'"
-    : "AND deal_status NOT IN ('Back Out', '')";
+    : "AND deal_status != ''";
 
   try {
     // ── 1. DEALS from Moxy Auto + Moxy Home ─────────────────────────
