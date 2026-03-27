@@ -304,6 +304,13 @@ export async function GET(req: Request) {
     const toNames = new Set(toTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.toLowerCase()));
     function isTO(name: string) { return toNames.has(name.toLowerCase()); }
 
+    // Load Spanish team members for Spanish deal identification
+    const spTeamResult = await query(
+      `SELECT tm.agent_name FROM team_members tm JOIN teams t ON t.id = tm.team_id WHERE LOWER(t.name) = 'spanish'`
+    );
+    const spNames = new Set(spTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.toLowerCase()));
+    function isSpanishRep(name: string) { return spNames.has(name.toLowerCase()); }
+
     // Build phone → agent lookup from queue_calls (most recent human-answered call per phone)
     // Only needed if there are T.O.s
     const phoneToAgent = new Map<string, string>();
@@ -407,7 +414,7 @@ export async function GET(req: Request) {
         if (product === "auto") autoDeals++; else homeDealCount++;
         continue;
       }
-      if (pcEarly === "SP") {
+      if (pcEarly === "SP" || isSpanishRep(salesRep) || isSpanishRep(closer)) {
         spDeals++;
         if (product === "auto") spAutoDeals++; else spHomeDeals++;
         companyDeals++;
