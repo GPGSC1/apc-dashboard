@@ -1630,19 +1630,23 @@ export default function SalesDashboard() {
                 transition: "opacity 0.2s",
               }}
             >
-              {manualLoading && (
-                <div
-                  style={{
-                    width: 14,
-                    height: 14,
-                    border: "2px solid rgba(255,255,255,0.3)",
-                    borderTopColor: "#fff",
-                    borderRadius: "50%",
-                    animation: "spin 0.8s linear infinite",
-                  }}
-                />
+              {manualLoading ? (
+                <>
+                  <div
+                    style={{
+                      width: 16,
+                      height: 16,
+                      border: "2.5px solid rgba(255,255,255,0.3)",
+                      borderTopColor: "#fff",
+                      borderRadius: "50%",
+                      animation: "spin 0.8s linear infinite",
+                    }}
+                  />
+                  LOADING...
+                </>
+              ) : (
+                "UPDATE"
               )}
-              UPDATE
             </button>
           </div>
         </div>
@@ -1703,6 +1707,41 @@ export default function SalesDashboard() {
         {loading && !data ? (
           <Spinner />
         ) : (
+          <div style={{ position: "relative" }}>
+            {manualLoading && (
+              <div style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: "rgba(13, 13, 20, 0.6)",
+                zIndex: 50,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                borderRadius: 12,
+              }}>
+                <div style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: 12,
+                }}>
+                  <div style={{
+                    width: 40,
+                    height: 40,
+                    border: `3px solid ${C.border}`,
+                    borderTopColor: C.orange,
+                    borderRadius: "50%",
+                    animation: "spin 0.8s linear infinite",
+                  }} />
+                  <div style={{ color: C.secondary, fontSize: 13, fontFamily: FONT, fontWeight: 600 }}>
+                    Refreshing data...
+                  </div>
+                </div>
+              </div>
+            )}
           <>
             {/* ── OVERVIEW TAB ────────────────────────────────────────────── */}
             {activeTab === "overview" && data && (
@@ -2281,6 +2320,7 @@ export default function SalesDashboard() {
               />
             )}
           </>
+          </div>
         )}
       </div>
 
