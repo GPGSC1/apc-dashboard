@@ -92,7 +92,7 @@ export async function GET(req: Request) {
          customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, make, model, campaign, promo_code, first_name, last_name
        FROM moxy_deals
        WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '', 'Cancelled', 'Cancelled ', 'Cancel POA')
+         AND deal_status NOT IN ('Back Out', '')
        ORDER BY customer_id || '|' || contract_no, sold_date DESC`,
       [fromDate, toDate]
     );
@@ -101,7 +101,7 @@ export async function GET(req: Request) {
          customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, campaign, promo_code, first_name, last_name
        FROM moxy_home_deals
        WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '', 'Cancelled', 'Cancelled ', 'Cancel POA')
+         AND deal_status NOT IN ('Back Out', '')
        ORDER BY customer_id || '|' || contract_no, sold_date DESC`,
       [fromDate, toDate]
     );
