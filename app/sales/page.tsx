@@ -139,6 +139,7 @@ export default function SalesDashboard() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [expandedTeams, setExpandedTeams] = useState<Record<string, boolean>>({});
   const [manualLoading, setManualLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [showTeamManager, setShowTeamManager] = useState(false);
   const [teamsData, setTeamsData] = useState<TeamsPayload | null>(null);
   const [teamsLoading, setTeamsLoading] = useState(false);
@@ -2069,6 +2070,41 @@ export default function SalesDashboard() {
                   >
                     &#9881; Manage Teams
                   </button>
+                  {!byTeamMode && (
+                    <button
+                      onClick={() => {
+                        if (!data) return;
+                        const agents = sortedAgents();
+                        const header = "Name\tDeals\tCalls\tClose %";
+                        const rows = agents.map(([name, stats]) =>
+                          `${name}\t${stats.totalDeals}\t${stats.totalCalls}\t${stats.totalCalls > 0 ? ((stats.totalDeals / stats.totalCalls) * 100).toFixed(1) + "%" : "0.0%"}`
+                        );
+                        const dateLabel = fromDate === toDate ? fromDate : `${fromDate} to ${toDate}`;
+                        const text = `Performance ${dateLabel}${soldOnly ? " (Sold Only)" : ""}\n${header}\n${rows.join("\n")}`;
+                        navigator.clipboard.writeText(text).then(() => {
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 2000);
+                        });
+                      }}
+                      style={{
+                        background: "transparent",
+                        color: copied ? C.success : C.secondary,
+                        border: `1px solid ${copied ? C.success : C.border}`,
+                        borderRadius: 8,
+                        padding: "6px 14px",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        fontFamily: FONT,
+                        cursor: "pointer",
+                        transition: "all 0.2s",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      {copied ? "\u2713 Copied!" : "\u{1F4CB} Copy"}
+                    </button>
+                  )}
                 </div>
 
                 {byTeamMode ? <ByTeamView /> : <AllAgentsTable />}
