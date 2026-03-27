@@ -918,7 +918,7 @@ export default function SalesDashboard() {
                 </span>
               )}
               <span style={{ color: C.success, fontWeight: 700, fontSize: 13, marginLeft: 20 }}>
-                {totals.deals} deals
+                {totals.deals} {isToTeam ? "closed" : "deals"}
               </span>
               <span style={{ color: C.secondary, fontSize: 13, marginLeft: 12 }}>
                 {fmt(totals.calls)} calls
@@ -984,7 +984,7 @@ export default function SalesDashboard() {
                       Name {sortKey === "name" ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
                     </th>
                     <th onClick={() => handleSort("deals")} style={{ ...thBase, cursor: "pointer", userSelect: "none", color: sortKey === "deals" ? C.purpleLight : C.muted }}>
-                      Deals {sortKey === "deals" ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                      {isToTeam ? "Closed" : "Deals"} {sortKey === "deals" ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
                     </th>
                     <th onClick={() => handleSort("calls")} style={{ ...thBase, cursor: "pointer", userSelect: "none", color: sortKey === "calls" ? C.purpleLight : C.muted }}>
                       Calls {sortKey === "calls" ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
@@ -1069,14 +1069,12 @@ export default function SalesDashboard() {
             color={TEAM_COLORS[idx % TEAM_COLORS.length]}
           />
         ))}
-        {unassigned.length > 0 && (
-          <TeamBlock
-            team="Unassigned"
-            members={unassigned}
-            color={C.muted}
-            isUnassigned
-          />
-        )}
+        <TeamBlock
+          team="Unassigned"
+          members={unassigned}
+          color={C.muted}
+          isUnassigned
+        />
       </div>
     );
   };
@@ -2211,46 +2209,7 @@ export default function SalesDashboard() {
                               </div>
                             );
                           })}
-                          {/* Unassigned */}
-                          {(() => {
-                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                            const unassignedMembers = availData.agents.filter((a: any) => !assignedNames.has(a.name));
-                            if (unassignedMembers.length === 0) return null;
-                            const totals = computeTeamAvailTotals(unassignedMembers);
-                            const expanded = expandedTeams["Unassigned"] === true;
-                            return (
-                              <div style={{ background: C.card, borderRadius: 12, borderLeft: `4px solid ${C.muted}`, overflow: "hidden" }}>
-                                <div
-                                  onClick={() => toggleTeam("Unassigned")}
-                                  style={{ padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", userSelect: "none" }}
-                                >
-                                  <div style={{ fontSize: 14, fontWeight: 700, color: C.text, fontFamily: FONT }}>
-                                    Unassigned{" "}
-                                    <span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>({unassignedMembers.length} agents)</span>
-                                    <span style={{ color: C.success, fontWeight: 700, fontSize: 13, marginLeft: 20 }}>{totals.loggedIn} logged in</span>
-                                    <span style={{ color: C.orange, fontSize: 13, marginLeft: 12 }}>{totals.avgOcc.toFixed(1)}% occ</span>
-                                    <span style={{ color: C.danger, fontSize: 13, marginLeft: 12 }}>{totals.totalRona} RONA</span>
-                                  </div>
-                                  <div style={{ color: C.muted, fontSize: 18, transition: "transform 0.2s", transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}>&#9660;</div>
-                                </div>
-                                {expanded && (
-                                  <div style={{ overflowX: "auto" }}>
-                                    <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: FONT, minWidth: 800 }}>
-                                      <thead>
-                                        <tr>
-                                          <th style={{ background: C.card, color: C.muted, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", padding: "10px 12px", textAlign: "left", borderBottom: `1px solid ${C.border}`, fontWeight: 600, fontFamily: FONT }}>Name</th>
-                                          {["Status", "Login Time", "Inbound", "Outbound", "Talk Time", "Break", "Occupancy", "RONA"].map((h) => (
-                                            <th key={h} style={{ background: C.card, color: C.muted, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", padding: "10px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}`, fontWeight: 600, fontFamily: FONT, whiteSpace: "nowrap" }}>{h}</th>
-                                          ))}
-                                        </tr>
-                                      </thead>
-                                      <tbody>{unassignedMembers.map(renderAgentRow)}</tbody>
-                                    </table>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })()}
+                          {/* Unassigned section removed - only show assigned teams in Availability */}
                         </div>
                       )}
                     </>
