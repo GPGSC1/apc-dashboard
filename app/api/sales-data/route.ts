@@ -89,7 +89,7 @@ export async function GET(req: Request) {
          customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, make, model, campaign, promo_code, first_name, last_name
        FROM moxy_deals
        WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '')
+         AND deal_status NOT IN ('Back Out', 'VOID', '', 'Cancelled', 'Cancelled ', 'Cancel POA')
        ORDER BY customer_id || '|' || contract_no, sold_date DESC`,
       [fromDate, toDate]
     );
@@ -98,7 +98,7 @@ export async function GET(req: Request) {
          customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, campaign, promo_code, first_name, last_name
        FROM moxy_home_deals
        WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '')
+         AND deal_status NOT IN ('Back Out', 'VOID', '', 'Cancelled', 'Cancelled ', 'Cancel POA')
        ORDER BY customer_id || '|' || contract_no, sold_date DESC`,
       [fromDate, toDate]
     );
@@ -163,21 +163,38 @@ export async function GET(req: Request) {
     }
 
     // ── 3. CALLS: unique phones per queue in date range ─────────────
+    // SQL CASE for normalizing queue names (reused across all call queries)
+    const NORM_QUEUE_SQL = `CASE
+           WHEN LOWER(queue) LIKE '%mail 1%' THEN 'mail 1'
+           WHEN LOWER(queue) LIKE '%mail 2%' THEN 'mail 2'
+           WHEN LOWER(queue) LIKE '%mail 3%' THEN 'mail 3'
+           WHEN LOWER(queue) LIKE '%mail 4%' THEN 'mail 4'
+           WHEN LOWER(queue) LIKE '%mail 5%' THEN 'mail 5'
+           WHEN LOWER(queue) LIKE '%mail 6%' THEN 'mail 6'
+           WHEN LOWER(queue) LIKE '%home 1%' THEN 'home 1'
+           WHEN LOWER(queue) LIKE '%home 2%' THEN 'home 2'
+           WHEN LOWER(queue) LIKE '%home 3%' THEN 'home 3'
+           WHEN LOWER(queue) LIKE '%home 4%' THEN 'home 4'
+           WHEN LOWER(queue) LIKE '%home 5%' THEN 'home 5'
+           ELSE LOWER(TRIM(queue))
+         END`;
+
     // Human answered: has 4-digit extension NOT starting with 99
+    // Normalize queue names in SQL to avoid double-counting across "Mail 1" vs "8023 Mail 1"
     const callsResult = await query(
-      `SELECT queue, COUNT(DISTINCT phone) as cnt
+      `SELECT ${NORM_QUEUE_SQL} as norm_queue, COUNT(DISTINCT phone) as cnt
        FROM queue_calls
        WHERE call_date BETWEEN $1 AND $2
          AND first_ext IS NOT NULL AND first_ext != ''
          AND LENGTH(TRIM(first_ext)) <= 4
          AND TRIM(first_ext) NOT LIKE '99%'
-       GROUP BY queue`,
+       GROUP BY norm_queue`,
       [fromDate, toDate]
     );
     const queueCalls: Record<string, number> = {};
     let totalCalls = 0;
     for (const row of callsResult.rows) {
-      const mapped = mapQueue(row.queue);
+      const mapped = mapQueue(row.norm_queue);
       if (mapped) {
         const cnt = parseInt(row.cnt);
         queueCalls[mapped] = (queueCalls[mapped] ?? 0) + cnt;
@@ -187,7 +204,7 @@ export async function GET(req: Request) {
 
     // AI-forwarded calls: either ext starts with 99, OR blank ext with 11-digit destination (forwarded to AI)
     const aiFwdResult = await query(
-      `SELECT queue, COUNT(DISTINCT phone) as cnt
+      `SELECT ${NORM_QUEUE_SQL} as norm_queue, COUNT(DISTINCT phone) as cnt
        FROM queue_calls
        WHERE call_date BETWEEN $1 AND $2
          AND (
@@ -195,12 +212,12 @@ export async function GET(req: Request) {
            OR
            ((first_ext IS NULL OR first_ext = '') AND destination IS NOT NULL AND LENGTH(TRIM(destination)) = 11 AND TRIM(destination) LIKE '1%')
          )
-       GROUP BY queue`,
+       GROUP BY norm_queue`,
       [fromDate, toDate]
     );
     const queueAiFwd: Record<string, number> = {};
     for (const row of aiFwdResult.rows) {
-      const mapped = mapQueue(row.queue);
+      const mapped = mapQueue(row.norm_queue);
       if (mapped) {
         queueAiFwd[mapped] = (queueAiFwd[mapped] ?? 0) + parseInt(row.cnt);
       }
@@ -208,8 +225,9 @@ export async function GET(req: Request) {
 
     // Dropped calls: blank ext, NOT forwarded to AI (no 11-digit destination),
     // and phone was NEVER answered in that queue during the entire date range.
+    // Use normalized queue for grouping to avoid double-counting
     const droppedResult = await query(
-      `SELECT queue, COUNT(DISTINCT phone) as cnt
+      `SELECT ${NORM_QUEUE_SQL} as norm_queue, COUNT(DISTINCT phone) as cnt
        FROM queue_calls d
        WHERE d.call_date BETWEEN $1 AND $2
          AND (d.first_ext = '' OR d.first_ext IS NULL)
@@ -217,19 +235,18 @@ export async function GET(req: Request) {
          AND NOT EXISTS (
            SELECT 1 FROM queue_calls a
            WHERE a.phone = d.phone
-             AND a.queue = d.queue
              AND a.call_date BETWEEN $1 AND $2
              AND (
                (a.first_ext IS NOT NULL AND a.first_ext != '')
                OR (a.destination IS NOT NULL AND LENGTH(TRIM(a.destination)) = 11 AND TRIM(a.destination) LIKE '1%')
              )
          )
-       GROUP BY queue`,
+       GROUP BY norm_queue`,
       [fromDate, toDate]
     );
     const queueDropped: Record<string, number> = {};
     for (const row of droppedResult.rows) {
-      const mapped = mapQueue(row.queue);
+      const mapped = mapQueue(row.norm_queue);
       if (mapped) {
         queueDropped[mapped] = (queueDropped[mapped] ?? 0) + parseInt(row.cnt);
       }
@@ -237,20 +254,20 @@ export async function GET(req: Request) {
 
     // ── 3b. CALLS per agent per queue ──────────────────────────────
     const agentCallsResult = await query(
-      `SELECT agent_name, queue, COUNT(DISTINCT phone) as cnt
+      `SELECT agent_name, ${NORM_QUEUE_SQL} as norm_queue, COUNT(DISTINCT phone) as cnt
        FROM queue_calls
        WHERE call_date BETWEEN $1 AND $2
          AND first_ext IS NOT NULL AND first_ext != ''
          AND LENGTH(TRIM(first_ext)) <= 4
          AND TRIM(first_ext) NOT LIKE '99%'
-       GROUP BY agent_name, queue`,
+       GROUP BY agent_name, norm_queue`,
       [fromDate, toDate]
     );
     // Map: agentName -> queue -> calls
     const agentQueueCalls: Map<string, Record<string, number>> = new Map();
     for (const row of agentCallsResult.rows) {
       const agent = (row.agent_name ?? "").trim();
-      const mapped = mapQueue(row.queue);
+      const mapped = mapQueue(row.norm_queue);
       if (!agent || !mapped) continue;
       if (!agentQueueCalls.has(agent)) agentQueueCalls.set(agent, {});
       const rec = agentQueueCalls.get(agent)!;
@@ -414,7 +431,8 @@ export async function GET(req: Request) {
         if (product === "auto") autoDeals++; else homeDealCount++;
         continue;
       }
-      if (pcEarly === "SP" || isSpanishRep(salesRep) || isSpanishRep(closer)) {
+      const originalOwner = (deal.owner ?? "").trim();
+      if (pcEarly === "SP" || isSpanishRep(salesRep) || isSpanishRep(closer) || isSpanishRep(originalOwner)) {
         spDeals++;
         if (product === "auto") spAutoDeals++; else spHomeDeals++;
         companyDeals++;
