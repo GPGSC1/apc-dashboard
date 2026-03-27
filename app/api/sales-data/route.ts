@@ -84,6 +84,10 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const fromDate = url.searchParams.get("start") ?? todayLocal();
   const toDate = url.searchParams.get("end") ?? todayLocal();
+  const soldOnly = url.searchParams.get("soldOnly") === "true";
+  const statusFilter = soldOnly
+    ? "AND deal_status = 'Sold'"
+    : "AND deal_status NOT IN ('Back Out', '')";
 
   try {
     // ── 1. DEALS from Moxy Auto + Moxy Home ─────────────────────────
@@ -92,7 +96,7 @@ export async function GET(req: Request) {
          customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, make, model, campaign, promo_code, first_name, last_name
        FROM moxy_deals
        WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', '')
+         ${statusFilter}
        ORDER BY customer_id || '|' || contract_no, sold_date DESC`,
       [fromDate, toDate]
     );
@@ -101,7 +105,7 @@ export async function GET(req: Request) {
          customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, campaign, promo_code, first_name, last_name
        FROM moxy_home_deals
        WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', '')
+         ${statusFilter}
        ORDER BY customer_id || '|' || contract_no, sold_date DESC`,
       [fromDate, toDate]
     );

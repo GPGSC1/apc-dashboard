@@ -127,6 +127,7 @@ export default function SalesDashboard() {
   const [loading, setLoading] = useState(true);
   const [fromDate, setFromDate] = useState(todayStr);
   const [toDate, setToDate] = useState(todayStr);
+  const [soldOnly, setSoldOnly] = useState(false);
   const [byTeamMode, setByTeamMode] = useState(false);
   const [productView, setProductView] = useState<"combined" | "auto" | "home">("combined");
   const [sortKey, setSortKey] = useState<SortKey>("deals");
@@ -190,7 +191,7 @@ export default function SalesDashboard() {
       if (manual) setManualLoading(true);
       else setLoading(true);
       try {
-        const res = await fetch(`/api/sales-data?start=${fromDate}&end=${toDate}`);
+        const res = await fetch(`/api/sales-data?start=${fromDate}&end=${toDate}&soldOnly=${soldOnly}`);
         if (!res.ok) throw new Error("fetch failed");
         const json: SalesData = await res.json();
         setData(json);
@@ -201,7 +202,7 @@ export default function SalesDashboard() {
         setManualLoading(false);
       }
     },
-    [fromDate, toDate]
+    [fromDate, toDate, soldOnly]
   );
 
   useEffect(() => {
@@ -1561,6 +1562,52 @@ export default function SalesDashboard() {
                 }}
               />
             </div>
+
+            {/* sold only toggle */}
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                cursor: "pointer",
+                userSelect: "none",
+              }}
+              onClick={() => setSoldOnly((v) => !v)}
+            >
+              <div
+                style={{
+                  width: 16,
+                  height: 16,
+                  borderRadius: 4,
+                  border: `1px solid ${soldOnly ? C.success : C.border}`,
+                  background: soldOnly ? C.success : C.input,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  transition: "all 0.2s",
+                  flexShrink: 0,
+                }}
+              >
+                {soldOnly && (
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                    <path d="M2 5L4.5 7.5L8 2.5" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
+              </div>
+              <span
+                style={{
+                  fontSize: 11,
+                  color: soldOnly ? C.success : C.secondary,
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
+                  fontFamily: FONT,
+                  transition: "color 0.2s",
+                }}
+              >
+                Sold Only
+              </span>
+            </label>
 
             {/* update button */}
             <button
