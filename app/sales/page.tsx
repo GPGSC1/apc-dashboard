@@ -2076,14 +2076,16 @@ export default function SalesDashboard() {
                         if (!data) return;
                         const agents = sortedAgents();
                         const pad = (s: string, len: number) => s + " ".repeat(Math.max(0, len - s.length));
-                        const maxName = Math.max(4, ...agents.map(([n]) => n.length));
-                        const header = `${pad("Name", maxName)}  Deals  Calls  Close %`;
+                        const padL = (s: string, len: number) => " ".repeat(Math.max(0, len - s.length)) + s;
+                        const nw = Math.max(4, ...agents.map(([n]) => n.length));
+                        const sep = `${"─".repeat(nw + 2)}┼───────┼───────┼─────────`;
+                        const header = ` ${pad("Name", nw)} │ Deals │ Calls │ Close %`;
                         const rows = agents.map(([name, stats]) => {
                           const cr = stats.totalCalls > 0 ? ((stats.totalDeals / stats.totalCalls) * 100).toFixed(1) + "%" : "0.0%";
-                          return `${pad(name, maxName)}  ${pad(String(stats.totalDeals), 5)}  ${pad(String(stats.totalCalls), 5)}  ${cr}`;
+                          return ` ${pad(name, nw)} │ ${padL(String(stats.totalDeals), 5)} │ ${padL(String(stats.totalCalls), 5)} │ ${padL(cr, 7)}`;
                         });
                         const dateLabel = fromDate === toDate ? fromDate : `${fromDate} to ${toDate}`;
-                        const text = `Performance ${dateLabel}${soldOnly ? " (Sold Only)" : ""}\n${header}\n${rows.join("\n")}`;
+                        const text = `Performance ${dateLabel}${soldOnly ? " (Sold Only)" : ""}\n${sep}\n${header}\n${sep}\n${rows.join("\n")}\n${sep}`;
                         navigator.clipboard.writeText(text).then(() => {
                           setCopied(true);
                           setTimeout(() => setCopied(false), 2000);
