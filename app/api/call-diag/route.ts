@@ -213,15 +213,29 @@ export async function GET(req: Request) {
     )).rows;
   }
 
-  // 14. Per-agent call counts — sum of per-queue distinct phones (matches sales-data logic)
+  // 14. Per-agent call counts — first-chronological dedup per phone per queue per month
+  const DEDUP_CTE = `
+    WITH answered AS (
+      SELECT phone, call_date, agent_name, ${NORM} as nq
+      FROM queue_calls
+      WHERE call_date BETWEEN $1 AND $2 AND ${HUMAN}
+    ),
+    ranked AS (
+      SELECT *, ROW_NUMBER() OVER (
+        PARTITION BY phone, nq ORDER BY call_date ASC
+      ) as rn
+      FROM answered
+    ),
+    deduped AS (
+      SELECT phone, nq, call_date, agent_name FROM ranked
+      WHERE rn = 1 AND nq IN ('A1','A2','A3','A4','A5','A6','H1','H2','H3','H4','H5')
+    )`;
+
   const agentCounts = await query(
-    `SELECT agent_name, SUM(dq) as distinct_phones, SUM(tr) as total_rows
+    `${DEDUP_CTE}
+     SELECT agent_name, SUM(cnt) as distinct_phones
      FROM (
-       SELECT agent_name, ${NORM} as nq, COUNT(DISTINCT phone) as dq, COUNT(*) as tr
-       FROM queue_calls
-       WHERE call_date BETWEEN $1 AND $2 AND ${HUMAN}
-         AND ${NORM} IN ('A1','A2','A3','A4','A5','A6','H1','H2','H3','H4','H5')
-       GROUP BY agent_name, nq
+       SELECT agent_name, nq, COUNT(*) as cnt FROM deduped GROUP BY agent_name, nq
      ) sub
      GROUP BY agent_name ORDER BY agent_name`,
     [start, end]

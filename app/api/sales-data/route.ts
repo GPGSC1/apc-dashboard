@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { query } from "../../../lib/db/connection";
 import { todayLocal } from "../../../lib/date-utils";
-import { mapQueue, isAutoQueue, isHomeQueue, ALL_QUEUES } from "../../../lib/queue-map";
+import { mapQueue, mapAnyQueue, isAutoQueue, isHomeQueue, ALL_QUEUES } from "../../../lib/queue-map";
 import { isExcludedSalesperson } from "../../../lib/teams";
 
 /**
@@ -170,9 +170,11 @@ export async function GET(req: Request) {
       return null;
     }
 
-    // ── 3. CALLS: unique phones per queue in date range ─────────────
+    // ── 3. CALLS: month-to-date first-chronological dedup ────────────
     // SQL CASE for normalizing queue names (reused across all call queries)
+    // Spanish checked BEFORE T.O. to avoid "Spanish - Auto" matching "to" substring
     const NORM_QUEUE_SQL = `CASE
+           WHEN LOWER(queue) LIKE '%spanish%' THEN 'spanish'
            WHEN LOWER(queue) LIKE '%mail 1%' THEN 'mail 1'
            WHEN LOWER(queue) LIKE '%mail 2%' THEN 'mail 2'
            WHEN LOWER(queue) LIKE '%mail 3%' THEN 'mail 3'
@@ -184,33 +186,106 @@ export async function GET(req: Request) {
            WHEN LOWER(queue) LIKE '%home 3%' THEN 'home 3'
            WHEN LOWER(queue) LIKE '%home 4%' THEN 'home 4'
            WHEN LOWER(queue) LIKE '%home 5%' THEN 'home 5'
+           WHEN TRIM(LOWER(queue)) = 'to' OR LOWER(queue) LIKE '% to' THEN 'to'
            ELSE LOWER(TRIM(queue))
          END`;
 
-    // Human answered: has 4-digit extension NOT starting with 99, AND status = 'answered'
-    // The status filter ensures we only count calls actually picked up by the agent,
-    // not calls that merely rang the agent's extension before being abandoned/forwarded.
-    // Normalize queue names in SQL to avoid double-counting across "Mail 1" vs "8023 Mail 1"
-    const callsResult = await query(
-      `SELECT ${NORM_QUEUE_SQL} as norm_queue, COUNT(DISTINCT phone) as cnt
-       FROM queue_calls
-       WHERE call_date BETWEEN $1 AND $2
-         AND first_ext IS NOT NULL AND first_ext != ''
+    const HUMAN_FILTER = `first_ext IS NOT NULL AND first_ext != ''
          AND LENGTH(TRIM(first_ext)) <= 4
          AND TRIM(first_ext) NOT LIKE '99%'
-         AND LOWER(status) = 'answered'
-       GROUP BY norm_queue`,
+         AND LOWER(status) = 'answered'`;
+
+    // Dedup CTE: first chronological phone per queue per month for sales queues,
+    // NO dedup for T.O. (every call counts), Spanish/CS/Collections excluded from main counts
+    const DEDUP_CTE = `
+      WITH answered AS (
+        SELECT phone, call_date, agent_name,
+          ${NORM_QUEUE_SQL} as norm_queue
+        FROM queue_calls
+        WHERE call_date BETWEEN $1 AND $2
+          AND ${HUMAN_FILTER}
+      ),
+      ranked AS (
+        SELECT *, ROW_NUMBER() OVER (
+          PARTITION BY phone, norm_queue
+          ORDER BY call_date ASC
+        ) as rn
+        FROM answered
+      ),
+      deduped AS (
+        SELECT phone, norm_queue, call_date, agent_name FROM ranked
+        WHERE rn = 1
+          AND norm_queue IN ('mail 1','mail 2','mail 3','mail 4','mail 5','mail 6',
+                             'home 1','home 2','home 3','home 4','home 5')
+        UNION ALL
+        SELECT phone, norm_queue, call_date, agent_name FROM ranked
+        WHERE norm_queue = 'to'
+      )`;
+
+    // Human-answered calls per queue (deduped)
+    const callsResult = await query(
+      `${DEDUP_CTE}
+       SELECT norm_queue, COUNT(*) as cnt FROM deduped GROUP BY norm_queue`,
       [fromDate, toDate]
     );
     const queueCalls: Record<string, number> = {};
     let totalCalls = 0;
     for (const row of callsResult.rows) {
-      const mapped = mapQueue(row.norm_queue);
+      const mapped = mapAnyQueue(row.norm_queue);
       if (mapped) {
         const cnt = parseInt(row.cnt);
         queueCalls[mapped] = (queueCalls[mapped] ?? 0) + cnt;
         totalCalls += cnt;
       }
+    }
+
+    // T.O. call count (stays in totalCalls, also tracked separately for agent attribution)
+    const toCallCount = queueCalls["TO"] ?? 0;
+
+    // Spanish agent attribution (deduped like regular queues, but separate from sales totals)
+    const spanishResult = await query(
+      `WITH answered AS (
+        SELECT phone, call_date, agent_name,
+          ${NORM_QUEUE_SQL} as norm_queue
+        FROM queue_calls
+        WHERE call_date BETWEEN $1 AND $2
+          AND ${HUMAN_FILTER}
+      ),
+      ranked AS (
+        SELECT *, ROW_NUMBER() OVER (
+          PARTITION BY phone, norm_queue
+          ORDER BY call_date ASC
+        ) as rn
+        FROM answered
+      )
+      SELECT agent_name, COUNT(*) as cnt FROM ranked
+      WHERE rn = 1 AND norm_queue = 'spanish'
+      GROUP BY agent_name ORDER BY agent_name`,
+      [fromDate, toDate]
+    );
+    const spanishByAgent: Record<string, number> = {};
+    let spanishTotal = 0;
+    for (const row of spanishResult.rows) {
+      const agent = (row.agent_name ?? "").trim();
+      if (agent) {
+        const cnt = parseInt(row.cnt);
+        spanishByAgent[agent] = cnt;
+        spanishTotal += cnt;
+      }
+    }
+
+    // T.O. agent attribution (never deduped)
+    const toAgentResult = await query(
+      `${DEDUP_CTE}
+       SELECT agent_name, COUNT(*) as cnt FROM deduped
+       WHERE norm_queue = 'to'
+       GROUP BY agent_name ORDER BY agent_name`,
+      [fromDate, toDate]
+    );
+    const toByAgent: Record<string, number> = {};
+    for (const row of toAgentResult.rows) {
+      const agent = (row.agent_name ?? "").trim();
+      if (agent) toByAgent[agent] = parseInt(row.cnt);
     }
 
     // AI-forwarded calls: either ext starts with 99, OR blank ext with 11-digit destination (forwarded to AI)
@@ -263,15 +338,11 @@ export async function GET(req: Request) {
       }
     }
 
-    // ── 3b. CALLS per agent per queue ──────────────────────────────
+    // ── 3b. CALLS per agent per queue (deduped) ─────────────────────
     const agentCallsResult = await query(
-      `SELECT agent_name, ${NORM_QUEUE_SQL} as norm_queue, COUNT(DISTINCT phone) as cnt
-       FROM queue_calls
-       WHERE call_date BETWEEN $1 AND $2
-         AND first_ext IS NOT NULL AND first_ext != ''
-         AND LENGTH(TRIM(first_ext)) <= 4
-         AND TRIM(first_ext) NOT LIKE '99%'
-         AND LOWER(status) = 'answered'
+      `${DEDUP_CTE}
+       SELECT agent_name, norm_queue, COUNT(*) as cnt
+       FROM deduped
        GROUP BY agent_name, norm_queue`,
       [fromDate, toDate]
     );
@@ -279,7 +350,7 @@ export async function GET(req: Request) {
     const agentQueueCalls: Map<string, Record<string, number>> = new Map();
     for (const row of agentCallsResult.rows) {
       const agent = (row.agent_name ?? "").trim();
-      const mapped = mapQueue(row.norm_queue);
+      const mapped = mapAnyQueue(row.norm_queue);
       if (!agent || !mapped) continue;
       if (!agentQueueCalls.has(agent)) agentQueueCalls.set(agent, {});
       const rec = agentQueueCalls.get(agent)!;
@@ -693,6 +764,8 @@ export async function GET(req: Request) {
       dateRange: { from: fromDate, to: toDate },
       toDeals: toDealsList,
       toCloserStats,
+      toCalls: { total: toCallCount, byAgent: toByAgent },
+      spanishCalls: { total: spanishTotal, byAgent: spanishByAgent },
     });
   } catch (err) {
     console.error("[sales-data] Error:", err);

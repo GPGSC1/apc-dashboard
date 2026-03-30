@@ -7,9 +7,10 @@ const AIM_REST = "https://dash.aimnow.ai/api";
 const MOXY_BASE = "https://MoxyAPI.moxyws.com";
 const CT_TZ = "America/Chicago";
 
-const SALES_QUEUES = [
+const TRACKED_QUEUES = [
   "mail 1", "mail 2", "mail 3", "mail 4", "mail 5", "mail 6",
   "home 1", "home 2", "home 3", "home 4", "home 5",
+  "spanish", "to",
 ];
 
 const AGENT_SHORT: Record<string, string> = {
@@ -546,8 +547,8 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
       const lastQueueName = (c[QI + 2] || "").trim();
       // Use Last Queue Name for answered, Queue Name fallback for unanswered
       const lastQueueFull = lastQueueName || queueName;
-      const isSalesQueue = SALES_QUEUES.some((q) => lastQueueFull.toLowerCase().includes(q));
-      if (!isSalesQueue) continue;
+      const isTrackedQueue = TRACKED_QUEUES.some((q) => lastQueueFull.toLowerCase().includes(q));
+      if (!isTrackedQueue) continue;
 
       const startTime = (c[STI] || "").trim();
       const destName = (c[DNI] || "").trim();
