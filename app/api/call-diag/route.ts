@@ -91,13 +91,52 @@ export async function GET(req: Request) {
     [start, end]
   );
 
+  // 7. Per-date totals (human answered, sales queues only) for comparison
+  const salesQueues = ['A1','A2','A3','A4','A5','A6','H1','H2','H3','H4','H5'];
+  const dailySalesTotal = await query(
+    `SELECT call_date, COUNT(*) as total_rows, COUNT(DISTINCT phone) as distinct_phones
+     FROM queue_calls
+     WHERE call_date BETWEEN $1 AND $2 AND ${HUMAN}
+       AND ${NORM} IN ('A1','A2','A3','A4','A5','A6','H1','H2','H3','H4','H5')
+     GROUP BY call_date ORDER BY call_date`,
+    [start, end]
+  );
+
+  // 8. 1xxx extensions in sales queues specifically
+  const ext1xxxInSales = await query(
+    `SELECT ${NORM} as nq, COUNT(*) as cnt, COUNT(DISTINCT phone) as dist
+     FROM queue_calls
+     WHERE call_date BETWEEN $1 AND $2
+       AND first_ext IS NOT NULL AND first_ext != ''
+       AND TRIM(first_ext) LIKE '1%'
+       AND LENGTH(TRIM(first_ext)) = 4
+       AND ${NORM} IN ('A1','A2','A3','A4','A5','A6','H1','H2','H3','H4','H5')
+     GROUP BY nq ORDER BY nq`,
+    [start, end]
+  );
+
+  // 9. Sample phones with 1xxx ext in sales queues
+  const sample1xxx = await query(
+    `SELECT phone, first_ext, agent_name, queue, call_date
+     FROM queue_calls
+     WHERE call_date BETWEEN $1 AND $2
+       AND first_ext IS NOT NULL AND first_ext != ''
+       AND TRIM(first_ext) LIKE '1%'
+       AND LENGTH(TRIM(first_ext)) = 4
+       AND ${NORM} IN ('A1','A2','A3','A4','A5','A6','H1','H2','H3','H4','H5')
+     LIMIT 20`,
+    [start, end]
+  );
+
   return NextResponse.json({
     dateRange: { start, end },
     allQueues: allQueues.rows,
     humanCounts: humanCounts.rows,
     dupeQueueVariants: dupeQueueVariants.rows,
     repeatCallers: repeatCallers.rows,
-    dailyCounts: dailyCounts.rows,
+    dailySalesTotal: dailySalesTotal.rows,
     extPatterns: extPatterns.rows[0],
+    ext1xxxInSales: ext1xxxInSales.rows,
+    sample1xxx: sample1xxx.rows,
   });
 }
