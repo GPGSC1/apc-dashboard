@@ -430,7 +430,7 @@ async function refreshAim(dates: string[]): Promise<{ addedTransfers: number; up
 
 // ─── 3CX: Direct to Postgres ─────────────────────────────────────────────────
 
-async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
+async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ addedCalls: number }> {
   const domain = process.env.TCX_DOMAIN ?? "gpgsc.innicom.com";
   const username = process.env.TCX_USERNAME ?? "1911";
   const password = process.env.TCX_PASSWORD;
@@ -464,6 +464,14 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
   console.log(`[seed-refresh/3CX] Login successful`);
 
   let totalAdded = 0;
+
+  // Clean reimport: delete old queue_calls for these dates so stale Last-Queue records are removed
+  if (cleanReimport) {
+    for (const d of dates) {
+      await query(`DELETE FROM queue_calls WHERE call_date = $1`, [d]);
+      console.log(`[seed-refresh/3CX] Cleaned queue_calls for ${d}`);
+    }
+  }
 
   for (const targetDate of dates) {
     console.log(`[seed-refresh/3CX] Fetching ${targetDate}...`);
@@ -534,11 +542,11 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
       const phone = normalizePhone(c[PHI] || "");
       if (!phone || phone.length !== 10) continue;
 
+      // Use initial Queue Name (col QI) for attribution — matches manager reports.
+      // Last Queue Name (col QI+2) is the transfer destination, which misattributes
+      // calls transferred between sales and non-sales queues.
       const queueName = (c[QI] || "").trim();
-      const lastQueueName = (c[QI + 2] || "").trim();
-      // Use Last Queue Name for answered, Queue Name fallback for unanswered
-      const lastQueueFull = lastQueueName || queueName;
-      const isSalesQueue = SALES_QUEUES.some((q) => lastQueueFull.toLowerCase().includes(q));
+      const isSalesQueue = SALES_QUEUES.some((q) => queueName.toLowerCase().includes(q));
       if (!isSalesQueue) continue;
 
       const startTime = (c[STI] || "").trim();
@@ -549,7 +557,7 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
 
       // Track inbound Mail 4 phones
       if (inOut.toLowerCase() === "inbound") {
-        const qLower = lastQueueFull.toLowerCase();
+        const qLower = queueName.toLowerCase();
         if (qLower.includes("mail 4") && !mail4PhonesSet.has(phone)) {
           mail4PhonesSet.add(phone);
           mail4PhoneRows.push([phone]);
@@ -568,7 +576,7 @@ async function refresh3cx(dates: string[]): Promise<{ addedCalls: number }> {
           const firstExtName = (c[5] || "").trim();
           const destination = (c[10] || "").trim().replace(/\D/g, "");
           // Clean queue name: remove leading number prefix like "8023 "
-          const cleanQueue = lastQueueFull.replace(/^\d+\s+/, "");
+          const cleanQueue = queueName.replace(/^\d+\s+/, "");
           queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status, destination]);
         }
       }
@@ -906,6 +914,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const forceDates = url.searchParams.get("dates");
   const mode = url.searchParams.get("mode"); // "catchup" = 4am full previous day
+  const tcxClean = url.searchParams.get("tcx_clean") === "true"; // delete+reimport queue_calls
 
   console.log(`[seed-refresh] Triggered at ${ctNow}${forceDates ? ` (forced: ${forceDates})` : ""}${mode ? ` (mode: ${mode})` : ""}`);
 
@@ -946,7 +955,7 @@ export async function GET(req: Request) {
     // Run all four source refreshes
     const results = await Promise.allSettled([
       refreshAim(datesToFetch),
-      refresh3cx(datesToFetch),
+      refresh3cx(datesToFetch, tcxClean),
       refreshMoxy(datesToFetch),
       refreshMoxyHome(datesToFetch),
     ]);
