@@ -128,6 +128,66 @@ export async function GET(req: Request) {
     [start, end]
   );
 
+  // 10. Status breakdown for human-ext calls per queue (are there non-"answered" calls with first_ext?)
+  const statusBreakdown = await query(
+    `SELECT ${NORM} as nq, status, COUNT(*) as cnt, COUNT(DISTINCT phone) as dist
+     FROM queue_calls
+     WHERE call_date BETWEEN $1 AND $2 AND ${HUMAN}
+     GROUP BY nq, status ORDER BY nq, status`,
+    [start, end]
+  );
+
+  // 11. A4 specifically: daily total_rows vs Sarah's expectation
+  const a4Daily = await query(
+    `SELECT call_date, status, COUNT(*) as cnt, COUNT(DISTINCT phone) as dist
+     FROM queue_calls
+     WHERE call_date BETWEEN $1 AND $2 AND ${HUMAN}
+       AND ${NORM} = 'A4'
+     GROUP BY call_date, status ORDER BY call_date, status`,
+    [start, end]
+  );
+
+  // 12. A4 phones that also appear in other queues (same date range, human-answered)
+  const a4CrossQueue = await query(
+    `WITH a4_phones AS (
+       SELECT DISTINCT phone FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2
+         AND ${HUMAN}
+         AND LOWER(queue) LIKE '%mail 4%'
+     )
+     SELECT CASE
+         WHEN LOWER(q.queue) LIKE '%mail 1%' THEN 'A1'
+         WHEN LOWER(q.queue) LIKE '%mail 2%' THEN 'A2'
+         WHEN LOWER(q.queue) LIKE '%mail 3%' THEN 'A3'
+         WHEN LOWER(q.queue) LIKE '%mail 5%' THEN 'A5'
+         WHEN LOWER(q.queue) LIKE '%mail 6%' THEN 'A6'
+         WHEN LOWER(q.queue) LIKE '%home 1%' THEN 'H1'
+         WHEN LOWER(q.queue) LIKE '%home 2%' THEN 'H2'
+         WHEN LOWER(q.queue) LIKE '%home 3%' THEN 'H3'
+         ELSE LOWER(TRIM(q.queue))
+       END as other_queue,
+       COUNT(DISTINCT q.phone) as phone_count
+     FROM queue_calls q
+     JOIN a4_phones ap ON q.phone = ap.phone
+     WHERE q.call_date BETWEEN $1 AND $2
+       AND ${HUMAN}
+       AND NOT LOWER(q.queue) LIKE '%mail 4%'
+     GROUP BY other_queue ORDER BY phone_count DESC`,
+    [start, end]
+  );
+
+  // 13. Repeat callers detail for A4: phones with most repeat days
+  const a4TopRepeats = await query(
+    `SELECT phone, COUNT(DISTINCT call_date) as days, array_agg(DISTINCT call_date ORDER BY call_date) as dates
+     FROM queue_calls
+     WHERE call_date BETWEEN $1 AND $2 AND ${HUMAN}
+       AND ${NORM} = 'A4'
+     GROUP BY phone HAVING COUNT(DISTINCT call_date) > 1
+     ORDER BY COUNT(DISTINCT call_date) DESC
+     LIMIT 15`,
+    [start, end]
+  );
+
   return NextResponse.json({
     dateRange: { start, end },
     allQueues: allQueues.rows,
@@ -138,5 +198,9 @@ export async function GET(req: Request) {
     extPatterns: extPatterns.rows[0],
     ext1xxxInSales: ext1xxxInSales.rows,
     sample1xxx: sample1xxx.rows,
+    statusBreakdown: statusBreakdown.rows,
+    a4Daily: a4Daily.rows,
+    a4CrossQueue: a4CrossQueue.rows,
+    a4TopRepeats: a4TopRepeats.rows,
   });
 }
