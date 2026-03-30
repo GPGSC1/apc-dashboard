@@ -2,8 +2,6 @@ import { NextResponse } from "next/server";
 import https from "https";
 import { query } from "../../../lib/db/connection";
 
-export const maxDuration = 300;
-
 // ─── Constants ────────────────────────────────────────────────────────────────
 const AIM_REST = "https://dash.aimnow.ai/api";
 const MOXY_BASE = "https://MoxyAPI.moxyws.com";
@@ -904,7 +902,7 @@ async function refreshMoxyHome(dates: string[]): Promise<{ addedDeals: number; b
 
 // ─── Main Route Handler ───────────────────────────────────────────────────────
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
