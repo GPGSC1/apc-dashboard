@@ -176,7 +176,43 @@ export async function GET(req: Request) {
     [start, end]
   );
 
-  // 13. Per-agent call counts (distinct phones, matching sales-data logic)
+  // 13. Single-agent deep dive (pass ?agent=Name to drill in)
+  const agentParam = url.searchParams.get("agent") || "";
+  let agentDetail: any[] = [];
+  let agentByQueue: any[] = [];
+  let agentByStatus: any[] = [];
+  if (agentParam) {
+    agentDetail = (await query(
+      `SELECT phone, queue, call_date, first_ext, status, direction, destination
+       FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2
+         AND agent_name = $3
+         AND ${NORM} IN ('A1','A2','A3','A4','A5','A6','H1','H2','H3','H4','H5')
+       ORDER BY call_date, queue`,
+      [start, end, agentParam]
+    )).rows;
+    agentByQueue = (await query(
+      `SELECT ${NORM} as nq, status, COUNT(*) as total_rows, COUNT(DISTINCT phone) as distinct_phones
+       FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2
+         AND agent_name = $3
+         AND ${HUMAN}
+         AND ${NORM} IN ('A1','A2','A3','A4','A5','A6','H1','H2','H3','H4','H5')
+       GROUP BY nq, status ORDER BY nq, status`,
+      [start, end, agentParam]
+    )).rows;
+    agentByStatus = (await query(
+      `SELECT status, COUNT(*) as total_rows, COUNT(DISTINCT phone) as distinct_phones
+       FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2
+         AND agent_name = $3
+         AND ${NORM} IN ('A1','A2','A3','A4','A5','A6','H1','H2','H3','H4','H5')
+       GROUP BY status ORDER BY status`,
+      [start, end, agentParam]
+    )).rows;
+  }
+
+  // 14. Per-agent call counts (distinct phones, matching sales-data logic)
   const agentCounts = await query(
     `SELECT agent_name, COUNT(DISTINCT phone) as distinct_phones, COUNT(*) as total_rows
      FROM queue_calls
@@ -213,5 +249,8 @@ export async function GET(req: Request) {
     a4CrossQueue: a4CrossQueue.rows,
     a4TopRepeats: a4TopRepeats.rows,
     agentCounts: agentCounts.rows,
+    agentDetail: agentDetail,
+    agentByQueue: agentByQueue,
+    agentByStatus: agentByStatus,
   });
 }
