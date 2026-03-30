@@ -176,7 +176,17 @@ export async function GET(req: Request) {
     [start, end]
   );
 
-  // 13. Repeat callers detail for A4: phones with most repeat days
+  // 13. Per-agent call counts (distinct phones, matching sales-data logic)
+  const agentCounts = await query(
+    `SELECT agent_name, COUNT(DISTINCT phone) as distinct_phones, COUNT(*) as total_rows
+     FROM queue_calls
+     WHERE call_date BETWEEN $1 AND $2 AND ${HUMAN}
+       AND ${NORM} IN ('A1','A2','A3','A4','A5','A6','H1','H2','H3','H4','H5')
+     GROUP BY agent_name ORDER BY agent_name`,
+    [start, end]
+  );
+
+  // 14. Repeat callers detail for A4: phones with most repeat days
   const a4TopRepeats = await query(
     `SELECT phone, COUNT(DISTINCT call_date) as days, array_agg(DISTINCT call_date ORDER BY call_date) as dates
      FROM queue_calls
@@ -202,5 +212,6 @@ export async function GET(req: Request) {
     a4Daily: a4Daily.rows,
     a4CrossQueue: a4CrossQueue.rows,
     a4TopRepeats: a4TopRepeats.rows,
+    agentCounts: agentCounts.rows,
   });
 }
