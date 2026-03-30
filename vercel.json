@@ -16,7 +16,7 @@
   ],
   "functions": {
     "app/api/seed-refresh/route.ts": {
-      "maxDuration": 60
+      "maxDuration": 300
     },
     "app/api/aida/tick/route.ts": {
       "maxDuration": 30
