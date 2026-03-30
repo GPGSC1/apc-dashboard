@@ -187,7 +187,9 @@ export async function GET(req: Request) {
            ELSE LOWER(TRIM(queue))
          END`;
 
-    // Human answered: has 4-digit extension NOT starting with 99
+    // Human answered: has 4-digit extension NOT starting with 99, AND status = 'answered'
+    // The status filter ensures we only count calls actually picked up by the agent,
+    // not calls that merely rang the agent's extension before being abandoned/forwarded.
     // Normalize queue names in SQL to avoid double-counting across "Mail 1" vs "8023 Mail 1"
     const callsResult = await query(
       `SELECT ${NORM_QUEUE_SQL} as norm_queue, COUNT(DISTINCT phone) as cnt
@@ -196,6 +198,7 @@ export async function GET(req: Request) {
          AND first_ext IS NOT NULL AND first_ext != ''
          AND LENGTH(TRIM(first_ext)) <= 4
          AND TRIM(first_ext) NOT LIKE '99%'
+         AND LOWER(status) = 'answered'
        GROUP BY norm_queue`,
       [fromDate, toDate]
     );
@@ -268,6 +271,7 @@ export async function GET(req: Request) {
          AND first_ext IS NOT NULL AND first_ext != ''
          AND LENGTH(TRIM(first_ext)) <= 4
          AND TRIM(first_ext) NOT LIKE '99%'
+         AND LOWER(status) = 'answered'
        GROUP BY agent_name, norm_queue`,
       [fromDate, toDate]
     );

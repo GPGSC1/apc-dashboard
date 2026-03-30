@@ -25,7 +25,7 @@ export async function GET(req: Request) {
     ELSE LOWER(TRIM(queue))
   END`;
 
-  const HUMAN = `first_ext IS NOT NULL AND first_ext != '' AND LENGTH(TRIM(first_ext)) <= 4 AND TRIM(first_ext) NOT LIKE '99%'`;
+  const HUMAN = `first_ext IS NOT NULL AND first_ext != '' AND LENGTH(TRIM(first_ext)) <= 4 AND TRIM(first_ext) NOT LIKE '99%' AND LOWER(status) = 'answered'`;
 
   // 1. All distinct raw queue names
   const allQueues = await query(
