@@ -542,11 +542,11 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
       const phone = normalizePhone(c[PHI] || "");
       if (!phone || phone.length !== 10) continue;
 
-      // Use initial Queue Name (col QI) for attribution — matches manager reports.
-      // Last Queue Name (col QI+2) is the transfer destination, which misattributes
-      // calls transferred between sales and non-sales queues.
       const queueName = (c[QI] || "").trim();
-      const isSalesQueue = SALES_QUEUES.some((q) => queueName.toLowerCase().includes(q));
+      const lastQueueName = (c[QI + 2] || "").trim();
+      // Use Last Queue Name for answered, Queue Name fallback for unanswered
+      const lastQueueFull = lastQueueName || queueName;
+      const isSalesQueue = SALES_QUEUES.some((q) => lastQueueFull.toLowerCase().includes(q));
       if (!isSalesQueue) continue;
 
       const startTime = (c[STI] || "").trim();
@@ -557,7 +557,7 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
 
       // Track inbound Mail 4 phones
       if (inOut.toLowerCase() === "inbound") {
-        const qLower = queueName.toLowerCase();
+        const qLower = lastQueueFull.toLowerCase();
         if (qLower.includes("mail 4") && !mail4PhonesSet.has(phone)) {
           mail4PhonesSet.add(phone);
           mail4PhoneRows.push([phone]);
@@ -576,7 +576,7 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
           const firstExtName = (c[5] || "").trim();
           const destination = (c[10] || "").trim().replace(/\D/g, "");
           // Clean queue name: remove leading number prefix like "8023 "
-          const cleanQueue = queueName.replace(/^\d+\s+/, "");
+          const cleanQueue = lastQueueFull.replace(/^\d+\s+/, "");
           queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status, destination]);
         }
       }
