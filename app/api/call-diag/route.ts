@@ -213,12 +213,16 @@ export async function GET(req: Request) {
     )).rows;
   }
 
-  // 14. Per-agent call counts (distinct phones, matching sales-data logic)
+  // 14. Per-agent call counts — sum of per-queue distinct phones (matches sales-data logic)
   const agentCounts = await query(
-    `SELECT agent_name, COUNT(DISTINCT phone) as distinct_phones, COUNT(*) as total_rows
-     FROM queue_calls
-     WHERE call_date BETWEEN $1 AND $2 AND ${HUMAN}
-       AND ${NORM} IN ('A1','A2','A3','A4','A5','A6','H1','H2','H3','H4','H5')
+    `SELECT agent_name, SUM(dq) as distinct_phones, SUM(tr) as total_rows
+     FROM (
+       SELECT agent_name, ${NORM} as nq, COUNT(DISTINCT phone) as dq, COUNT(*) as tr
+       FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2 AND ${HUMAN}
+         AND ${NORM} IN ('A1','A2','A3','A4','A5','A6','H1','H2','H3','H4','H5')
+       GROUP BY agent_name, nq
+     ) sub
      GROUP BY agent_name ORDER BY agent_name`,
     [start, end]
   );
