@@ -188,7 +188,8 @@ export async function GET(req: Request) {
        WHERE call_date BETWEEN $1 AND $2
          AND agent_name = $3
          AND ${NORM} IN ('A1','A2','A3','A4','A5','A6','H1','H2','H3','H4','H5')
-       ORDER BY call_date, queue`,
+       ORDER BY call_date, queue
+       LIMIT 20`,
       [start, end, agentParam]
     )).rows;
     agentByQueue = (await query(
