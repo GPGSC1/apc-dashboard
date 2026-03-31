@@ -273,18 +273,17 @@ export async function GET(req: Request) {
       }
     }
 
-    // T.O. agent attribution: count answered calls where dest_name matches a T.O. team member.
-    // Never deduped — every answered T.O. transfer counts.
+    // T.O. agent attribution: count answered transfers from to_transfers table
+    // where dest_name matches a T.O. team member. Never deduped.
     const toAgentResult = await query(
-      `SELECT qc.dest_name as to_agent, COUNT(*) as cnt
-       FROM queue_calls qc
-       JOIN team_members tm ON LOWER(TRIM(qc.dest_name)) = LOWER(TRIM(tm.agent_name))
+      `SELECT tt.dest_name as to_agent, COUNT(*) as cnt
+       FROM to_transfers tt
+       JOIN team_members tm ON LOWER(TRIM(tt.dest_name)) = LOWER(TRIM(tm.agent_name))
        JOIN teams t ON t.id = tm.team_id
-       WHERE qc.call_date BETWEEN $1 AND $2
-         AND LOWER(qc.status) = 'answered'
+       WHERE tt.call_date BETWEEN $1 AND $2
+         AND LOWER(tt.status) = 'answered'
          AND LOWER(t.name) IN ('to.', 't.o.')
-         AND qc.dest_name IS NOT NULL AND qc.dest_name != ''
-       GROUP BY qc.dest_name ORDER BY qc.dest_name`,
+       GROUP BY tt.dest_name ORDER BY tt.dest_name`,
       [fromDate, toDate]
     );
     const toByAgent: Record<string, number> = {};

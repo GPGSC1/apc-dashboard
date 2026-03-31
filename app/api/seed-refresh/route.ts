@@ -434,6 +434,16 @@ async function refreshAim(dates: string[]): Promise<{ addedTransfers: number; up
 async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ addedCalls: number }> {
   // Ensure dest_name column exists (one-time migration)
   await query(`ALTER TABLE queue_calls ADD COLUMN IF NOT EXISTS dest_name TEXT DEFAULT ''`).catch(() => {});
+  // Create to_transfers table for T.O. transfer tracking (outbound calls to T.O. queue)
+  await query(`CREATE TABLE IF NOT EXISTS to_transfers (
+    call_id TEXT PRIMARY KEY,
+    call_date DATE NOT NULL,
+    dest_name TEXT NOT NULL,
+    originating_ext TEXT DEFAULT '',
+    originating_name TEXT DEFAULT '',
+    status TEXT DEFAULT '',
+    talk_time_sec INTEGER DEFAULT 0
+  )`).catch(() => {});
 
   const domain = process.env.TCX_DOMAIN ?? "gpgsc.innicom.com";
   const username = process.env.TCX_USERNAME ?? "1911";
@@ -529,6 +539,7 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const openedCallRows: any[][] = [];
     const queueCallDetailRows: string[][] = [];
+    const toTransferRows: (string | number)[][] = [];
 
     const mail4PhonesSet = new Set<string>();
     const phoneLastQueueMap = new Map<string, { queue: string; date: string }>();
@@ -563,6 +574,17 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
       const qLower = lastQueueFull.toLowerCase();
       const isToQueue = qLower.includes("to");
 
+      // Capture outbound T.O. transfers into dedicated table
+      if (isToQueue && !isInbound && destName) {
+        const dateStr = parseDate(startTime);
+        const callId = (c[CI] || "").trim();
+        if (dateStr && callId) {
+          const origExt = (c[4] || "").trim();
+          const origName = (c[5] || "").trim();
+          toTransferRows.push([callId, dateStr, destName, origExt, origName, status, Math.round(talkSec)]);
+        }
+      }
+
       // Track inbound Mail 4 phones
       if (isInbound) {
         if (qLower.includes("mail 4") && !mail4PhonesSet.has(phone)) {
@@ -571,25 +593,19 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
         }
       }
 
-      // Store call rows: all inbound tracked queues + outbound T.O. transfers
-      if (isInbound || isToQueue) {
+      // Store inbound call rows into queue_calls
+      if (isInbound) {
         const dateStr = parseDate(startTime);
         if (dateStr) {
-          // Only update phone last queue for inbound calls (not T.O. transfers)
-          if (isInbound) {
-            const existing = phoneLastQueueMap.get(phone);
-            if (!existing || dateStr > existing.date) {
-              phoneLastQueueMap.set(phone, { queue: qLower, date: dateStr });
-            }
+          const existing = phoneLastQueueMap.get(phone);
+          if (!existing || dateStr > existing.date) {
+            phoneLastQueueMap.set(phone, { queue: qLower, date: dateStr });
           }
 
-          // Collect detailed call row for queue_calls
           const firstExt = (c[4] || "").trim();
           const firstExtName = (c[5] || "").trim();
           const destinationRaw = (c[10] || "").trim();
-          // Keep digits-only version for AI-forward detection, raw version for T.O. name matching
           const destination = destinationRaw.replace(/\D/g, "");
-          // Clean queue name: remove leading number prefix like "8023 "
           const cleanQueue = lastQueueFull.replace(/^\d+\s+/, "");
           queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status, destination, destName]);
         }
@@ -624,6 +640,20 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
         `INSERT INTO queue_calls (phone,queue,call_date,first_ext,agent_name,direction,status,destination,dest_name) VALUES __VALUES__ ON CONFLICT (phone,queue,call_date) DO UPDATE SET first_ext=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.first_ext ELSE queue_calls.first_ext END, agent_name=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.agent_name ELSE queue_calls.agent_name END, status=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.status ELSE queue_calls.status END, destination=CASE WHEN EXCLUDED.destination!='' THEN EXCLUDED.destination ELSE queue_calls.destination END, dest_name=CASE WHEN EXCLUDED.dest_name!='' THEN EXCLUDED.dest_name ELSE queue_calls.dest_name END`,
         9, uniqueQueueCallRows, 200
       );
+    }
+
+    // Batch insert to_transfers (T.O. transfer calls)
+    if (toTransferRows.length > 0) {
+      if (cleanReimport) {
+        for (const d of dates) {
+          await query(`DELETE FROM to_transfers WHERE call_date = $1`, [d]);
+        }
+      }
+      await batchInsert(
+        `INSERT INTO to_transfers (call_id,call_date,dest_name,originating_ext,originating_name,status,talk_time_sec) VALUES __VALUES__ ON CONFLICT (call_id) DO UPDATE SET dest_name=EXCLUDED.dest_name, status=EXCLUDED.status, talk_time_sec=EXCLUDED.talk_time_sec`,
+        7, toTransferRows, 200
+      );
+      console.log(`[seed-refresh/3CX] Inserted ${toTransferRows.length} T.O. transfer rows`);
     }
 
     // Batch insert mail4_phones
