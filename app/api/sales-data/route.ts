@@ -186,7 +186,7 @@ export async function GET(req: Request) {
            WHEN LOWER(queue) LIKE '%home 3%' THEN 'home 3'
            WHEN LOWER(queue) LIKE '%home 4%' THEN 'home 4'
            WHEN LOWER(queue) LIKE '%home 5%' THEN 'home 5'
-           WHEN TRIM(LOWER(queue)) = 'to' OR LOWER(queue) LIKE '% to' THEN 'to'
+           WHEN TRIM(LOWER(queue)) = 'to' OR LOWER(queue) LIKE '% to' OR LOWER(queue) LIKE 'to %' THEN 'to'
            ELSE LOWER(TRIM(queue))
          END`;
 

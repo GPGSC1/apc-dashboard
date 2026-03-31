@@ -51,3 +51,4 @@ data/Call Summary Report*.csv
 next-env.d.ts
 
 .vercel
+.env*.local
