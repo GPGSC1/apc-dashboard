@@ -257,8 +257,8 @@ function parseAgentDetailCsv(csv: string): AgentAvailability[] {
   return agents;
 }
 
-function parseRonaCsv(csv: string): Record<string, number> {
-  // Returns extension -> RONA count
+function parseRonaCsv(csv: string): { byExt: Record<string, number>; byName: Record<string, number> } {
+  // Returns RONA counts keyed by both extension number and extension name
   const lines = csv.split(/\r?\n/);
   let headerIdx = -1;
   for (let i = 0; i < Math.min(10, lines.length); i++) {
@@ -270,29 +270,30 @@ function parseRonaCsv(csv: string): Record<string, number> {
   if (headerIdx < 0) headerIdx = 2;
 
   const headers = parseCsvLine(lines[headerIdx]).map((h) => h.trim().toLowerCase());
-  const extCol = headers.indexOf("extension number");
-  if (extCol < 0) {
-    // Try alternative header name
-    const altCol = headers.findIndex((h) => h.includes("extension"));
-    if (altCol < 0) return {};
-    // Count RONA per extension from this column
-    return countByCol(lines, headerIdx, altCol);
-  }
-  return countByCol(lines, headerIdx, extCol);
-}
+  const extNumCol = headers.indexOf("extension number");
+  const extNameCol = headers.indexOf("extension name");
 
-function countByCol(lines: string[], headerIdx: number, colIdx: number): Record<string, number> {
-  const counts: Record<string, number> = {};
+  const byExt: Record<string, number> = {};
+  const byName: Record<string, number> = {};
+
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
     const cols = parseCsvLine(line);
-    const ext = (cols[colIdx] ?? "").trim();
-    if (!ext) continue;
-    counts[ext] = (counts[ext] || 0) + 1;
+
+    if (extNumCol >= 0) {
+      const ext = (cols[extNumCol] ?? "").trim();
+      if (ext) byExt[ext] = (byExt[ext] || 0) + 1;
+    }
+    if (extNameCol >= 0) {
+      const name = (cols[extNameCol] ?? "").trim();
+      if (name) byName[name] = (byName[name] || 0) + 1;
+    }
   }
-  return counts;
+
+  return { byExt, byName };
 }
+
 
 /* ── GET handler ────────────────────────────────────────────────────────────── */
 
@@ -331,12 +332,11 @@ export async function GET(request: Request) {
     // Parse Agent Detail
     const agents = parseAgentDetailCsv(agentResp.body);
 
-    // Parse RONA report
-    const ronaCounts = parseRonaCsv(ronaResp.body);
+    // Parse RONA report — match by extension number first, fall back to name
+    const { byExt: ronaByExt, byName: ronaByName } = parseRonaCsv(ronaResp.body);
 
-    // Merge RONA counts into agents
     for (const agent of agents) {
-      agent.ronaCount = ronaCounts[agent.extension] || 0;
+      agent.ronaCount = ronaByExt[agent.extension] || ronaByName[agent.name] || 0;
     }
 
     // Compute summary
@@ -351,6 +351,15 @@ export async function GET(request: Request) {
     return NextResponse.json({
       dateRange: { start: startParam, end: endParam },
       agents,
+      _ronaDebug: {
+        ronaRespStatus: ronaResp.status,
+        ronaBodyLen: ronaResp.body.length,
+        ronaFirst200: ronaResp.body.slice(0, 200),
+        byExtKeys: Object.keys(ronaByExt).slice(0, 10),
+        byNameKeys: Object.keys(ronaByName).slice(0, 10),
+        byExtTotal: Object.values(ronaByExt).reduce((s, v) => s + v, 0),
+        byNameTotal: Object.values(ronaByName).reduce((s, v) => s + v, 0),
+      },
       summary: {
         totalAgents: agents.length,
         loggedIn: loggedIn.length,
