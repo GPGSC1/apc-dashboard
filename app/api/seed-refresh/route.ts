@@ -432,6 +432,9 @@ async function refreshAim(dates: string[]): Promise<{ addedTransfers: number; up
 // ─── 3CX: Direct to Postgres ─────────────────────────────────────────────────
 
 async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ addedCalls: number }> {
+  // Ensure dest_name column exists (one-time migration)
+  await query(`ALTER TABLE queue_calls ADD COLUMN IF NOT EXISTS dest_name TEXT DEFAULT ''`).catch(() => {});
+
   const domain = process.env.TCX_DOMAIN ?? "gpgsc.innicom.com";
   const username = process.env.TCX_USERNAME ?? "1911";
   const password = process.env.TCX_PASSWORD;
@@ -578,7 +581,7 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
           const destination = (c[10] || "").trim().replace(/\D/g, "");
           // Clean queue name: remove leading number prefix like "8023 "
           const cleanQueue = lastQueueFull.replace(/^\d+\s+/, "");
-          queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status, destination]);
+          queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status, destination, destName]);
         }
       }
 
@@ -608,8 +611,8 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
         return true;
       });
       await batchInsert(
-        `INSERT INTO queue_calls (phone,queue,call_date,first_ext,agent_name,direction,status,destination) VALUES __VALUES__ ON CONFLICT (phone,queue,call_date) DO UPDATE SET first_ext=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.first_ext ELSE queue_calls.first_ext END, agent_name=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.agent_name ELSE queue_calls.agent_name END, status=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.status ELSE queue_calls.status END, destination=CASE WHEN EXCLUDED.destination!='' THEN EXCLUDED.destination ELSE queue_calls.destination END`,
-        8, uniqueQueueCallRows, 200
+        `INSERT INTO queue_calls (phone,queue,call_date,first_ext,agent_name,direction,status,destination,dest_name) VALUES __VALUES__ ON CONFLICT (phone,queue,call_date) DO UPDATE SET first_ext=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.first_ext ELSE queue_calls.first_ext END, agent_name=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.agent_name ELSE queue_calls.agent_name END, status=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.status ELSE queue_calls.status END, destination=CASE WHEN EXCLUDED.destination!='' THEN EXCLUDED.destination ELSE queue_calls.destination END, dest_name=CASE WHEN EXCLUDED.dest_name!='' THEN EXCLUDED.dest_name ELSE queue_calls.dest_name END`,
+        9, uniqueQueueCallRows, 200
       );
     }
 

@@ -195,8 +195,8 @@ export async function GET(req: Request) {
          AND TRIM(first_ext) NOT LIKE '99%'
          AND LOWER(status) = 'answered'`;
 
-    // Dedup CTE: first chronological phone per queue per month for sales queues,
-    // NO dedup for T.O. (every call counts), Spanish/CS/Collections excluded from main counts
+    // Dedup CTE: first chronological phone per queue per month for sales queues only
+    // T.O. is now identified by dest_name matching T.O. team members, not by queue
     const DEDUP_CTE = `
       WITH answered AS (
         SELECT phone, call_date, agent_name,
@@ -217,9 +217,6 @@ export async function GET(req: Request) {
         WHERE rn = 1
           AND norm_queue IN ('mail 1','mail 2','mail 3','mail 4','mail 5','mail 6',
                              'home 1','home 2','home 3','home 4','home 5')
-        UNION ALL
-        SELECT phone, norm_queue, call_date, agent_name FROM ranked
-        WHERE norm_queue = 'to'
       )`;
 
     // Human-answered calls per queue (deduped)
@@ -231,7 +228,7 @@ export async function GET(req: Request) {
     const queueCalls: Record<string, number> = {};
     let totalCalls = 0;
     for (const row of callsResult.rows) {
-      const mapped = mapAnyQueue(row.norm_queue);
+      const mapped = mapQueue(row.norm_queue);
       if (mapped) {
         const cnt = parseInt(row.cnt);
         queueCalls[mapped] = (queueCalls[mapped] ?? 0) + cnt;
@@ -239,8 +236,10 @@ export async function GET(req: Request) {
       }
     }
 
-    // T.O. call count (stays in totalCalls, also tracked separately for agent attribution)
-    const toCallCount = queueCalls["TO"] ?? 0;
+    // T.O. call count — identified by dest_name matching T.O. team members
+    // These do NOT get added to main sales call totals
+    // Every answered call transferred to a T.O. rep counts (no dedup)
+    let toCallCount = 0;
 
     // Spanish agent attribution (deduped like regular queues, but separate from sales totals)
     const spanishResult = await query(
@@ -274,18 +273,28 @@ export async function GET(req: Request) {
       }
     }
 
-    // T.O. agent attribution (never deduped)
+    // T.O. agent attribution — match dest_name against T.O. team members
+    // Never deduped: every answered transfer to a T.O. rep counts
     const toAgentResult = await query(
-      `${DEDUP_CTE}
-       SELECT agent_name, COUNT(*) as cnt FROM deduped
-       WHERE norm_queue = 'to'
-       GROUP BY agent_name ORDER BY agent_name`,
+      `SELECT qc.dest_name, COUNT(*) as cnt
+       FROM queue_calls qc
+       JOIN team_members tm ON LOWER(TRIM(qc.dest_name)) = LOWER(TRIM(tm.agent_name))
+       JOIN teams t ON t.id = tm.team_id
+       WHERE qc.call_date BETWEEN $1 AND $2
+         AND LOWER(t.name) IN ('to.', 't.o.')
+         AND qc.dest_name IS NOT NULL AND qc.dest_name != ''
+         AND LOWER(qc.status) = 'answered'
+       GROUP BY qc.dest_name ORDER BY qc.dest_name`,
       [fromDate, toDate]
     );
     const toByAgent: Record<string, number> = {};
     for (const row of toAgentResult.rows) {
-      const agent = (row.agent_name ?? "").trim();
-      if (agent) toByAgent[agent] = parseInt(row.cnt);
+      const agent = (row.dest_name ?? "").trim();
+      if (agent) {
+        const cnt = parseInt(row.cnt);
+        toByAgent[agent] = cnt;
+        toCallCount += cnt;
+      }
     }
 
     // AI-forwarded calls: either ext starts with 99, OR blank ext with 11-digit destination (forwarded to AI)
@@ -350,7 +359,7 @@ export async function GET(req: Request) {
     const agentQueueCalls: Map<string, Record<string, number>> = new Map();
     for (const row of agentCallsResult.rows) {
       const agent = (row.agent_name ?? "").trim();
-      const mapped = mapAnyQueue(row.norm_queue);
+      const mapped = mapQueue(row.norm_queue);
       if (!agent || !mapped) continue;
       if (!agentQueueCalls.has(agent)) agentQueueCalls.set(agent, {});
       const rec = agentQueueCalls.get(agent)!;
