@@ -253,6 +253,33 @@ export async function GET(req: Request) {
     [start, end]
   );
 
+  // 15. Dest_name diagnostic — check what dest_names exist and T.O. team member matching
+  const destNameSample = await query(
+    `SELECT dest_name, COUNT(*) as cnt FROM queue_calls
+     WHERE call_date BETWEEN $1 AND $2 AND dest_name IS NOT NULL AND dest_name != ''
+     GROUP BY dest_name ORDER BY cnt DESC LIMIT 30`,
+    [start, end]
+  );
+
+  const toTeamMembers = await query(
+    `SELECT tm.agent_name, t.name as team_name FROM team_members tm
+     JOIN teams t ON t.id = tm.team_id
+     WHERE LOWER(t.name) IN ('to.', 't.o.')`
+  );
+
+  const toTransferMatch = await query(
+    `SELECT qc.dest_name, COUNT(*) as cnt
+     FROM queue_calls qc
+     JOIN team_members tm ON LOWER(TRIM(qc.dest_name)) = LOWER(TRIM(tm.agent_name))
+     JOIN teams t ON t.id = tm.team_id
+     WHERE qc.call_date BETWEEN $1 AND $2
+       AND LOWER(t.name) IN ('to.', 't.o.')
+       AND qc.dest_name IS NOT NULL AND qc.dest_name != ''
+       AND LOWER(qc.status) = 'answered'
+     GROUP BY qc.dest_name`,
+    [start, end]
+  );
+
   return NextResponse.json({
     dateRange: { start, end },
     allQueues: allQueues.rows,
@@ -271,5 +298,8 @@ export async function GET(req: Request) {
     agentDetail: agentDetail,
     agentByQueue: agentByQueue,
     agentByStatus: agentByStatus,
+    destNameSample: destNameSample.rows,
+    toTeamMembers: toTeamMembers.rows,
+    toTransferMatch: toTransferMatch.rows,
   });
 }
