@@ -354,15 +354,6 @@ export async function GET(request: Request) {
     return NextResponse.json({
       dateRange: { start: startParam, end: endParam },
       agents,
-      _ronaDebug: {
-        ronaRespStatus: ronaResp.status,
-        ronaBodyLen: ronaResp.body.length,
-        ronaFirst200: ronaResp.body.slice(0, 200),
-        byExtKeys: Object.keys(ronaByExt).slice(0, 10),
-        byNameKeys: Object.keys(ronaByName).slice(0, 10),
-        byExtTotal: Object.values(ronaByExt).reduce((s, v) => s + v, 0),
-        byNameTotal: Object.values(ronaByName).reduce((s, v) => s + v, 0),
-      },
       summary: {
         totalAgents: agents.length,
         loggedIn: loggedIn.length,
