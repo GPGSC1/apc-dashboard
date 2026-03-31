@@ -957,6 +957,7 @@ export async function GET(req: Request) {
   const forceDates = url.searchParams.get("dates");
   const mode = url.searchParams.get("mode"); // "catchup" = 4am full previous day
   const tcxClean = url.searchParams.get("tcx_clean") === "true"; // delete+reimport queue_calls
+  const sourceFilter = url.searchParams.get("source"); // "tcx", "aim", "moxy", "moxy_home" — run only one source
 
   console.log(`[seed-refresh] Triggered at ${ctNow}${forceDates ? ` (forced: ${forceDates})` : ""}${mode ? ` (mode: ${mode})` : ""}`);
 
@@ -994,12 +995,17 @@ export async function GET(req: Request) {
 
     console.log(`[seed-refresh] Fetching: ${datesToFetch.join(", ")}`);
 
-    // Run all four source refreshes
+    // Run source refreshes (all four, or filtered to one)
+    const runAim = !sourceFilter || sourceFilter === "aim";
+    const runTcx = !sourceFilter || sourceFilter === "tcx";
+    const runMoxy = !sourceFilter || sourceFilter === "moxy";
+    const runMoxyHome = !sourceFilter || sourceFilter === "moxy_home";
+
     const results = await Promise.allSettled([
-      refreshAim(datesToFetch),
-      refresh3cx(datesToFetch, tcxClean),
-      refreshMoxy(datesToFetch),
-      refreshMoxyHome(datesToFetch),
+      runAim ? refreshAim(datesToFetch) : Promise.resolve({ skipped: true }),
+      runTcx ? refresh3cx(datesToFetch, tcxClean) : Promise.resolve({ skipped: true }),
+      runMoxy ? refreshMoxy(datesToFetch) : Promise.resolve({ skipped: true }),
+      runMoxyHome ? refreshMoxyHome(datesToFetch) : Promise.resolve({ skipped: true }),
     ]);
 
     const aimResult = results[0].status === "fulfilled" ? results[0].value : { error: String((results[0] as PromiseRejectedResult).reason) };
