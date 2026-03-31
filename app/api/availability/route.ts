@@ -154,12 +154,15 @@ async function login3cx(domain: string, username: string, password: string): Pro
 
 /* ── report fetching ────────────────────────────────────────────────────────── */
 
-function buildReportUrl(domain: string, rdId: string, mm: string, dd: string, yyyy: string): string {
+function buildReportUrl(domain: string, rdId: string, startMm: string, startDd: string, startYyyy: string, endMm?: string, endDd?: string, endYyyy?: string): string {
+  const d2mm = endMm ?? startMm;
+  const d2dd = endDd ?? startDd;
+  const d2yyyy = endYyyy ?? startYyyy;
   return (
     `https://${domain}/app0422/RunReportDefinitionToFile.ashx` +
     `?Output=Excel&U_ID=19978&RD_ID=${rdId}` +
-    `&Criteria=Date1%3D${mm}%2F${dd}%2F${yyyy}%7C%7C%7C` +
-    `Date2%3D${mm}%2F${dd}%2F${yyyy}%7C%7C%7C` +
+    `&Criteria=Date1%3D${startMm}%2F${startDd}%2F${startYyyy}%7C%7C%7C` +
+    `Date2%3D${d2mm}%2F${d2dd}%2F${d2yyyy}%7C%7C%7C` +
     `Extensions%3D%7C%7C%7CQueues%3D%7C%7C%7C` +
     `SortColumn%3D%7C%7C%7CSortAorD%3DASC`
   );
@@ -303,8 +306,11 @@ export async function GET(request: Request) {
     const [ctM, ctD, ctY] = ctStr.split("/");
     const todayISO = `${ctY}-${ctM}-${ctD}`;
 
-    const dateParam = searchParams.get("date") || todayISO;
-    const [yyyy, mm, dd] = dateParam.split("-");
+    // Support date range: ?start=YYYY-MM-DD&end=YYYY-MM-DD (or legacy ?date=)
+    const startParam = searchParams.get("start") || searchParams.get("date") || todayISO;
+    const endParam = searchParams.get("end") || startParam;
+    const [sYyyy, sMm, sDd] = startParam.split("-");
+    const [eYyyy, eMm, eDd] = endParam.split("-");
 
     const domain = process.env.TCX_DOMAIN || "gpgsc.innicom.com";
     const username = process.env.TCX_USERNAME || "1911";
@@ -313,9 +319,9 @@ export async function GET(request: Request) {
     // Authenticate
     const cookies = await login3cx(domain, username, password);
 
-    // Fetch both reports in parallel
-    const agentDetailUrl = buildReportUrl(domain, AGENT_DETAIL_RD, mm, dd, yyyy);
-    const ronaUrl = buildReportUrl(domain, RONA_RD, mm, dd, yyyy);
+    // Fetch both reports in parallel with date range
+    const agentDetailUrl = buildReportUrl(domain, AGENT_DETAIL_RD, sMm, sDd, sYyyy, eMm, eDd, eYyyy);
+    const ronaUrl = buildReportUrl(domain, RONA_RD, sMm, sDd, sYyyy, eMm, eDd, eYyyy);
 
     const [agentResp, ronaResp] = await Promise.all([
       httpsGet(agentDetailUrl, { Cookie: cookies }),
@@ -343,7 +349,7 @@ export async function GET(request: Request) {
     const totalRona = agents.reduce((s, a) => s + a.ronaCount, 0);
 
     return NextResponse.json({
-      date: dateParam,
+      dateRange: { start: startParam, end: endParam },
       agents,
       summary: {
         totalAgents: agents.length,
