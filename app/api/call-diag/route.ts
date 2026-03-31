@@ -301,5 +301,16 @@ export async function GET(req: Request) {
     destNameSample: destNameSample.rows,
     toTeamMembers: toTeamMembers.rows,
     toTransferMatch: toTransferMatch.rows,
+    toNameSearch: (await query(
+      `SELECT DISTINCT dest_name FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2
+         AND dest_name IS NOT NULL AND dest_name != ''
+         AND (LOWER(dest_name) LIKE '%crews%' OR LOWER(dest_name) LIKE '%schieferle%'
+              OR LOWER(dest_name) LIKE '%collins%' OR LOWER(dest_name) LIKE '%robin%'
+              OR LOWER(dest_name) LIKE '%frackelton%' OR LOWER(dest_name) LIKE '%skaggs%'
+              OR LOWER(dest_name) LIKE '%butler%' OR LOWER(dest_name) LIKE '%ellison%'
+              OR LOWER(dest_name) LIKE '%cortez%')`,
+      [start, end]
+    )).rows,
   });
 }
