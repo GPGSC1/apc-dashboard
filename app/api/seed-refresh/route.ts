@@ -554,12 +554,8 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
       const callId = (c[CI] || "").trim();
       if (!callId) continue;
 
-      const phone = normalizePhone(c[PHI] || "");
-      if (!phone || phone.length !== 10) continue;
-
       const queueName = (c[QI] || "").trim();
       const lastQueueName = (c[QI + 2] || "").trim();
-      // Use Last Queue Name for answered, Queue Name fallback for unanswered
       const lastQueueFull = lastQueueName || queueName;
       const isTrackedQueue = TRACKED_QUEUES.some((q) => lastQueueFull.toLowerCase().includes(q));
       if (!isTrackedQueue) continue;
@@ -569,21 +565,23 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
       const status = (c[SSI] || "").trim().toLowerCase();
       const talkSec = parseFloat(c[TTI] || "0") || 0;
       const inOut = (c[IOI] || "").trim();
-
       const isInbound = inOut.toLowerCase() === "inbound";
       const qLower = lastQueueFull.toLowerCase();
       const isToQueue = qLower.includes("to");
 
-      // Capture outbound T.O. transfers into dedicated table
+      // Capture outbound T.O. transfers into dedicated table (before phone check —
+      // T.O. rows have extensions in the phone field, not 10-digit numbers)
       if (isToQueue && !isInbound && destName) {
         const dateStr = parseDate(startTime);
-        const callId = (c[CI] || "").trim();
         if (dateStr && callId) {
           const origExt = (c[4] || "").trim();
           const origName = (c[5] || "").trim();
           toTransferRows.push([callId, dateStr, destName, origExt, origName, status, Math.round(talkSec)]);
         }
       }
+
+      const phone = normalizePhone(c[PHI] || "");
+      if (!phone || phone.length !== 10) continue;
 
       // Track inbound Mail 4 phones
       if (isInbound) {
