@@ -274,7 +274,7 @@ export async function GET(req: Request) {
     }
 
     // T.O. agent attribution — two sources combined:
-    // 1) Calls answered in the TO queue (agent_name = T.O. rep)
+    // 1) Calls answered in the TO queue BY a T.O. team member (non-T.O. reps ignored)
     // 2) Calls in any queue where dest_name matches a T.O. team member
     // Never deduped: every answered T.O. transfer counts.
     const toAgentResult = await query(
@@ -284,13 +284,14 @@ export async function GET(req: Request) {
          JOIN teams t ON t.id = tm.team_id
          WHERE LOWER(t.name) IN ('to.', 't.o.')
        ),
-       -- Source 1: calls in the TO queue
+       -- Source 1: calls in the TO queue answered by a T.O. team member only
        to_queue_calls AS (
          SELECT agent_name as to_agent, COUNT(*) as cnt
          FROM queue_calls
          WHERE call_date BETWEEN $1 AND $2
            AND ${HUMAN_FILTER}
            AND (${NORM_QUEUE_SQL}) = 'to'
+           AND LOWER(TRIM(agent_name)) IN (SELECT name FROM to_members)
          GROUP BY agent_name
        ),
        -- Source 2: calls where dest_name matches a T.O. team member
