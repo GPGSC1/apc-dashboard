@@ -578,10 +578,12 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
           // Collect detailed call row for queue_calls
           const firstExt = (c[4] || "").trim();
           const firstExtName = (c[5] || "").trim();
-          const destination = (c[10] || "").trim().replace(/\D/g, "");
+          const destinationRaw = (c[10] || "").trim();
+          // Keep digits-only version for AI-forward detection, raw version for T.O. name matching
+          const destination = destinationRaw.replace(/\D/g, "");
           // Clean queue name: remove leading number prefix like "8023 "
           const cleanQueue = lastQueueFull.replace(/^\d+\s+/, "");
-          queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status, destination, destName]);
+          queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status, destination, destinationRaw]);
         }
       }
 
