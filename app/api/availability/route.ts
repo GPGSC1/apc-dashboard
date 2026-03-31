@@ -260,14 +260,17 @@ function parseAgentDetailCsv(csv: string): AgentAvailability[] {
 function parseRonaCsv(csv: string): { byExt: Record<string, number>; byName: Record<string, number> } {
   // Returns RONA counts keyed by both extension number and extension name
   const lines = csv.split(/\r?\n/);
+  // Find the REAL header row — must contain BOTH "callid" and "extension"
+  // (the CSV has a fake header row with just "CallID,,,,,,,," before the real one)
   let headerIdx = -1;
   for (let i = 0; i < Math.min(10, lines.length); i++) {
-    if (lines[i].toLowerCase().includes("callid") || lines[i].toLowerCase().includes("extension")) {
+    const lower = lines[i].toLowerCase();
+    if (lower.includes("callid") && lower.includes("extension")) {
       headerIdx = i;
       break;
     }
   }
-  if (headerIdx < 0) headerIdx = 2;
+  if (headerIdx < 0) headerIdx = 3; // fallback to row 4
 
   const headers = parseCsvLine(lines[headerIdx]).map((h) => h.trim().toLowerCase());
   const extNumCol = headers.indexOf("extension number");
