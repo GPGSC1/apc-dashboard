@@ -863,12 +863,20 @@ export default function SalesDashboard() {
     const TeamBlock = ({ team, members, color, isUnassigned }: { team: string; members: string[]; color: string; isUnassigned?: boolean }) => {
       const expanded = expandedTeams[team] === true;
       const isToTeam = team.toLowerCase() === "t.o." || team.toLowerCase() === "to.";
+      const isSpanishTeam = team.toLowerCase() === "spanish";
+      const isTransferTeam = isToTeam || isSpanishTeam;
       const baseTotals = computeTeamTotals(members);
-      // For T.O. team, compute deals from toCloserStats
-      const toTeamDeals = isToTeam
+      // For T.O. and Spanish teams, use transfer-based call counts
+      const transferCallSource = isToTeam ? data.toCalls?.byAgent : isSpanishTeam ? data.spanishCalls?.byAgent : null;
+      const transferDeals = isToTeam
         ? members.reduce((sum, name) => sum + (data.toCloserStats?.[name]?.deals ?? 0), 0)
         : baseTotals.deals;
-      const totals = isToTeam ? { ...baseTotals, deals: toTeamDeals } : baseTotals;
+      const transferCalls = isTransferTeam && transferCallSource
+        ? members.reduce((sum, name) => sum + (transferCallSource[name] ?? 0), 0)
+        : baseTotals.calls;
+      const totals = isTransferTeam
+        ? { ...baseTotals, deals: transferDeals, calls: transferCalls, rate: transferCalls > 0 ? transferDeals / transferCalls : 0 }
+        : baseTotals;
       const cellBase = { padding: "10px 12px", fontSize: 13, textAlign: "right" as const, fontFamily: FONT, borderBottom: `1px solid ${C.border}` };
       const toDeals = data.toDeals ?? [];
 
@@ -923,7 +931,7 @@ export default function SalesDashboard() {
                 </span>
               )}
               <span style={{ color: C.success, fontWeight: 700, fontSize: 13, marginLeft: 20 }}>
-                {totals.deals} {isToTeam ? "closed" : "deals"}
+                {totals.deals} {isTransferTeam ? "closed" : "deals"}
               </span>
               <span style={{ color: C.secondary, fontSize: 13, marginLeft: 12 }}>
                 {fmt(totals.calls)} calls
@@ -989,7 +997,7 @@ export default function SalesDashboard() {
                       Name {sortKey === "name" ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
                     </th>
                     <th onClick={() => handleSort("deals")} style={{ ...thBase, cursor: "pointer", userSelect: "none", color: sortKey === "deals" ? C.purpleLight : C.muted }}>
-                      {isToTeam ? "Closed" : "Deals"} {sortKey === "deals" ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                      {isTransferTeam ? "Closed" : "Deals"} {sortKey === "deals" ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
                     </th>
                     <th onClick={() => handleSort("calls")} style={{ ...thBase, cursor: "pointer", userSelect: "none", color: sortKey === "calls" ? C.purpleLight : C.muted }}>
                       Calls {sortKey === "calls" ? (sortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
@@ -1014,8 +1022,8 @@ export default function SalesDashboard() {
                   {[...members].sort((a, b) => {
                     const rawSa = data.bySalesperson[a] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
                     const rawSb = data.bySalesperson[b] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
-                    const sa = isToTeam ? { ...rawSa, totalDeals: data.toCloserStats?.[a]?.deals ?? rawSa.totalDeals } : rawSa;
-                    const sb = isToTeam ? { ...rawSb, totalDeals: data.toCloserStats?.[b]?.deals ?? rawSb.totalDeals } : rawSb;
+                    const sa = isTransferTeam ? { ...rawSa, totalDeals: isToTeam ? (data.toCloserStats?.[a]?.deals ?? rawSa.totalDeals) : rawSa.totalDeals, totalCalls: transferCallSource?.[a] ?? rawSa.totalCalls } : rawSa;
+                    const sb = isTransferTeam ? { ...rawSb, totalDeals: isToTeam ? (data.toCloserStats?.[b]?.deals ?? rawSb.totalDeals) : rawSb.totalDeals, totalCalls: transferCallSource?.[b] ?? rawSb.totalCalls } : rawSb;
                     let va: number | string;
                     let vb: number | string;
                     if (sortKey === "name") {
@@ -1048,9 +1056,10 @@ export default function SalesDashboard() {
                       <AgentRow
                         key={name}
                         name={name}
-                        stats={isToTeam ? {
+                        stats={isTransferTeam ? {
                           ...stats,
-                          totalDeals: data.toCloserStats?.[name]?.deals ?? stats.totalDeals,
+                          totalDeals: isToTeam ? (data.toCloserStats?.[name]?.deals ?? stats.totalDeals) : stats.totalDeals,
+                          totalCalls: transferCallSource?.[name] ?? stats.totalCalls,
                         } : stats}
                         view={productView}
                       />

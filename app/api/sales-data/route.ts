@@ -241,31 +241,23 @@ export async function GET(req: Request) {
     // Every answered call transferred to a T.O. rep counts (no dedup)
     let toCallCount = 0;
 
-    // Spanish agent attribution (deduped like regular queues, but separate from sales totals)
+    // Spanish agent attribution: count dest_name matches against Spanish team members
+    // Same approach as T.O. — count from to_transfers table, never deduped
     const spanishResult = await query(
-      `WITH answered AS (
-        SELECT phone, call_date, agent_name,
-          ${NORM_QUEUE_SQL} as norm_queue
-        FROM queue_calls
-        WHERE call_date BETWEEN $1 AND $2
-          AND ${HUMAN_FILTER}
-      ),
-      ranked AS (
-        SELECT *, ROW_NUMBER() OVER (
-          PARTITION BY phone, norm_queue
-          ORDER BY call_date ASC
-        ) as rn
-        FROM answered
-      )
-      SELECT agent_name, COUNT(*) as cnt FROM ranked
-      WHERE rn = 1 AND norm_queue = 'spanish'
-      GROUP BY agent_name ORDER BY agent_name`,
+      `SELECT tt.dest_name as sp_agent, COUNT(*) as cnt
+       FROM to_transfers tt
+       JOIN team_members tm ON LOWER(TRIM(tt.dest_name)) = LOWER(TRIM(tm.agent_name))
+       JOIN teams t ON t.id = tm.team_id
+       WHERE tt.call_date BETWEEN $1 AND $2
+         AND LOWER(tt.status) = 'answered'
+         AND LOWER(t.name) IN ('spanish')
+       GROUP BY tt.dest_name ORDER BY tt.dest_name`,
       [fromDate, toDate]
     );
     const spanishByAgent: Record<string, number> = {};
     let spanishTotal = 0;
     for (const row of spanishResult.rows) {
-      const agent = (row.agent_name ?? "").trim();
+      const agent = (row.sp_agent ?? "").trim();
       if (agent) {
         const cnt = parseInt(row.cnt);
         spanishByAgent[agent] = cnt;

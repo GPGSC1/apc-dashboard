@@ -434,7 +434,7 @@ async function refreshAim(dates: string[]): Promise<{ addedTransfers: number; up
 async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ addedCalls: number }> {
   // Ensure dest_name column exists (one-time migration)
   await query(`ALTER TABLE queue_calls ADD COLUMN IF NOT EXISTS dest_name TEXT DEFAULT ''`).catch(() => {});
-  // Create to_transfers table for T.O. transfer tracking (outbound calls to T.O. queue)
+  // Create to_transfers table for internal transfer tracking (T.O. + Spanish queues)
   await query(`CREATE TABLE IF NOT EXISTS to_transfers (
     call_id TEXT PRIMARY KEY,
     call_date DATE NOT NULL,
@@ -442,8 +442,10 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
     originating_ext TEXT DEFAULT '',
     originating_name TEXT DEFAULT '',
     status TEXT DEFAULT '',
-    talk_time_sec INTEGER DEFAULT 0
+    talk_time_sec INTEGER DEFAULT 0,
+    queue TEXT DEFAULT ''
   )`).catch(() => {});
+  await query(`ALTER TABLE to_transfers ADD COLUMN IF NOT EXISTS queue TEXT DEFAULT ''`).catch(() => {});
 
   const domain = process.env.TCX_DOMAIN ?? "gpgsc.innicom.com";
   const username = process.env.TCX_USERNAME ?? "1911";
@@ -568,15 +570,17 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
       const isInbound = inOut.toLowerCase() === "inbound";
       const qLower = lastQueueFull.toLowerCase();
       const isToQueue = qLower.includes("to");
+      const isSpanishQueue = qLower.includes("spanish");
 
-      // Capture outbound T.O. transfers into dedicated table (before phone check —
-      // T.O. rows have extensions in the phone field, not 10-digit numbers)
-      if (isToQueue && !isInbound && destName) {
+      // Capture internal transfers (T.O. + Spanish) into to_transfers table
+      // These rows often have extensions in the phone field, not 10-digit numbers
+      if ((isToQueue || isSpanishQueue) && destName) {
         const dateStr = parseDate(startTime);
         if (dateStr && callId) {
           const origExt = (c[4] || "").trim();
           const origName = (c[5] || "").trim();
-          toTransferRows.push([callId, dateStr, destName, origExt, origName, status, Math.round(talkSec)]);
+          const transferQueue = isToQueue ? "to" : "spanish";
+          toTransferRows.push([callId, dateStr, destName, origExt, origName, status, Math.round(talkSec), transferQueue]);
         }
       }
 
@@ -648,8 +652,8 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
         }
       }
       await batchInsert(
-        `INSERT INTO to_transfers (call_id,call_date,dest_name,originating_ext,originating_name,status,talk_time_sec) VALUES __VALUES__ ON CONFLICT (call_id) DO UPDATE SET dest_name=EXCLUDED.dest_name, status=EXCLUDED.status, talk_time_sec=EXCLUDED.talk_time_sec`,
-        7, toTransferRows, 200
+        `INSERT INTO to_transfers (call_id,call_date,dest_name,originating_ext,originating_name,status,talk_time_sec,queue) VALUES __VALUES__ ON CONFLICT (call_id) DO UPDATE SET dest_name=EXCLUDED.dest_name, status=EXCLUDED.status, talk_time_sec=EXCLUDED.talk_time_sec, queue=EXCLUDED.queue`,
+        8, toTransferRows, 200
       );
       console.log(`[seed-refresh/3CX] Inserted ${toTransferRows.length} T.O. transfer rows`);
     }
