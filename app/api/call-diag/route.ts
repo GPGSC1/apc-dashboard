@@ -299,6 +299,23 @@ export async function GET(req: Request) {
     agentByQueue: agentByQueue,
     agentByStatus: agentByStatus,
     destNameSample: destNameSample.rows,
+    destinationSample: (await query(
+      `SELECT destination, COUNT(*) as cnt FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2 AND destination IS NOT NULL AND destination != ''
+       GROUP BY destination ORDER BY cnt DESC LIMIT 30`,
+      [start, end]
+    )).rows,
+    destinationTOSearch: (await query(
+      `SELECT DISTINCT destination FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2
+         AND destination IS NOT NULL AND destination != ''
+         AND (LOWER(destination) LIKE '%crews%' OR LOWER(destination) LIKE '%schieferle%'
+              OR LOWER(destination) LIKE '%collins%' OR LOWER(destination) LIKE '%robin%'
+              OR LOWER(destination) LIKE '%frackelton%' OR LOWER(destination) LIKE '%skaggs%'
+              OR LOWER(destination) LIKE '%butler%' OR LOWER(destination) LIKE '%ellison%'
+              OR LOWER(destination) LIKE '%cortez%')`,
+      [start, end]
+    )).rows,
     toTeamMembers: toTeamMembers.rows,
     toTransferMatch: toTransferMatch.rows,
     toNameSearch: (await query(
