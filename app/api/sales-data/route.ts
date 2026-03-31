@@ -273,24 +273,47 @@ export async function GET(req: Request) {
       }
     }
 
-    // T.O. agent attribution — match dest_name (Destination Name = column L in 3CX)
-    // against T.O. team members. Never deduped: every answered T.O. transfer counts.
-    // dest_name contains the name of the agent the call was sent TO (transfer target).
+    // T.O. agent attribution — two sources combined:
+    // 1) Calls answered in the TO queue (agent_name = T.O. rep)
+    // 2) Calls in any queue where dest_name matches a T.O. team member
+    // Never deduped: every answered T.O. transfer counts.
     const toAgentResult = await query(
-      `SELECT qc.dest_name, COUNT(*) as cnt
-       FROM queue_calls qc
-       JOIN team_members tm ON LOWER(TRIM(qc.dest_name)) = LOWER(TRIM(tm.agent_name))
-       JOIN teams t ON t.id = tm.team_id
-       WHERE qc.call_date BETWEEN $1 AND $2
-         AND LOWER(t.name) IN ('to.', 't.o.')
-         AND qc.dest_name IS NOT NULL AND qc.dest_name != ''
-         AND LOWER(qc.status) = 'answered'
-       GROUP BY qc.dest_name ORDER BY qc.dest_name`,
+      `WITH to_members AS (
+         SELECT LOWER(TRIM(tm.agent_name)) as name
+         FROM team_members tm
+         JOIN teams t ON t.id = tm.team_id
+         WHERE LOWER(t.name) IN ('to.', 't.o.')
+       ),
+       -- Source 1: calls in the TO queue
+       to_queue_calls AS (
+         SELECT agent_name as to_agent, COUNT(*) as cnt
+         FROM queue_calls
+         WHERE call_date BETWEEN $1 AND $2
+           AND ${HUMAN_FILTER}
+           AND (${NORM_QUEUE_SQL}) = 'to'
+         GROUP BY agent_name
+       ),
+       -- Source 2: calls where dest_name matches a T.O. team member
+       to_dest_calls AS (
+         SELECT qc.dest_name as to_agent, COUNT(*) as cnt
+         FROM queue_calls qc
+         WHERE qc.call_date BETWEEN $1 AND $2
+           AND LOWER(qc.status) = 'answered'
+           AND LOWER(TRIM(qc.dest_name)) IN (SELECT name FROM to_members)
+           AND qc.dest_name IS NOT NULL AND qc.dest_name != ''
+         GROUP BY qc.dest_name
+       )
+       SELECT to_agent, SUM(cnt) as cnt FROM (
+         SELECT * FROM to_queue_calls
+         UNION ALL
+         SELECT * FROM to_dest_calls
+       ) combined
+       GROUP BY to_agent ORDER BY to_agent`,
       [fromDate, toDate]
     );
     const toByAgent: Record<string, number> = {};
     for (const row of toAgentResult.rows) {
-      const agent = (row.dest_name ?? "").trim();
+      const agent = (row.to_agent ?? "").trim();
       if (agent) {
         const cnt = parseInt(row.cnt);
         toByAgent[agent] = cnt;
