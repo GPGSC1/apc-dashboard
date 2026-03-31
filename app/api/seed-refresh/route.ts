@@ -559,20 +559,28 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
       const talkSec = parseFloat(c[TTI] || "0") || 0;
       const inOut = (c[IOI] || "").trim();
 
+      const isInbound = inOut.toLowerCase() === "inbound";
+      const qLower = lastQueueFull.toLowerCase();
+      const isToQueue = qLower.includes("to");
+
       // Track inbound Mail 4 phones
-      if (inOut.toLowerCase() === "inbound") {
-        const qLower = lastQueueFull.toLowerCase();
+      if (isInbound) {
         if (qLower.includes("mail 4") && !mail4PhonesSet.has(phone)) {
           mail4PhonesSet.add(phone);
           mail4PhoneRows.push([phone]);
         }
+      }
 
-        // Track phone last queue (keep most recent)
+      // Store call rows: all inbound tracked queues + outbound T.O. transfers
+      if (isInbound || isToQueue) {
         const dateStr = parseDate(startTime);
         if (dateStr) {
-          const existing = phoneLastQueueMap.get(phone);
-          if (!existing || dateStr > existing.date) {
-            phoneLastQueueMap.set(phone, { queue: qLower, date: dateStr });
+          // Only update phone last queue for inbound calls (not T.O. transfers)
+          if (isInbound) {
+            const existing = phoneLastQueueMap.get(phone);
+            if (!existing || dateStr > existing.date) {
+              phoneLastQueueMap.set(phone, { queue: qLower, date: dateStr });
+            }
           }
 
           // Collect detailed call row for queue_calls
