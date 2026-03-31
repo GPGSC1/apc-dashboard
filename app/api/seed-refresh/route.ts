@@ -583,7 +583,7 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
           const destination = destinationRaw.replace(/\D/g, "");
           // Clean queue name: remove leading number prefix like "8023 "
           const cleanQueue = lastQueueFull.replace(/^\d+\s+/, "");
-          queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status, destination, destinationRaw]);
+          queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status, destination, destName]);
         }
       }
 
