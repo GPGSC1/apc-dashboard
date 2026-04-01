@@ -1443,10 +1443,8 @@ export default function SalesDashboard() {
   );
 
   /* ── team management modal ────────────────────────────────────────────────── */
-  const TeamManageModal = () => {
-    if (!showTeamManager) return null;
-    const MANAGE_COLORS = ["#6B2D99", "#F37021", "#EF4444", "#2D7A5F", "#F59E0B", "#3B82F6", "#EC4899", "#14B8A6"];
-    return (
+  const MANAGE_COLORS = ["#6B2D99", "#F37021", "#EF4444", "#2D7A5F", "#F59E0B", "#3B82F6", "#EC4899", "#14B8A6"];
+  const teamManageModal = showTeamManager ? (
       <div
         onClick={() => { setShowTeamManager(false); setOpenDropdown(null); }}
         style={{
@@ -1723,8 +1721,7 @@ export default function SalesDashboard() {
           </div>
         </div>
       </div>
-    );
-  };
+  ) : null;
 
   /* ── render ───────────────────────────────────────────────────────────────── */
   return (
@@ -2566,7 +2563,7 @@ export default function SalesDashboard() {
       </div>
 
       {/* ── team management modal ────────────────────────────────────────── */}
-      <TeamManageModal />
+      {teamManageModal}
 
       {/* ── T.O. deal override modal ───────────────────────────────────────── */}
       {toOverrideAgent && data && (() => {
