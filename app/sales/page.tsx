@@ -1534,7 +1534,7 @@ export default function SalesDashboard() {
                 {teamsData.teams.map((team) => (
                   <div key={team.id} style={{
                     background: C.card, borderRadius: 10,
-                    borderLeft: `4px solid ${team.color || C.purple}`, overflow: "hidden",
+                    borderLeft: `4px solid ${team.color || C.purple}`, overflow: "visible",
                   }}>
                     <div style={{
                       padding: "12px 16px", display: "flex",
@@ -1643,7 +1643,7 @@ export default function SalesDashboard() {
                 {/* unassigned */}
                 <div style={{
                   background: C.card, borderRadius: 10,
-                  borderLeft: `4px solid ${C.muted}`, overflow: "hidden",
+                  borderLeft: `4px solid ${C.muted}`, overflow: "visible",
                 }}>
                   <div style={{
                     padding: "12px 16px", borderBottom: teamsData.unassigned.length > 0 ? `1px solid ${C.border}` : "none",
