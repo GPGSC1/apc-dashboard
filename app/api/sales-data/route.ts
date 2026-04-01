@@ -255,8 +255,9 @@ export async function GET(req: Request) {
 
     const spanishCountResult = await query(
       `SELECT dest_name, COUNT(*) as cnt
-       FROM to_transfers
+       FROM queue_calls
        WHERE call_date BETWEEN $1 AND $2
+         AND LOWER(queue) LIKE '%spanish%'
          AND LOWER(status) = 'answered'
          AND dest_name IS NOT NULL AND dest_name != ''
        GROUP BY dest_name`,
