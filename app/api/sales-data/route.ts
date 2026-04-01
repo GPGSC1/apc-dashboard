@@ -241,8 +241,8 @@ export async function GET(req: Request) {
     // Every answered call transferred to a T.O. rep counts (no dedup)
     let toCallCount = 0;
 
-    // Spanish agent attribution: count dest_name matches against Spanish team members
-    // Same approach as T.O. — count from to_transfers table, never deduped
+    // Spanish agent attribution: count dest_name in Spanish queue transfers
+    // matching Spanish team members. Never deduped.
     const spanishResult = await query(
       `SELECT tt.dest_name as sp_agent, COUNT(*) as cnt
        FROM to_transfers tt
@@ -250,6 +250,7 @@ export async function GET(req: Request) {
        JOIN teams t ON t.id = tm.team_id
        WHERE tt.call_date BETWEEN $1 AND $2
          AND LOWER(tt.status) = 'answered'
+         AND tt.queue = 'spanish'
          AND LOWER(t.name) IN ('spanish')
        GROUP BY tt.dest_name ORDER BY tt.dest_name`,
       [fromDate, toDate]
@@ -265,8 +266,8 @@ export async function GET(req: Request) {
       }
     }
 
-    // T.O. agent attribution: count answered transfers from to_transfers table
-    // where dest_name matches a T.O. team member. Never deduped.
+    // T.O. agent attribution: count dest_name in T.O. queue transfers
+    // matching T.O. team members. Never deduped.
     const toAgentResult = await query(
       `SELECT tt.dest_name as to_agent, COUNT(*) as cnt
        FROM to_transfers tt
@@ -274,6 +275,7 @@ export async function GET(req: Request) {
        JOIN teams t ON t.id = tm.team_id
        WHERE tt.call_date BETWEEN $1 AND $2
          AND LOWER(tt.status) = 'answered'
+         AND tt.queue = 'to'
          AND LOWER(t.name) IN ('to.', 't.o.')
        GROUP BY tt.dest_name ORDER BY tt.dest_name`,
       [fromDate, toDate]
