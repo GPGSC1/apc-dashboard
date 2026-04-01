@@ -10,34 +10,40 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing 'to' or 'message'" }, { status: 400 });
     }
 
-    // Normalize phone to digits only
+    const sid = process.env.TWILIO_ACCOUNT_SID;
+    const token = process.env.TWILIO_AUTH_TOKEN;
+    const from = process.env.TWILIO_FROM_NUMBER;
+
+    if (!sid || !token || !from) {
+      return NextResponse.json(
+        { error: "Twilio credentials not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_NUMBER in Vercel env vars." },
+        { status: 500 }
+      );
+    }
+
+    // Normalize phone to E.164
     const digits = to.replace(/\D/g, "");
-    const phone = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+    const e164 = digits.length === 10 ? `+1${digits}` : digits.length === 11 && digits.startsWith("1") ? `+${digits}` : `+${digits}`;
 
-    // Use TextBelt free API (1 text/day free, no signup needed)
-    // Set TEXTBELT_KEY env var for paid tier, otherwise uses free "textbelt" key
-    const key = process.env.TEXTBELT_KEY || "textbelt";
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
+    const body = new URLSearchParams({ To: e164, From: from, Body: message });
 
-    const res = await fetch("https://textbelt.com/text", {
+    const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone, message, key }),
+      headers: {
+        Authorization: "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: body.toString(),
     });
 
     const result = await res.json();
 
-    if (!result.success) {
-      return NextResponse.json(
-        { error: result.error || "TextBelt send failed", quotaRemaining: result.quotaRemaining },
-        { status: 400 }
-      );
+    if (!res.ok) {
+      return NextResponse.json({ error: result.message || "Twilio error", detail: result }, { status: res.status });
     }
 
-    return NextResponse.json({
-      success: true,
-      textId: result.textId,
-      quotaRemaining: result.quotaRemaining,
-    });
+    return NextResponse.json({ success: true, sid: result.sid, status: result.status });
   } catch (err) {
     console.error("[text-owners] Error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });

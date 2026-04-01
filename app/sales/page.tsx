@@ -1236,8 +1236,7 @@ export default function SalesDashboard() {
         if (!res.ok) {
           setError(json.error || "Send failed");
         } else {
-          const quota = json.quotaRemaining != null ? ` (${json.quotaRemaining} texts remaining today)` : "";
-          setSent(`Sent!${quota}`);
+          setSent("Sent!");
         }
       } catch (e) {
         setError(String(e));
