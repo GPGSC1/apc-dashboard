@@ -155,6 +155,8 @@ export default function SalesDashboard() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [availData, setAvailData] = useState<any>(null);
   const [availLoading, setAvailLoading] = useState(false);
+  const [availSortKey, setAvailSortKey] = useState<string>("availableTime");
+  const [availSortDir, setAvailSortDir] = useState<"asc" | "desc">("desc");
 
   /* team management API */
   const fetchTeams = useCallback(async () => {
@@ -2136,6 +2138,36 @@ export default function SalesDashboard() {
                   );
                   const overall = computeTeamMetrics(allTeamMembers);
 
+                  // Sortable column helpers for availability
+                  const handleAvailSort = (key: string) => {
+                    if (availSortKey === key) setAvailSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                    else { setAvailSortKey(key); setAvailSortDir("desc"); }
+                  };
+
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const getAvailSortVal = (a: any, key: string): number => {
+                    if (key === "availableTime") return a.availableTime;
+                    if (key === "talkTime") return a.inboundTalkTime + a.outboundTalkTime;
+                    if (key === "ronaCount") return a.ronaCount;
+                    if (key === "breakTime") return a.breakTime + a.lunchTime;
+                    return 0;
+                  };
+
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const sortAvailMembers = (members: any[]) =>
+                    [...members].sort((a, b) => {
+                      const va = getAvailSortVal(a, availSortKey);
+                      const vb = getAvailSortVal(b, availSortKey);
+                      return availSortDir === "desc" ? vb - va : va - vb;
+                    });
+
+                  const availColHeaders = [
+                    { label: "Idle", key: "availableTime" },
+                    { label: "Talk Time", key: "talkTime" },
+                    { label: "RONA", key: "ronaCount" },
+                    { label: "Break", key: "breakTime" },
+                  ];
+
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   const renderAgentRow = (a: any) => {
                     const totalTalk = a.inboundTalkTime + a.outboundTalkTime;
@@ -2207,12 +2239,24 @@ export default function SalesDashboard() {
                                     <thead>
                                       <tr>
                                         <th style={{ background: C.card, color: C.muted, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", padding: "10px 12px", textAlign: "left", borderBottom: `1px solid ${C.border}`, fontWeight: 600, fontFamily: FONT }}>Name</th>
-                                        {["Idle", "Talk Time", "RONA", "Break"].map((h) => (
-                                          <th key={h} style={{ background: C.card, color: C.muted, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", padding: "10px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}`, fontWeight: 600, fontFamily: FONT, whiteSpace: "nowrap" }}>{h}</th>
+                                        {availColHeaders.map(({ label, key }) => (
+                                          <th
+                                            key={key}
+                                            onClick={() => handleAvailSort(key)}
+                                            style={{
+                                              background: C.card, color: availSortKey === key ? C.purpleLight : C.muted,
+                                              fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase",
+                                              padding: "10px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}`,
+                                              fontWeight: 600, fontFamily: FONT, whiteSpace: "nowrap",
+                                              cursor: "pointer", userSelect: "none",
+                                            }}
+                                          >
+                                            {label} {availSortKey === key ? (availSortDir === "desc" ? "\u25BC" : "\u25B2") : ""}
+                                          </th>
                                         ))}
                                       </tr>
                                     </thead>
-                                    <tbody>{members.map(renderAgentRow)}</tbody>
+                                    <tbody>{sortAvailMembers(members).map(renderAgentRow)}</tbody>
                                   </table>
                                 </div>
                               )}
