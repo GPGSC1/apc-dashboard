@@ -241,51 +241,62 @@ export async function GET(req: Request) {
     // Every answered call transferred to a T.O. rep counts (no dedup)
     let toCallCount = 0;
 
-    // Spanish agent attribution: count dest_name in Spanish queue transfers
-    // matching Spanish team members. Never deduped.
-    const spanishResult = await query(
-      `SELECT tt.dest_name as sp_agent, COUNT(*) as cnt
-       FROM to_transfers tt
-       JOIN team_members tm ON LOWER(TRIM(tt.dest_name)) = LOWER(TRIM(tm.agent_name))
+    // Spanish agent attribution: count how many times Spanish team members
+    // appear in dest_name across ALL transfers. Never deduped.
+    // First get Spanish team member names, then count their occurrences in dest_name
+    const spanishTeamResult = await query(
+      `SELECT tm.agent_name FROM team_members tm
        JOIN teams t ON t.id = tm.team_id
-       WHERE tt.call_date BETWEEN $1 AND $2
-         AND LOWER(tt.status) = 'answered'
-         AND tt.queue = 'spanish'
-         AND LOWER(t.name) IN ('spanish')
-       GROUP BY tt.dest_name ORDER BY tt.dest_name`,
+       WHERE LOWER(t.name) = 'spanish'`,
+      []
+    );
+    const spanishNames = new Set(spanishTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.trim().toLowerCase()));
+
+    const spanishCountResult = await query(
+      `SELECT dest_name, COUNT(*) as cnt
+       FROM to_transfers
+       WHERE call_date BETWEEN $1 AND $2
+         AND LOWER(status) = 'answered'
+         AND dest_name IS NOT NULL AND dest_name != ''
+       GROUP BY dest_name`,
       [fromDate, toDate]
     );
     const spanishByAgent: Record<string, number> = {};
     let spanishTotal = 0;
-    for (const row of spanishResult.rows) {
-      const agent = (row.sp_agent ?? "").trim();
-      if (agent) {
+    for (const row of spanishCountResult.rows) {
+      const name = (row.dest_name ?? "").trim();
+      if (name && spanishNames.has(name.toLowerCase())) {
         const cnt = parseInt(row.cnt);
-        spanishByAgent[agent] = cnt;
+        spanishByAgent[name] = cnt;
         spanishTotal += cnt;
       }
     }
 
-    // T.O. agent attribution: count dest_name in T.O. queue transfers
-    // matching T.O. team members. Never deduped.
-    const toAgentResult = await query(
-      `SELECT tt.dest_name as to_agent, COUNT(*) as cnt
-       FROM to_transfers tt
-       JOIN team_members tm ON LOWER(TRIM(tt.dest_name)) = LOWER(TRIM(tm.agent_name))
+    // T.O. agent attribution: count how many times T.O. team members
+    // appear in dest_name across ALL transfers. Never deduped.
+    const toTeamResult = await query(
+      `SELECT tm.agent_name FROM team_members tm
        JOIN teams t ON t.id = tm.team_id
-       WHERE tt.call_date BETWEEN $1 AND $2
-         AND LOWER(tt.status) = 'answered'
-         AND tt.queue = 'to'
-         AND LOWER(t.name) IN ('to.', 't.o.')
-       GROUP BY tt.dest_name ORDER BY tt.dest_name`,
+       WHERE LOWER(t.name) IN ('to.', 't.o.')`,
+      []
+    );
+    const toNames = new Set(toTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.trim().toLowerCase()));
+
+    const toCountResult = await query(
+      `SELECT dest_name, COUNT(*) as cnt
+       FROM to_transfers
+       WHERE call_date BETWEEN $1 AND $2
+         AND LOWER(status) = 'answered'
+         AND dest_name IS NOT NULL AND dest_name != ''
+       GROUP BY dest_name`,
       [fromDate, toDate]
     );
     const toByAgent: Record<string, number> = {};
-    for (const row of toAgentResult.rows) {
-      const agent = (row.to_agent ?? "").trim();
-      if (agent) {
+    for (const row of toCountResult.rows) {
+      const name = (row.dest_name ?? "").trim();
+      if (name && toNames.has(name.toLowerCase())) {
         const cnt = parseInt(row.cnt);
-        toByAgent[agent] = cnt;
+        toByAgent[name] = cnt;
         toCallCount += cnt;
       }
     }
