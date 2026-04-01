@@ -100,6 +100,8 @@ interface SalesData {
   dateRange: { from: string; to: string };
   toDeals?: TODeal[];
   toCloserStats?: Record<string, { deals: number }>;
+  toCalls?: { total: number; byAgent: Record<string, number> };
+  spanishCalls?: { total: number; byAgent: Record<string, number>; _debug?: unknown };
 }
 
 type TabId = "overview" | "performance" | "availability" | "trends" | "textmike";
