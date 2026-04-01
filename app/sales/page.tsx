@@ -1026,8 +1026,16 @@ export default function SalesDashboard() {
                   {[...members].sort((a, b) => {
                     const rawSa = data.bySalesperson[a] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
                     const rawSb = data.bySalesperson[b] ?? { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
-                    const sa = isTransferTeam ? { ...rawSa, totalDeals: isToTeam ? (data.toCloserStats?.[a]?.deals ?? rawSa.totalDeals) : rawSa.totalDeals, totalCalls: transferCallSource?.[a] ?? rawSa.totalCalls } : rawSa;
-                    const sb = isTransferTeam ? { ...rawSb, totalDeals: isToTeam ? (data.toCloserStats?.[b]?.deals ?? rawSb.totalDeals) : rawSb.totalDeals, totalCalls: transferCallSource?.[b] ?? rawSb.totalCalls } : rawSb;
+                    const sa = isTransferTeam ? (() => {
+                      const d = isToTeam ? (data.toCloserStats?.[a]?.deals ?? rawSa.totalDeals) : rawSa.totalDeals;
+                      const c = transferCallSource?.[a] ?? rawSa.totalCalls;
+                      return { ...rawSa, totalDeals: d, totalCalls: c, closeRate: c > 0 ? d / c : 0 };
+                    })() : rawSa;
+                    const sb = isTransferTeam ? (() => {
+                      const d = isToTeam ? (data.toCloserStats?.[b]?.deals ?? rawSb.totalDeals) : rawSb.totalDeals;
+                      const c = transferCallSource?.[b] ?? rawSb.totalCalls;
+                      return { ...rawSb, totalDeals: d, totalCalls: c, closeRate: c > 0 ? d / c : 0 };
+                    })() : rawSb;
                     let va: number | string;
                     let vb: number | string;
                     if (sortKey === "name") {

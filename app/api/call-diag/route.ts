@@ -329,5 +329,41 @@ export async function GET(req: Request) {
               OR LOWER(dest_name) LIKE '%cortez%')`,
       [start, end]
     )).rows,
+
+    // Spanish diagnostics
+    spanishTransfersByQueue: (await query(
+      `SELECT queue, COUNT(*) as cnt FROM to_transfers
+       WHERE call_date BETWEEN $1 AND $2
+       GROUP BY queue ORDER BY cnt DESC`,
+      [start, end]
+    )).rows,
+    spanishTransferDestNames: (await query(
+      `SELECT dest_name, COUNT(*) as cnt FROM to_transfers
+       WHERE call_date BETWEEN $1 AND $2
+         AND LOWER(status) = 'answered'
+       GROUP BY dest_name ORDER BY cnt DESC LIMIT 30`,
+      [start, end]
+    )).rows,
+    spanishQueueAgentNames: (await query(
+      `SELECT agent_name, COUNT(*) as cnt FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2
+         AND LOWER(queue) LIKE '%spanish%'
+         AND LOWER(status) = 'answered'
+       GROUP BY agent_name ORDER BY cnt DESC LIMIT 20`,
+      [start, end]
+    )).rows,
+    spanishQueueDestNames: (await query(
+      `SELECT dest_name, COUNT(*) as cnt FROM queue_calls
+       WHERE call_date BETWEEN $1 AND $2
+         AND LOWER(queue) LIKE '%spanish%'
+         AND dest_name IS NOT NULL AND dest_name != ''
+       GROUP BY dest_name ORDER BY cnt DESC LIMIT 20`,
+      [start, end]
+    )).rows,
+    spanishTeamMembers: (await query(
+      `SELECT tm.agent_name FROM team_members tm
+       JOIN teams t ON t.id = tm.team_id
+       WHERE LOWER(t.name) = 'spanish'`
+    )).rows,
   });
 }
