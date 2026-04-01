@@ -251,6 +251,7 @@ export async function GET(req: Request) {
       []
     );
     const spanishNames = new Set(spanishTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.trim().toLowerCase()));
+    const _spDebug = { spanishTeamNames: [...spanishNames], spanishTeamCount: spanishNames.size };
 
     const spanishCountResult = await query(
       `SELECT dest_name, COUNT(*) as cnt
@@ -778,7 +779,7 @@ export async function GET(req: Request) {
       toDeals: toDealsList,
       toCloserStats,
       toCalls: { total: toCallCount, byAgent: toByAgent },
-      spanishCalls: { total: spanishTotal, byAgent: spanishByAgent },
+      spanishCalls: { total: spanishTotal, byAgent: spanishByAgent, _debug: _spDebug },
     });
   } catch (err) {
     console.error("[sales-data] Error:", err);
