@@ -1160,7 +1160,8 @@ export default function SalesDashboard() {
     const [error, setError] = useState<string | null>(null);
     const [phoneInput, setPhoneInput] = useState("314-703-1911");
 
-    const REPORT_QUEUES = ["A1", "A2", "A3", "A4", "A5", "A6", "H1", "H2", "H3"];
+    const PERF_QUEUES = ["A1", "A2", "A3", "A4", "A5", "A6", "H1", "H2", "H3", "H4", "H5"];
+    const AVAIL_QUEUES = ["A1", "A2", "A3", "A4", "A5", "A6", "H1", "H2", "H3", "H4"];
 
     // Team name -> display label
     const teamLabels: Record<string, string> = {
@@ -1175,22 +1176,34 @@ export default function SalesDashboard() {
 
       let msg = `GPG Daily Report (${dateLabel})\n\n`;
 
-      // Queue rows
-      for (const q of REPORT_QUEUES) {
+      // Section 1: Performance by Queue
+      msg += `Performance by Queue\n`;
+      for (const q of PERF_QUEUES) {
         const qs = d.byQueue[q];
         const deals = qs?.deals ?? 0;
         const calls = qs?.calls ?? 0;
-        const missed = (qs?.aiFwd ?? 0) + (qs?.dropped ?? 0);
-        msg += `${q}: ${deals}D | ${calls}C | ${missed}M\n`;
+        const pct = calls > 0 ? ((deals / calls) * 100).toFixed(1) : "0.0";
+        msg += `${q}: ${deals}D / ${calls}C / ${pct}%\n`;
       }
 
       msg += "\n";
 
-      // Company
-      const ct = d.companyTotal;
-      msg += `Company: ${ct.deals}D | ${ct.calls}C | ${(ct.closeRate * 100).toFixed(1)}%\n`;
+      // Section 2: Availability by Queue
+      msg += `Availability by Queue\n`;
+      for (const q of AVAIL_QUEUES) {
+        const qs = d.byQueue[q];
+        const aiFwd = qs?.aiFwd ?? 0;
+        const dropped = qs?.dropped ?? 0;
+        msg += `${q}: ${aiFwd} AI Fwd / ${dropped} Dropped\n`;
+      }
 
-      // Teams
+      msg += "\n";
+
+      // Section 3: Company & Team Totals
+      msg += `Company & Team Totals\n`;
+      const ct = d.companyTotal;
+      msg += `Company: ${ct.deals}D / ${ct.calls}C / ${(ct.closeRate * 100).toFixed(1)}%\n`;
+
       for (const [teamName, label] of Object.entries(teamLabels)) {
         const members = d.teams[teamName] ?? [];
         let tDeals = 0, tCalls = 0;
@@ -1201,7 +1214,7 @@ export default function SalesDashboard() {
           tCalls += s.totalCalls;
         }
         const pct = tCalls > 0 ? ((tDeals / tCalls) * 100).toFixed(1) : "0.0";
-        msg += `${label}: ${tDeals}D | ${tCalls}C | ${pct}%\n`;
+        msg += `${label}: ${tDeals}D / ${tCalls}C / ${pct}%\n`;
       }
 
       return msg.trim();
@@ -1288,15 +1301,15 @@ export default function SalesDashboard() {
           </div>
         </div>
 
-        {/* Visual table */}
+        {/* Section 1: Performance by Queue */}
         <div style={{ background: C.card, borderRadius: 12, padding: 20, border: `1px solid ${C.border}` }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 12, fontFamily: FONT }}>
-            Queue Breakdown
+            Performance by Queue
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr>
-                {["Queue", "Deals", "Calls", "Missed"].map((h) => (
+                {["Queue", "Deals", "Calls", "Closing %"].map((h) => (
                   <th key={h} style={{
                     ...cellStyle, fontSize: 10, color: C.muted, textTransform: "uppercase",
                     letterSpacing: "0.1em", fontWeight: 600, textAlign: h === "Queue" ? "left" : "right",
@@ -1306,14 +1319,17 @@ export default function SalesDashboard() {
               </tr>
             </thead>
             <tbody>
-              {REPORT_QUEUES.map((q) => {
+              {PERF_QUEUES.map((q) => {
                 const qs = d.byQueue[q];
+                const deals = qs?.deals ?? 0;
+                const calls = qs?.calls ?? 0;
+                const pctVal = calls > 0 ? ((deals / calls) * 100).toFixed(1) : "0.0";
                 return (
                   <tr key={q}>
                     <td style={{ ...cellStyle, fontWeight: 600 }}>{q}</td>
-                    <td style={{ ...cellStyle, textAlign: "right" }}>{qs?.deals ?? 0}</td>
-                    <td style={{ ...cellStyle, textAlign: "right" }}>{qs?.calls ?? 0}</td>
-                    <td style={{ ...cellStyle, textAlign: "right" }}>{(qs?.aiFwd ?? 0) + (qs?.dropped ?? 0)}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{deals}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{calls}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{pctVal}%</td>
                   </tr>
                 );
               })}
@@ -1321,10 +1337,42 @@ export default function SalesDashboard() {
           </table>
         </div>
 
-        {/* Company & Team summary */}
+        {/* Section 2: Availability by Queue */}
         <div style={{ background: C.card, borderRadius: 12, padding: 20, border: `1px solid ${C.border}` }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 12, fontFamily: FONT }}>
-            Company & Teams
+            Availability by Queue
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                {["Queue", "AI Forwarded", "Dropped"].map((h) => (
+                  <th key={h} style={{
+                    ...cellStyle, fontSize: 10, color: C.muted, textTransform: "uppercase",
+                    letterSpacing: "0.1em", fontWeight: 600, textAlign: h === "Queue" ? "left" : "right",
+                    background: C.bg,
+                  }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {AVAIL_QUEUES.map((q) => {
+                const qs = d.byQueue[q];
+                return (
+                  <tr key={q}>
+                    <td style={{ ...cellStyle, fontWeight: 600 }}>{q}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{qs?.aiFwd ?? 0}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{qs?.dropped ?? 0}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Section 3: Company & Team Totals */}
+        <div style={{ background: C.card, borderRadius: 12, padding: 20, border: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 12, fontFamily: FONT }}>
+            Company & Team Totals
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
@@ -1354,13 +1402,13 @@ export default function SalesDashboard() {
                   tDeals += s.totalDeals;
                   tCalls += s.totalCalls;
                 }
-                const pct = tCalls > 0 ? ((tDeals / tCalls) * 100).toFixed(1) : "0.0";
+                const pctVal = tCalls > 0 ? ((tDeals / tCalls) * 100).toFixed(1) : "0.0";
                 return (
                   <tr key={teamName}>
                     <td style={{ ...cellStyle, fontWeight: 600 }}>{label}</td>
                     <td style={{ ...cellStyle, textAlign: "right" }}>{tDeals}</td>
                     <td style={{ ...cellStyle, textAlign: "right" }}>{tCalls}</td>
-                    <td style={{ ...cellStyle, textAlign: "right" }}>{pct}%</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{pctVal}%</td>
                   </tr>
                 );
               })}
