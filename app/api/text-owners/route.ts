@@ -3,6 +3,25 @@ import nodemailer from "nodemailer";
 
 export const maxDuration = 30;
 
+// Split message into SMS-safe chunks (≤150 chars to leave room for carrier overhead)
+function splitMessage(msg: string, maxLen = 150): string[] {
+  const lines = msg.split("\n");
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const line of lines) {
+    // If adding this line would exceed limit, push current chunk
+    if (current && (current + "\n" + line).length > maxLen) {
+      chunks.push(current.trim());
+      current = line;
+    } else {
+      current = current ? current + "\n" + line : line;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks;
+}
+
 export async function POST(req: Request) {
   try {
     const { to, message } = await req.json();
@@ -25,8 +44,8 @@ export async function POST(req: Request) {
     const digits = to.replace(/\D/g, "");
     const phone = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
 
-    // AT&T MMS gateway (supports long messages)
-    const gateway = `${phone}@mms.att.net`;
+    // AT&T SMS gateway
+    const gateway = `${phone}@txt.att.net`;
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
@@ -36,14 +55,22 @@ export async function POST(req: Request) {
       },
     });
 
-    await transporter.sendMail({
-      from: gmailUser,
-      to: gateway,
-      subject: "",
-      text: message,
-    });
+    // Split into SMS-safe chunks and send each
+    const chunks = splitMessage(message);
+    for (let i = 0; i < chunks.length; i++) {
+      await transporter.sendMail({
+        from: gmailUser,
+        to: gateway,
+        subject: "",
+        text: chunks[i],
+      });
+      // Small delay between messages to preserve order
+      if (i < chunks.length - 1) {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
 
-    return NextResponse.json({ success: true, gateway });
+    return NextResponse.json({ success: true, gateway, parts: chunks.length });
   } catch (err) {
     console.error("[text-owners] Error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
