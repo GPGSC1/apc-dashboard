@@ -104,7 +104,7 @@ interface SalesData {
   spanishCalls?: { total: number; byAgent: Record<string, number>; _debug?: unknown };
 }
 
-type TabId = "overview" | "performance" | "availability" | "trends" | "textmike";
+type TabId = "overview" | "performance" | "availability" | "trends" | "textowners";
 type SortKey = "name" | "deals" | "calls" | "closeRate" | string;
 
 interface TeamMember { name: string }
@@ -117,7 +117,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "performance", label: "\u{1F3C6} Performance" },
   { id: "availability", label: "\u23F0 Availability" },
   { id: "trends", label: "\u{1F4C8} Trends" },
-  { id: "textmike", label: "\u{1F4F1} Text Mike" },
+  { id: "textowners", label: "\u{1F4F1} Text Owners" },
 ];
 
 /* ── component ──────────────────────────────────────────────────────────────── */
@@ -1144,6 +1144,223 @@ export default function SalesDashboard() {
       </div>
     </div>
   );
+
+  /* ── Text Owners tab ─────────────────────────────────────────────────────── */
+  const TextOwnersTab = ({ data: d, fromDate: fd, toDate: td }: { data: SalesData; fromDate: string; toDate: string }) => {
+    const [sending, setSending] = useState(false);
+    const [sent, setSent] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [phoneInput, setPhoneInput] = useState("314-703-1911");
+
+    const REPORT_QUEUES = ["A1", "A2", "A3", "A4", "A5", "A6", "H1", "H2", "H3"];
+
+    // Team name -> display label
+    const teamLabels: Record<string, string> = {
+      "The Money Team": "Jimmy",
+      "Nothin But a G Thang": "Greg",
+    };
+
+    const buildMessage = () => {
+      const dateLabel = fd === td
+        ? new Date(fd + "T12:00:00").toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "2-digit" })
+        : `${new Date(fd + "T12:00:00").toLocaleDateString("en-US", { month: "numeric", day: "numeric" })} - ${new Date(td + "T12:00:00").toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "2-digit" })}`;
+
+      let msg = `GPG Daily Report (${dateLabel})\n\n`;
+
+      // Queue rows
+      for (const q of REPORT_QUEUES) {
+        const qs = d.byQueue[q];
+        const deals = qs?.deals ?? 0;
+        const calls = qs?.calls ?? 0;
+        const missed = (qs?.aiFwd ?? 0) + (qs?.dropped ?? 0);
+        msg += `${q}: ${deals}D | ${calls}C | ${missed}M\n`;
+      }
+
+      msg += "\n";
+
+      // Company
+      const ct = d.companyTotal;
+      msg += `Company: ${ct.deals}D | ${ct.calls}C | ${(ct.closeRate * 100).toFixed(1)}%\n`;
+
+      // Teams
+      for (const [teamName, label] of Object.entries(teamLabels)) {
+        const members = d.teams[teamName] ?? [];
+        let tDeals = 0, tCalls = 0;
+        for (const name of members) {
+          const s = d.bySalesperson[name];
+          if (!s) continue;
+          tDeals += s.totalDeals;
+          tCalls += s.totalCalls;
+        }
+        const pct = tCalls > 0 ? ((tDeals / tCalls) * 100).toFixed(1) : "0.0";
+        msg += `${label}: ${tDeals}D | ${tCalls}C | ${pct}%\n`;
+      }
+
+      return msg.trim();
+    };
+
+    const message = buildMessage();
+
+    const handleSend = async () => {
+      setSending(true);
+      setError(null);
+      setSent(null);
+      try {
+        const res = await fetch("/api/text-owners", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to: phoneInput, message }),
+        });
+        const json = await res.json();
+        if (!res.ok) {
+          setError(json.error || "Send failed");
+        } else {
+          setSent(`Sent! (SID: ${json.sid})`);
+        }
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setSending(false);
+      }
+    };
+
+    const cellStyle = { padding: "8px 12px", fontFamily: FONT, fontSize: 13, color: C.text, borderBottom: `1px solid ${C.border}` };
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {/* Phone number input */}
+        <div style={{ background: C.card, borderRadius: 12, padding: 20, border: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 12, fontFamily: FONT }}>
+            Send To
+          </div>
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <input
+              value={phoneInput}
+              onChange={(e) => setPhoneInput(e.target.value)}
+              placeholder="Phone number"
+              style={{
+                flex: 1, maxWidth: 240, padding: "8px 12px", borderRadius: 8,
+                background: C.input, border: `1px solid ${C.border}`,
+                color: C.text, fontFamily: FONT, fontSize: 14, outline: "none",
+              }}
+            />
+            <button
+              onClick={handleSend}
+              disabled={sending || !phoneInput.trim()}
+              style={{
+                padding: "8px 20px", borderRadius: 8, border: "none",
+                background: sending ? C.muted : C.purple, color: "#fff",
+                fontFamily: FONT, fontSize: 14, fontWeight: 600, cursor: sending ? "wait" : "pointer",
+                opacity: !phoneInput.trim() ? 0.4 : 1,
+              }}
+            >
+              {sending ? "Sending..." : "Send Text"}
+            </button>
+          </div>
+          {sent && <div style={{ marginTop: 8, color: C.success, fontSize: 12, fontFamily: FONT }}>{sent}</div>}
+          {error && <div style={{ marginTop: 8, color: C.danger, fontSize: 12, fontFamily: FONT }}>{error}</div>}
+        </div>
+
+        {/* Message preview */}
+        <div style={{ background: C.card, borderRadius: 12, padding: 20, border: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 12, fontFamily: FONT }}>
+            Message Preview
+          </div>
+          <pre style={{
+            background: C.bg, borderRadius: 8, padding: 16,
+            border: `1px solid ${C.border}`, color: C.secondary,
+            fontFamily: "'Courier New', monospace", fontSize: 13, lineHeight: 1.6,
+            whiteSpace: "pre-wrap", margin: 0, overflowX: "auto",
+          }}>
+            {message}
+          </pre>
+          <div style={{ marginTop: 8, color: C.muted, fontSize: 11, fontFamily: FONT }}>
+            {message.length} characters
+          </div>
+        </div>
+
+        {/* Visual table */}
+        <div style={{ background: C.card, borderRadius: 12, padding: 20, border: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 12, fontFamily: FONT }}>
+            Queue Breakdown
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                {["Queue", "Deals", "Calls", "Missed"].map((h) => (
+                  <th key={h} style={{
+                    ...cellStyle, fontSize: 10, color: C.muted, textTransform: "uppercase",
+                    letterSpacing: "0.1em", fontWeight: 600, textAlign: h === "Queue" ? "left" : "right",
+                    background: C.bg,
+                  }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {REPORT_QUEUES.map((q) => {
+                const qs = d.byQueue[q];
+                return (
+                  <tr key={q}>
+                    <td style={{ ...cellStyle, fontWeight: 600 }}>{q}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{qs?.deals ?? 0}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{qs?.calls ?? 0}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{(qs?.aiFwd ?? 0) + (qs?.dropped ?? 0)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Company & Team summary */}
+        <div style={{ background: C.card, borderRadius: 12, padding: 20, border: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 12, fontFamily: FONT }}>
+            Company & Teams
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                {["", "Deals", "Calls", "Closing %"].map((h) => (
+                  <th key={h} style={{
+                    ...cellStyle, fontSize: 10, color: C.muted, textTransform: "uppercase",
+                    letterSpacing: "0.1em", fontWeight: 600, textAlign: h === "" ? "left" : "right",
+                    background: C.bg,
+                  }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style={{ ...cellStyle, fontWeight: 700 }}>Company</td>
+                <td style={{ ...cellStyle, textAlign: "right" }}>{d.companyTotal.deals}</td>
+                <td style={{ ...cellStyle, textAlign: "right" }}>{d.companyTotal.calls}</td>
+                <td style={{ ...cellStyle, textAlign: "right" }}>{(d.companyTotal.closeRate * 100).toFixed(1)}%</td>
+              </tr>
+              {Object.entries(teamLabels).map(([teamName, label]) => {
+                const members = d.teams[teamName] ?? [];
+                let tDeals = 0, tCalls = 0;
+                for (const name of members) {
+                  const s = d.bySalesperson[name];
+                  if (!s) continue;
+                  tDeals += s.totalDeals;
+                  tCalls += s.totalCalls;
+                }
+                const pct = tCalls > 0 ? ((tDeals / tCalls) * 100).toFixed(1) : "0.0";
+                return (
+                  <tr key={teamName}>
+                    <td style={{ ...cellStyle, fontWeight: 600 }}>{label}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{tDeals}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{tCalls}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{pct}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
 
   /* ── loading spinner ──────────────────────────────────────────────────────── */
   const Spinner = () => (
@@ -2280,12 +2497,12 @@ export default function SalesDashboard() {
               />
             )}
 
-            {/* ── TEXT MIKE TAB ───────────────────────────────────────────── */}
-            {activeTab === "textmike" && (
-              <ComingSoon
-                title="Coming Soon"
-                desc="SMS functionality for quick alerts and notifications will be added here."
-              />
+            {/* ── TEXT OWNERS TAB ──────────────────────────────────────────── */}
+            {activeTab === "textowners" && data && (
+              <TextOwnersTab data={data} fromDate={fromDate} toDate={toDate} />
+            )}
+            {activeTab === "textowners" && !data && (
+              <ComingSoon title="Loading..." desc="Waiting for sales data to load." />
             )}
           </>
           </div>
