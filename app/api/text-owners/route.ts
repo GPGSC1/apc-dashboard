@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import nodemailer from "nodemailer";
 
 export const maxDuration = 30;
 
@@ -10,48 +11,39 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing 'to' or 'message'" }, { status: 400 });
     }
 
-    const sid = process.env.TWILIO_ACCOUNT_SID;
-    const token = process.env.TWILIO_AUTH_TOKEN;
-    const messagingSid = process.env.TWILIO_MESSAGING_SID;
-    const from = process.env.TWILIO_FROM_NUMBER;
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailPass = process.env.GMAIL_APP_PASSWORD;
 
-    if (!sid || !token || (!messagingSid && !from)) {
+    if (!gmailUser || !gmailPass) {
       return NextResponse.json(
-        { error: "Twilio credentials not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_MESSAGING_SID (or TWILIO_FROM_NUMBER) in Vercel env vars." },
+        { error: "Email credentials not configured. Set GMAIL_USER and GMAIL_APP_PASSWORD in Vercel env vars." },
         { status: 500 }
       );
     }
 
-    // Normalize phone to E.164
+    // Normalize phone to digits only
     const digits = to.replace(/\D/g, "");
-    const e164 = digits.length === 10 ? `+1${digits}` : digits.length === 11 && digits.startsWith("1") ? `+${digits}` : `+${digits}`;
+    const phone = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
 
-    const url = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
+    // AT&T MMS gateway (supports long messages)
+    const gateway = `${phone}@mms.att.net`;
 
-    // Use MessagingServiceSid if available, otherwise fall back to From number
-    const params: Record<string, string> = { To: e164, Body: message };
-    if (messagingSid) {
-      params.MessagingServiceSid = messagingSid;
-    } else {
-      params.From = from!;
-    }
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
-        "Content-Type": "application/x-www-form-urlencoded",
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: gmailUser,
+        pass: gmailPass,
       },
-      body: new URLSearchParams(params).toString(),
     });
 
-    const result = await res.json();
+    await transporter.sendMail({
+      from: gmailUser,
+      to: gateway,
+      subject: "",
+      text: message,
+    });
 
-    if (!res.ok) {
-      return NextResponse.json({ error: result.message || "Twilio error", detail: result }, { status: res.status });
-    }
-
-    return NextResponse.json({ success: true, sid: result.sid, status: result.status });
+    return NextResponse.json({ success: true, gateway });
   } catch (err) {
     console.error("[text-owners] Error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
