@@ -411,11 +411,7 @@ export async function GET(req: Request) {
     const AI_SALESPERSONS = new Set(["jeremy fishbein"]);
     function isAiDeal(sp: string) { return AI_SALESPERSONS.has(sp.toLowerCase()); }
 
-    // Load T.O. team members from Postgres — when owner is a T.O., use 3CX to find real sales rep
-    const toTeamResult = await query(
-      `SELECT tm.agent_name FROM team_members tm JOIN teams t ON t.id = tm.team_id WHERE LOWER(t.name) = 'to.' OR LOWER(t.name) = 't.o.'`
-    );
-    const toNames = new Set(toTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.toLowerCase()));
+    // T.O. team members already loaded above (toNames set) — reuse for deal attribution
     function isTO(name: string) { return toNames.has(name.toLowerCase()); }
 
     // Load Spanish team members for Spanish deal identification
