@@ -12,11 +12,12 @@ export async function POST(req: Request) {
 
     const sid = process.env.TWILIO_ACCOUNT_SID;
     const token = process.env.TWILIO_AUTH_TOKEN;
+    const messagingSid = process.env.TWILIO_MESSAGING_SID;
     const from = process.env.TWILIO_FROM_NUMBER;
 
-    if (!sid || !token || !from) {
+    if (!sid || !token || (!messagingSid && !from)) {
       return NextResponse.json(
-        { error: "Twilio credentials not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_NUMBER in Vercel env vars." },
+        { error: "Twilio credentials not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_MESSAGING_SID (or TWILIO_FROM_NUMBER) in Vercel env vars." },
         { status: 500 }
       );
     }
@@ -26,7 +27,14 @@ export async function POST(req: Request) {
     const e164 = digits.length === 10 ? `+1${digits}` : digits.length === 11 && digits.startsWith("1") ? `+${digits}` : `+${digits}`;
 
     const url = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
-    const body = new URLSearchParams({ To: e164, From: from, Body: message });
+
+    // Use MessagingServiceSid if available, otherwise fall back to From number
+    const params: Record<string, string> = { To: e164, Body: message };
+    if (messagingSid) {
+      params.MessagingServiceSid = messagingSid;
+    } else {
+      params.From = from!;
+    }
 
     const res = await fetch(url, {
       method: "POST",
@@ -34,7 +42,7 @@ export async function POST(req: Request) {
         Authorization: "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
         "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: body.toString(),
+      body: new URLSearchParams(params).toString(),
     });
 
     const result = await res.json();
