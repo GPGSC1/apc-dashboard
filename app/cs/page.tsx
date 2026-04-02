@@ -37,6 +37,7 @@ interface Account {
   billing_method: string;
   amount_due: number;
   main_phone: string;
+  home_phone: string;
   work_phone: string;
   customer_email: string;
   state: string;
@@ -568,7 +569,8 @@ function WorkListTab({
                 <Th onClick={() => handleSort("amount_due")}>Amt Due{arrow("amount_due")}</Th>
                 <Th onClick={() => handleSort("next_due_date")}>Due Date{arrow("next_due_date")}</Th>
                 <Th onClick={() => handleSort("sched_cxl_date")}>CXL Date{arrow("sched_cxl_date")}</Th>
-                <Th>Phone</Th>
+                <Th>Phone 1</Th>
+                <Th>Phone 2</Th>
                 <Th onClick={() => handleSort("billing_method")}>Billing{arrow("billing_method")}</Th>
                 <Th onClick={() => handleSort("state")}>State{arrow("state")}</Th>
                 <Th style={{ minWidth: 120 }}>Dispo 1</Th>
@@ -607,6 +609,9 @@ function WorkListTab({
                   <Td>{shortDate(a.next_due_date)}</Td>
                   <Td>{shortDate(a.sched_cxl_date)}</Td>
                   <Td style={{ fontSize: 11 }}>{a.main_phone}</Td>
+                  <Td style={{ fontSize: 11, color: a.home_phone && a.home_phone !== a.main_phone ? C.text : C.muted }}>
+                    {a.home_phone && a.home_phone !== a.main_phone ? a.home_phone : ""}
+                  </Td>
                   <Td style={{ fontSize: 10 }}>{a.billing_method}</Td>
                   <Td style={{ textAlign: "center", fontSize: 10 }}>{a.state}</Td>
                   <Td>
