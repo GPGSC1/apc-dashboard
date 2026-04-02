@@ -3,7 +3,7 @@ import { query } from "../../../../lib/db/connection";
 
 export async function GET() {
   try {
-    // Check if cs_outbound_calls table exists and has data
+    // Check cs_outbound_calls
     const tableCheck = await query(
       `SELECT COUNT(*) as count FROM cs_outbound_calls`
     ).catch(() => ({ rows: [{ count: "TABLE DOES NOT EXIST" }] }));
@@ -12,22 +12,27 @@ export async function GET() {
       `SELECT phone, call_date, agent_name FROM cs_outbound_calls ORDER BY call_date DESC LIMIT 10`
     ).catch(() => ({ rows: [] }));
 
-    // Check a sample PBS phone normalized
-    const pbsSample = await query(
-      `SELECT main_phone, home_phone FROM cs_past_due_accounts WHERE main_phone != '' LIMIT 5`
-    );
-    const pbsPhones = pbsSample.rows.map((r: Record<string, string>) => {
-      const raw = r.main_phone || "";
-      const digits = raw.replace(/\D/g, "");
-      const normalized = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
-      return { raw, normalized };
-    });
+    // Check ALL queue_calls directions
+    const directions = await query(
+      `SELECT direction, COUNT(*) as count FROM queue_calls GROUP BY direction`
+    ).catch(() => ({ rows: [] }));
+
+    // Check if there are any outbound-like calls in queue_calls
+    const qcOutbound = await query(
+      `SELECT direction, phone, queue, call_date FROM queue_calls WHERE LOWER(direction) != 'inbound' LIMIT 5`
+    ).catch(() => ({ rows: [] }));
+
+    // Check total queue_calls for today
+    const todayCalls = await query(
+      `SELECT COUNT(*) as count, COUNT(DISTINCT phone) as phones FROM queue_calls WHERE call_date = '2026-04-02'`
+    ).catch(() => ({ rows: [{}] }));
 
     return NextResponse.json({
       ok: true,
-      outboundCount: tableCheck.rows[0].count,
-      outboundSample: sample.rows,
-      pbsPhoneSample: pbsPhones,
+      outboundTable: { count: tableCheck.rows[0].count, sample: sample.rows },
+      queueCallDirections: directions.rows,
+      nonInboundQueueCalls: qcOutbound.rows,
+      todayQueueCalls: todayCalls.rows[0],
     });
   } catch (e) {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
