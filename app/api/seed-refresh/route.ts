@@ -574,9 +574,10 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
       directionCounts[inOut.toLowerCase() || "(empty)"] = (directionCounts[inOut.toLowerCase() || "(empty)"] || 0) + 1;
 
       // Capture ALL outbound calls for CS "Last Called" (before queue filter)
+      // For outbound: Destination (col 10) has the dialed phone, Originated By (col 8) has the agent extension
       if (inOut.toLowerCase() === "outbound") {
         totalOutboundPhones++;
-        const obPhone = normalizePhone(c[PHI] || "");
+        const obPhone = normalizePhone(c[10] || "");
         if (obPhone && obPhone.length === 10) {
           const dateStr = parseDate(startTime);
           if (dateStr) {
