@@ -23,7 +23,7 @@ export async function GET(request: Request) {
     // Normalize phones and look up last outbound call dates
     const phoneToAcctIds = new Map<string, number[]>();
     for (const row of result.rows) {
-      const phones = [row.main_phone, row.home_phone].filter(Boolean);
+      const phones = [row.main_phone, row.work_phone].filter(Boolean);
       for (const raw of phones) {
         const digits = String(raw).replace(/\D/g, "");
         const normalized = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;

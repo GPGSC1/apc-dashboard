@@ -611,8 +611,8 @@ function WorkListTab({
                   <Td>{shortDate(a.next_due_date)}</Td>
                   <Td>{shortDate(a.sched_cxl_date)}</Td>
                   <Td style={{ fontSize: 11 }}>{a.main_phone}</Td>
-                  <Td style={{ fontSize: 11, color: a.home_phone && a.home_phone !== a.main_phone ? C.text : C.muted }}>
-                    {a.home_phone && a.home_phone !== a.main_phone ? a.home_phone : ""}
+                  <Td style={{ fontSize: 11, color: a.work_phone && a.work_phone !== a.main_phone ? C.text : C.muted }}>
+                    {a.work_phone && a.work_phone !== a.main_phone ? a.work_phone : ""}
                   </Td>
                   <Td style={{ fontSize: 10 }}>{a.billing_method}</Td>
                   <Td style={{ textAlign: "center", fontSize: 10 }}>{a.state}</Td>
