@@ -497,6 +497,8 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
     }
   }
 
+  let totalOutboundInserted = 0;
+  const allDirections: Record<string, number> = {};
   for (const targetDate of dates) {
     console.log(`[seed-refresh/3CX] Fetching ${targetDate}...`);
     const [y, m, d] = targetDate.split("-");
@@ -733,7 +735,9 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
     }
 
     totalAdded += dayAdded;
-    console.log(`[seed-refresh/3CX] ${targetDate}: ${dayAdded} inbound parsed, directions: ${JSON.stringify(directionCounts)}, outbound phones: ${totalOutboundPhones}, outbound rows: ${outboundCallRows.length}`);
+    totalOutboundInserted += outboundCallRows.length;
+    for (const [k, v] of Object.entries(directionCounts)) allDirections[k] = (allDirections[k] || 0) + v;
+    console.log(`[seed-refresh/3CX] ${targetDate}: ${dayAdded} inbound, ${totalOutboundPhones} outbound phones, ${outboundCallRows.length} outbound rows`);
   }
 
   // Update metadata
@@ -742,6 +746,7 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
     [dates[dates.length - 1]]
   );
 
+  console.log(`[seed-refresh/3CX] TOTALS: ${totalAdded} inbound, ${totalOutboundInserted} outbound inserted, directions: ${JSON.stringify(allDirections)}`);
   return { addedCalls: totalAdded };
 }
 
