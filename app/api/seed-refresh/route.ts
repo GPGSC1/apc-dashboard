@@ -446,6 +446,14 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
     queue TEXT DEFAULT ''
   )`).catch(() => {});
   await query(`ALTER TABLE to_transfers ADD COLUMN IF NOT EXISTS queue TEXT DEFAULT ''`).catch(() => {});
+  // Create cs_outbound_calls table for CS collections "Last Called" tracking
+  await query(`CREATE TABLE IF NOT EXISTS cs_outbound_calls (
+    phone VARCHAR(10) NOT NULL,
+    call_date DATE NOT NULL,
+    agent_name VARCHAR(100) DEFAULT '',
+    PRIMARY KEY (phone, call_date)
+  )`).catch(() => {});
+  await query(`CREATE INDEX IF NOT EXISTS idx_cs_outbound_phone ON cs_outbound_calls(phone)`).catch(() => {});
 
   const domain = process.env.TCX_DOMAIN ?? "gpgsc.innicom.com";
   const username = process.env.TCX_USERNAME ?? "1911";
@@ -542,6 +550,7 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
     const openedCallRows: any[][] = [];
     const queueCallDetailRows: string[][] = [];
     const toTransferRows: (string | number)[][] = [];
+    const outboundCallRows: string[][] = [];
 
     const mail4PhonesSet = new Set<string>();
     const phoneLastQueueMap = new Map<string, { queue: string; date: string }>();
@@ -610,6 +619,15 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
           const destination = destinationRaw.replace(/\D/g, "");
           const cleanQueue = lastQueueFull.replace(/^\d+\s+/, "");
           queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status, destination, destName]);
+        }
+      }
+
+      // Capture outbound calls for CS collections "Last Called" tracking
+      if (!isInbound) {
+        const dateStr = parseDate(startTime);
+        if (dateStr) {
+          const agentName = (c[5] || "").trim();
+          outboundCallRows.push([phone, dateStr, agentName]);
         }
       }
 
@@ -692,8 +710,23 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
       );
     }
 
+    // Batch insert outbound calls for CS "Last Called"
+    if (outboundCallRows.length > 0) {
+      const obSeen = new Set<string>();
+      const uniqueOB = outboundCallRows.filter((r) => {
+        const key = `${r[0]}|${r[1]}`;
+        if (obSeen.has(key)) return false;
+        obSeen.add(key);
+        return true;
+      });
+      await batchInsert(
+        `INSERT INTO cs_outbound_calls (phone,call_date,agent_name) VALUES __VALUES__ ON CONFLICT (phone,call_date) DO NOTHING`,
+        3, uniqueOB, 500
+      );
+    }
+
     totalAdded += dayAdded;
-    console.log(`[seed-refresh/3CX] ${targetDate}: ${dayAdded} calls parsed, ${mail4PhoneRows.length} mail4, ${phoneLastQueueRows.length} queues, ${openedCallRows.length} opened`);
+    console.log(`[seed-refresh/3CX] ${targetDate}: ${dayAdded} calls parsed, ${mail4PhoneRows.length} mail4, ${phoneLastQueueRows.length} queues, ${openedCallRows.length} opened, ${outboundCallRows.length} outbound`);
   }
 
   // Update metadata

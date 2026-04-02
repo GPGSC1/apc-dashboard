@@ -47,6 +47,7 @@ interface Account {
   dispo_date: string | null;
   email_sent: boolean;
   is_carryover: boolean;
+  last_called: string | null;
 }
 
 interface DispoOption {
@@ -573,6 +574,7 @@ function WorkListTab({
                 <Th>Phone 2</Th>
                 <Th onClick={() => handleSort("billing_method")}>Billing{arrow("billing_method")}</Th>
                 <Th onClick={() => handleSort("state")}>State{arrow("state")}</Th>
+                <Th onClick={() => handleSort("last_called")}>Last Called{arrow("last_called")}</Th>
                 <Th style={{ minWidth: 120 }}>Dispo 1</Th>
                 <Th style={{ minWidth: 100 }}>Dispo 2</Th>
                 <Th style={{ minWidth: 90 }}>Date</Th>
@@ -614,6 +616,16 @@ function WorkListTab({
                   </Td>
                   <Td style={{ fontSize: 10 }}>{a.billing_method}</Td>
                   <Td style={{ textAlign: "center", fontSize: 10 }}>{a.state}</Td>
+                  <Td style={{ textAlign: "center", fontSize: 11 }}>
+                    {(() => {
+                      if (!a.last_called) return <span style={{ color: C.muted }}>--</span>;
+                      const today = todayStr();
+                      const d = a.last_called.slice(0, 10);
+                      const daysAgo = Math.floor((new Date(today).getTime() - new Date(d).getTime()) / 86400000);
+                      const color = daysAgo === 0 ? C.green : daysAgo <= 2 ? C.amber : C.red;
+                      return <span style={{ color, fontWeight: 600 }}>{shortDate(d)}</span>;
+                    })()}
+                  </Td>
                   <Td>
                     <select
                       value={a.dispo_1 || ""}

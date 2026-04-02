@@ -20,6 +20,46 @@ export async function GET(request: Request) {
 
     const result = await query(sql, params);
 
+    // Normalize phones and look up last outbound call dates
+    const phoneToAcctIds = new Map<string, number[]>();
+    for (const row of result.rows) {
+      const phones = [row.main_phone, row.home_phone].filter(Boolean);
+      for (const raw of phones) {
+        const digits = String(raw).replace(/\D/g, "");
+        const normalized = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+        if (normalized.length === 10) {
+          if (!phoneToAcctIds.has(normalized)) phoneToAcctIds.set(normalized, []);
+          phoneToAcctIds.get(normalized)!.push(row.id);
+        }
+      }
+    }
+
+    // Query last outbound call for all phones in one shot
+    const lastCalledMap = new Map<number, string>(); // accountId -> last_called date
+    if (phoneToAcctIds.size > 0) {
+      const phoneArr = [...phoneToAcctIds.keys()];
+      const obResult = await query(
+        `SELECT phone, MAX(call_date)::TEXT as last_called FROM cs_outbound_calls WHERE phone = ANY($1) GROUP BY phone`,
+        [phoneArr]
+      );
+      // Map phone results back to account IDs, keeping the most recent date per account
+      for (const row of obResult.rows) {
+        const acctIds = phoneToAcctIds.get(row.phone) || [];
+        for (const id of acctIds) {
+          const existing = lastCalledMap.get(id);
+          if (!existing || row.last_called > existing) {
+            lastCalledMap.set(id, row.last_called);
+          }
+        }
+      }
+    }
+
+    // Merge last_called into accounts
+    const accounts = result.rows.map((row: Record<string, unknown>) => ({
+      ...row,
+      last_called: lastCalledMap.get(row.id as number) || null,
+    }));
+
     // Get upload metadata for this date
     const uploadResult = await query(
       "SELECT * FROM cs_scrub_uploads WHERE scrub_date = $1 ORDER BY uploaded_at DESC LIMIT 1",
@@ -28,7 +68,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       ok: true,
-      accounts: result.rows,
+      accounts,
       upload: uploadResult.rows[0] || null,
       date,
     });
