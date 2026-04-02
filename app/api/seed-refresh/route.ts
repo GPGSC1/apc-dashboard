@@ -556,6 +556,8 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
     const phoneLastQueueMap = new Map<string, { queue: string; date: string }>();
 
     let dayAdded = 0;
+    const directionCounts: Record<string, number> = {};
+    let totalOutboundPhones = 0;
     for (let i = headerIdx + 1; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
@@ -567,9 +569,11 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
 
       const startTime = (c[STI] || "").trim();
       const inOut = (c[IOI] || "").trim();
+      directionCounts[inOut.toLowerCase() || "(empty)"] = (directionCounts[inOut.toLowerCase() || "(empty)"] || 0) + 1;
 
       // Capture ALL outbound calls for CS "Last Called" (before queue filter)
       if (inOut.toLowerCase() === "outbound") {
+        totalOutboundPhones++;
         const obPhone = normalizePhone(c[PHI] || "");
         if (obPhone && obPhone.length === 10) {
           const dateStr = parseDate(startTime);
@@ -729,7 +733,7 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
     }
 
     totalAdded += dayAdded;
-    console.log(`[seed-refresh/3CX] ${targetDate}: ${dayAdded} calls parsed, ${mail4PhoneRows.length} mail4, ${phoneLastQueueRows.length} queues, ${openedCallRows.length} opened, ${outboundCallRows.length} outbound`);
+    console.log(`[seed-refresh/3CX] ${targetDate}: ${dayAdded} inbound parsed, directions: ${JSON.stringify(directionCounts)}, outbound phones: ${totalOutboundPhones}, outbound rows: ${outboundCallRows.length}`);
   }
 
   // Update metadata
