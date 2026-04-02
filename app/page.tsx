@@ -34,6 +34,13 @@ const pages = [
     color: C.purple,
     icon: "⚡",
   },
+  {
+    title: "CS Collections",
+    subtitle: "PBS scrub lists, rep assignments, disposition tracking, performance",
+    href: "/cs",
+    color: "#14B8A6",
+    icon: "📞",
+  },
 ];
 
 export default function HomePage() {
