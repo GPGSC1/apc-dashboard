@@ -565,17 +565,29 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
       const callId = (c[CI] || "").trim();
       if (!callId) continue;
 
+      const startTime = (c[STI] || "").trim();
+      const inOut = (c[IOI] || "").trim();
+
+      // Capture ALL outbound calls for CS "Last Called" (before queue filter)
+      if (inOut.toLowerCase() === "outbound") {
+        const obPhone = normalizePhone(c[PHI] || "");
+        if (obPhone && obPhone.length === 10) {
+          const dateStr = parseDate(startTime);
+          if (dateStr) {
+            const agentName = (c[5] || "").trim();
+            outboundCallRows.push([obPhone, dateStr, agentName]);
+          }
+        }
+      }
+
       const queueName = (c[QI] || "").trim();
       const lastQueueName = (c[QI + 2] || "").trim();
       const lastQueueFull = lastQueueName || queueName;
       const isTrackedQueue = TRACKED_QUEUES.some((q) => lastQueueFull.toLowerCase().includes(q));
       if (!isTrackedQueue) continue;
-
-      const startTime = (c[STI] || "").trim();
       const destName = (c[DNI] || "").trim();
       const status = (c[SSI] || "").trim().toLowerCase();
       const talkSec = parseFloat(c[TTI] || "0") || 0;
-      const inOut = (c[IOI] || "").trim();
       const isInbound = inOut.toLowerCase() === "inbound";
       const qLower = lastQueueFull.toLowerCase();
       const isToQueue = qLower.includes("to");
@@ -619,15 +631,6 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
           const destination = destinationRaw.replace(/\D/g, "");
           const cleanQueue = lastQueueFull.replace(/^\d+\s+/, "");
           queueCallDetailRows.push([phone, cleanQueue, dateStr, firstExt, firstExtName, inOut, status, destination, destName]);
-        }
-      }
-
-      // Capture outbound calls for CS collections "Last Called" tracking
-      if (!isInbound) {
-        const dateStr = parseDate(startTime);
-        if (dateStr) {
-          const agentName = (c[5] || "").trim();
-          outboundCallRows.push([phone, dateStr, agentName]);
         }
       }
 
