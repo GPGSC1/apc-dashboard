@@ -653,14 +653,32 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
 
     // Batch insert queue_calls (all inbound queue visits for sales dashboard)
     if (queueCallDetailRows.length > 0) {
-      // Deduplicate by phone|queue|call_date
-      const qcSeen = new Set<string>();
-      const uniqueQueueCallRows = queueCallDetailRows.filter((r) => {
+      // Deduplicate by phone|queue|call_date, preferring rows with:
+      // 1. non-empty dest_name (index 8), then 2. non-empty agent_name (index 4/first_ext)
+      // This prevents losing agent attribution when the first CSV row has empty dest_name
+      const qcBest = new Map<string, string[]>();
+      for (const r of queueCallDetailRows) {
         const key = `${r[0]}|${r[1]}|${r[2]}`;
-        if (qcSeen.has(key)) return false;
-        qcSeen.add(key);
-        return true;
-      });
+        const existing = qcBest.get(key);
+        if (!existing) {
+          qcBest.set(key, r);
+        } else {
+          // Prefer row with dest_name populated
+          const existHasDestName = (existing[8] || "").trim() !== "";
+          const newHasDestName = (r[8] || "").trim() !== "";
+          if (!existHasDestName && newHasDestName) {
+            qcBest.set(key, r);
+          } else if (!existHasDestName && !newHasDestName) {
+            // Neither has dest_name — prefer row with first_ext (answered)
+            const existHasExt = (existing[3] || "").trim() !== "";
+            const newHasExt = (r[3] || "").trim() !== "";
+            if (!existHasExt && newHasExt) {
+              qcBest.set(key, r);
+            }
+          }
+        }
+      }
+      const uniqueQueueCallRows = [...qcBest.values()];
       await batchInsert(
         `INSERT INTO queue_calls (phone,queue,call_date,first_ext,agent_name,direction,status,destination,dest_name) VALUES __VALUES__ ON CONFLICT (phone,queue,call_date) DO UPDATE SET first_ext=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.first_ext ELSE queue_calls.first_ext END, agent_name=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.agent_name ELSE queue_calls.agent_name END, status=CASE WHEN EXCLUDED.first_ext!='' THEN EXCLUDED.status ELSE queue_calls.status END, destination=CASE WHEN EXCLUDED.destination!='' THEN EXCLUDED.destination ELSE queue_calls.destination END, dest_name=CASE WHEN EXCLUDED.dest_name!='' THEN EXCLUDED.dest_name ELSE queue_calls.dest_name END`,
         9, uniqueQueueCallRows, 200

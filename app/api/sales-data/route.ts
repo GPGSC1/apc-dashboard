@@ -860,6 +860,21 @@ export async function GET(req: Request) {
         salesAgentCount: salesAgentNames.size,
         excludedAgentsWithCalls: _dbgExcludedAgents,
         orphanAgents_notInAnyTeam: _dbgOrphanAgents,
+        emptyAgentBreakdown: await (async () => {
+          const r = await query(
+            `SELECT
+               COUNT(*) FILTER (WHERE TRIM(COALESCE(dest_name,''))='' AND TRIM(COALESCE(agent_name,''))='') as both_empty,
+               COUNT(*) FILTER (WHERE TRIM(COALESCE(dest_name,''))!='' AND TRIM(COALESCE(agent_name,''))='') as dest_only,
+               COUNT(*) FILTER (WHERE TRIM(COALESCE(dest_name,''))='' AND TRIM(COALESCE(agent_name,''))!='') as agent_only,
+               COUNT(*) FILTER (WHERE TRIM(COALESCE(dest_name,''))!='' AND TRIM(COALESCE(agent_name,''))!='') as both_filled
+             FROM queue_calls
+             WHERE call_date BETWEEN $1 AND $2
+               AND LOWER(status) = 'answered'
+               AND ${NORM_QUEUE_SQL} IN ('mail 1','mail 2','mail 3','mail 4','mail 5','mail 6','home 1','home 2','home 3','home 4','home 5')`,
+            [fromDate, toDate]
+          );
+          return r.rows[0];
+        })(),
       },
     });
   } catch (err) {
