@@ -64,11 +64,45 @@ export async function GET() {
     [from, to]
   );
 
+  // Query 5: first_ext breakdown for Steven's calls in sales queues
+  const extBreakdown = await query(
+    `SELECT
+       COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE first_ext IS NOT NULL AND first_ext != ''
+         AND LENGTH(TRIM(first_ext)) <= 4 AND TRIM(first_ext) NOT LIKE '99%') AS human_ext,
+       COUNT(*) FILTER (WHERE first_ext IS NULL OR first_ext = '') AS empty_ext,
+       COUNT(*) FILTER (WHERE first_ext IS NOT NULL AND first_ext != ''
+         AND TRIM(first_ext) LIKE '99%') AS ai_ext,
+       COUNT(*) FILTER (WHERE first_ext IS NOT NULL AND first_ext != ''
+         AND LENGTH(TRIM(first_ext)) > 4 AND TRIM(first_ext) NOT LIKE '99%') AS long_ext
+     FROM queue_calls
+     WHERE call_date BETWEEN $1 AND $2 AND LOWER(status) = 'answered'
+       AND TRIM(agent_name) = 'Steven Garner'
+       AND LOWER(queue) NOT LIKE '%spanish%'`,
+    [from, to]
+  );
+
+  // Query 6: Show the actual first_ext values for Steven's non-human-ext calls
+  const nonHumanCalls = await query(
+    `SELECT phone, queue, call_date, first_ext, agent_name, dest_name, status
+     FROM queue_calls
+     WHERE call_date BETWEEN $1 AND $2 AND LOWER(status) = 'answered'
+       AND TRIM(agent_name) = 'Steven Garner'
+       AND LOWER(queue) NOT LIKE '%spanish%'
+       AND (first_ext IS NULL OR first_ext = ''
+         OR LENGTH(TRIM(first_ext)) > 4
+         OR TRIM(first_ext) LIKE '99%')
+     ORDER BY call_date, queue`,
+    [from, to]
+  );
+
   return NextResponse.json({
     dateRange: { from, to },
     summary: counts.rows[0],
     perQueue: byQueue.rows,
     transfersTO_Steven: { count: transfersTo.rows.length, rows: transfersTo.rows },
     transfersFROM_Steven: { count: transfersFrom.rows.length, rows: transfersFrom.rows },
+    firstExtBreakdown: extBreakdown.rows[0],
+    nonHumanExtCalls: { count: nonHumanCalls.rows.length, rows: nonHumanCalls.rows },
   });
 }
