@@ -1067,8 +1067,21 @@ export async function GET(req: Request) {
       [datesToFetch[datesToFetch.length - 1]]
     );
 
+    // Sync dispositions from Google Sheets (CS collections)
+    let sheetSyncResult: Record<string, unknown> = { skipped: true };
+    try {
+      if (process.env.GOOGLE_SERVICE_ACCOUNT) {
+        const { syncDisposFromSheet } = await import("../../../lib/cs/sheets-sync");
+        sheetSyncResult = await syncDisposFromSheet();
+        console.log(`[seed-refresh] Sheet sync: ${JSON.stringify(sheetSyncResult)}`);
+      }
+    } catch (e) {
+      sheetSyncResult = { error: String(e) };
+      console.error("[seed-refresh] Sheet sync error:", e);
+    }
+
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[seed-refresh] Complete in ${elapsed}s — AIM: ${JSON.stringify(aimResult)}, 3CX: ${JSON.stringify(tcxResult)}, Moxy: ${JSON.stringify(moxyResult)}, MoxyHome: ${JSON.stringify(moxyHomeResult)}`);
+    console.log(`[seed-refresh] Complete in ${elapsed}s`);
 
     return NextResponse.json({
       ok: true,
@@ -1079,6 +1092,7 @@ export async function GET(req: Request) {
       tcx: tcxResult,
       moxy: moxyResult,
       moxyHome: moxyHomeResult,
+      sheetSync: sheetSyncResult,
     });
   } catch (err) {
     console.error("[seed-refresh] Fatal error:", err);
