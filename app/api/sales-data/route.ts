@@ -218,30 +218,19 @@ export async function GET(req: Request) {
     // Agent attribution uses dest_name anyway, so first_ext doesn't matter.
     const HUMAN_FILTER = `LOWER(status) = 'answered'`;
 
-    // Dedup CTE: first chronological phone per queue per month for sales queues only
-    // Uses dest_name (Destination Name = who the call was routed to) for agent attribution,
-    // falling back to agent_name (First Ext Name) when dest_name is empty.
-    // This matches the user's COUNTIFS methodology on 3CX column L (Destination Name).
+    // Call CTE: All answered calls in sales queues, attributed by dest_name.
+    // No cross-date dedup — the DB unique constraint (phone, queue, call_date)
+    // already ensures one row per phone per queue per day. Same phone calling
+    // the same queue on different days counts for each day (matches user's COUNTIFS).
     const DEDUP_CTE = `
-      WITH answered AS (
+      WITH deduped AS (
         SELECT phone, call_date,
           COALESCE(NULLIF(TRIM(dest_name), ''), agent_name) as attr_agent,
           ${NORM_QUEUE_SQL} as norm_queue
         FROM queue_calls
         WHERE call_date BETWEEN $1 AND $2
           AND ${HUMAN_FILTER}
-      ),
-      ranked AS (
-        SELECT *, ROW_NUMBER() OVER (
-          PARTITION BY phone, norm_queue
-          ORDER BY call_date ASC
-        ) as rn
-        FROM answered
-      ),
-      deduped AS (
-        SELECT phone, norm_queue, call_date, attr_agent FROM ranked
-        WHERE rn = 1
-          AND norm_queue IN ('mail 1','mail 2','mail 3','mail 4','mail 5','mail 6',
+          AND ${NORM_QUEUE_SQL} IN ('mail 1','mail 2','mail 3','mail 4','mail 5','mail 6',
                              'home 1','home 2','home 3','home 4','home 5')
       )`;
 
