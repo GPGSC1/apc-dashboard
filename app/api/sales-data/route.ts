@@ -254,7 +254,7 @@ export async function GET(req: Request) {
       []
     );
     const spanishNames = new Set(spanishTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.trim().toLowerCase()));
-    const _spDebug = { spanishTeamNames: [...spanishNames], spanishTeamCount: spanishNames.size };
+    // Spanish team names loaded above for dest_name matching
 
     // Spanish: count dest_name occurrences across ALL queues, ALL calls (no status filter)
     // Matches user's COUNTIF on Destination Name column L across entire raw 3CX report
@@ -361,66 +361,15 @@ export async function GET(req: Request) {
       [fromDate, toDate]
     );
 
-    // DEBUG: count funnel steps to find where calls are lost
-    const _dbgRawAnswered = await query(
-      `SELECT COUNT(*) as cnt FROM queue_calls WHERE call_date BETWEEN $1 AND $2 AND LOWER(status) = 'answered'`,
-      [fromDate, toDate]
-    );
-    const _dbgSalesQueuesOnly = await query(
-      `SELECT COUNT(*) as cnt FROM queue_calls WHERE call_date BETWEEN $1 AND $2 AND LOWER(status) = 'answered'
-       AND ${NORM_QUEUE_SQL} IN ('mail 1','mail 2','mail 3','mail 4','mail 5','mail 6','home 1','home 2','home 3','home 4','home 5')`,
-      [fromDate, toDate]
-    );
-    const _dbgAfterDedup = await query(
-      `${DEDUP_CTE} SELECT COUNT(*) as cnt FROM deduped`,
-      [fromDate, toDate]
-    );
-    const _dbgDedupAllAgents = await query(
-      `${DEDUP_CTE} SELECT SUM(cnt)::int as total FROM (SELECT attr_agent, COUNT(*) as cnt FROM deduped GROUP BY attr_agent) x`,
-      [fromDate, toDate]
-    );
-
     // Map: agentName -> queue -> calls
     const agentQueueCalls: Map<string, Record<string, number>> = new Map();
-    let _dbgTotalBeforeFilter = 0;
     for (const row of agentCallsResult.rows) {
       const agent = (row.attr_agent ?? "").trim();
       const mapped = mapQueue(row.norm_queue);
       if (!agent || !mapped) continue;
-      _dbgTotalBeforeFilter += parseInt(row.cnt);
       if (!agentQueueCalls.has(agent)) agentQueueCalls.set(agent, {});
       const rec = agentQueueCalls.get(agent)!;
       rec[mapped] = (rec[mapped] ?? 0) + parseInt(row.cnt);
-    }
-
-    // DEBUG: find dest_name values with calls that don't match ANY team member
-    const _dbgUnmatchedDestNames = await query(
-      `${DEDUP_CTE}
-       SELECT attr_agent, COUNT(*) as cnt FROM deduped
-       WHERE attr_agent != ''
-       GROUP BY attr_agent
-       ORDER BY cnt DESC`,
-      [fromDate, toDate]
-    );
-    const allTeamNamesLower = new Set(
-      allTeamMembersResult.rows.map((r: { agent_name: string }) => r.agent_name.trim().toLowerCase())
-    );
-    const _dbgOrphanAgents: Record<string, number> = {};
-    for (const row of _dbgUnmatchedDestNames.rows) {
-      const name = (row.attr_agent ?? "").trim();
-      if (name && !allTeamNamesLower.has(name.toLowerCase())) {
-        _dbgOrphanAgents[name] = parseInt(row.cnt);
-      }
-    }
-
-    // DEBUG: find agents NOT in salesAgentNames that have calls
-    const _dbgExcludedAgents: Record<string, number> = {};
-    for (const [agent, queueCallMap] of agentQueueCalls) {
-      if (!salesAgentNames.has(agent.toLowerCase())) {
-        let total = 0;
-        for (const cnt of Object.values(queueCallMap)) total += cnt;
-        _dbgExcludedAgents[agent] = total;
-      }
     }
 
     // ── 3b2. Compute queue call totals from sales agents only ────────
@@ -838,43 +787,7 @@ export async function GET(req: Request) {
       toDeals: toDealsList,
       toCloserStats,
       toCalls: { total: toCallCount, byAgent: toByAgent },
-      spanishCalls: { total: spanishTotal, byAgent: spanishByAgent, _debug: _spDebug },
-      _callDebug: {
-        rawAnsweredInDB: parseInt(_dbgRawAnswered.rows[0]?.cnt ?? 0),
-        salesQueuesOnly: parseInt(_dbgSalesQueuesOnly.rows[0]?.cnt ?? 0),
-        afterPhoneQueueDedup: parseInt(_dbgAfterDedup.rows[0]?.cnt ?? 0),
-        allAgentsSumAfterDedup: parseInt(_dbgDedupAllAgents.rows[0]?.total ?? 0),
-        totalBeforeSalesFilter: _dbgTotalBeforeFilter,
-        totalAfterSalesFilter: totalCalls,
-        salesAgentCount: salesAgentNames.size,
-        excludedAgentsWithCalls: _dbgExcludedAgents,
-        orphanAgents_notInAnyTeam: _dbgOrphanAgents,
-        perAgentCalls: (() => {
-          const result: Record<string, number> = {};
-          for (const [agent, queueCallMap] of agentQueueCalls) {
-            if (!salesAgentNames.has(agent.toLowerCase())) continue;
-            let total = 0;
-            for (const cnt of Object.values(queueCallMap)) total += cnt;
-            result[agent] = total;
-          }
-          return Object.fromEntries(Object.entries(result).sort((a, b) => a[0].localeCompare(b[0])));
-        })(),
-        emptyAgentBreakdown: await (async () => {
-          const r = await query(
-            `SELECT
-               COUNT(*) FILTER (WHERE TRIM(COALESCE(dest_name,''))='' AND TRIM(COALESCE(agent_name,''))='') as both_empty,
-               COUNT(*) FILTER (WHERE TRIM(COALESCE(dest_name,''))!='' AND TRIM(COALESCE(agent_name,''))='') as dest_only,
-               COUNT(*) FILTER (WHERE TRIM(COALESCE(dest_name,''))='' AND TRIM(COALESCE(agent_name,''))!='') as agent_only,
-               COUNT(*) FILTER (WHERE TRIM(COALESCE(dest_name,''))!='' AND TRIM(COALESCE(agent_name,''))!='') as both_filled
-             FROM queue_calls
-             WHERE call_date BETWEEN $1 AND $2
-               AND LOWER(status) = 'answered'
-               AND ${NORM_QUEUE_SQL} IN ('mail 1','mail 2','mail 3','mail 4','mail 5','mail 6','home 1','home 2','home 3','home 4','home 5')`,
-            [fromDate, toDate]
-          );
-          return r.rows[0];
-        })(),
-      },
+      spanishCalls: { total: spanishTotal, byAgent: spanishByAgent },
     });
   } catch (err) {
     console.error("[sales-data] Error:", err);
