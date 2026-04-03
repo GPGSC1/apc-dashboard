@@ -91,6 +91,28 @@ export async function GET(req: Request) {
     : "AND deal_status != ''";
 
   try {
+    // ── 0. BUILD SALES AGENT SET ────────────────────────────────────
+    // Excluded teams: T.O., Spanish, Customer Service, Unassigned
+    // Everything else = sales team whose calls count
+    const EXCLUDED_PATTERNS = ['t.o.', 'to.', 'spanish', 'customer service', 'unassigned'];
+    function isExcludedTeam(teamName: string): boolean {
+      const lower = teamName.toLowerCase().trim();
+      return EXCLUDED_PATTERNS.some(p => lower === p || lower.includes(p));
+    }
+
+    const allTeamMembersResult = await query(
+      `SELECT t.name as team_name, tm.agent_name
+       FROM teams t
+       JOIN team_members tm ON tm.team_id = t.id
+       WHERE tm.agent_name IS NOT NULL AND tm.agent_name != ''`
+    );
+    const salesAgentNames = new Set<string>();
+    for (const row of allTeamMembersResult.rows) {
+      if (!isExcludedTeam(row.team_name)) {
+        salesAgentNames.add(row.agent_name.trim().toLowerCase());
+      }
+    }
+
     // ── 1. DEALS from Moxy Auto + Moxy Home ─────────────────────────
     const autoDealsResult = await query(
       `SELECT DISTINCT ON (customer_id || '|' || contract_no)
@@ -219,22 +241,10 @@ export async function GET(req: Request) {
                              'home 1','home 2','home 3','home 4','home 5')
       )`;
 
-    // Human-answered calls per queue (deduped)
-    const callsResult = await query(
-      `${DEDUP_CTE}
-       SELECT norm_queue, COUNT(*) as cnt FROM deduped GROUP BY norm_queue`,
-      [fromDate, toDate]
-    );
+    // queueCalls and totalCalls are computed AFTER agentQueueCalls is built,
+    // filtered to sales agents only (bottom-up counting)
     const queueCalls: Record<string, number> = {};
     let totalCalls = 0;
-    for (const row of callsResult.rows) {
-      const mapped = mapQueue(row.norm_queue);
-      if (mapped) {
-        const cnt = parseInt(row.cnt);
-        queueCalls[mapped] = (queueCalls[mapped] ?? 0) + cnt;
-        totalCalls += cnt;
-      }
-    }
 
     // T.O. call count — identified by dest_name matching T.O. team members
     // These do NOT get added to main sales call totals
@@ -370,6 +380,15 @@ export async function GET(req: Request) {
       if (!agentQueueCalls.has(agent)) agentQueueCalls.set(agent, {});
       const rec = agentQueueCalls.get(agent)!;
       rec[mapped] = (rec[mapped] ?? 0) + parseInt(row.cnt);
+    }
+
+    // ── 3b2. Compute queue call totals from sales agents only ────────
+    for (const [agent, queueCallMap] of agentQueueCalls) {
+      if (!salesAgentNames.has(agent.toLowerCase())) continue;
+      for (const [q, cnt] of Object.entries(queueCallMap)) {
+        queueCalls[q] = (queueCalls[q] ?? 0) + cnt;
+        totalCalls += cnt;
+      }
     }
 
     // ── 3c. LOAD deal overrides for manual T.O. reassignment ────────
@@ -650,7 +669,9 @@ export async function GET(req: Request) {
     }
 
     // Populate agent-level calls from agentQueueCalls into bySalesperson
+    // Only sales agents get call counts — excluded teams (T.O., Spanish, CS, Unassigned) don't
     for (const [agent, queueCallMap] of agentQueueCalls) {
+      if (!salesAgentNames.has(agent.toLowerCase())) continue;
       if (!bySalesperson[agent]) {
         bySalesperson[agent] = { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
       }
