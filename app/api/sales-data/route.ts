@@ -404,6 +404,26 @@ export async function GET(req: Request) {
       rec[mapped] = (rec[mapped] ?? 0) + parseInt(row.cnt);
     }
 
+    // DEBUG: find dest_name values with calls that don't match ANY team member
+    const _dbgUnmatchedDestNames = await query(
+      `${DEDUP_CTE}
+       SELECT attr_agent, COUNT(*) as cnt FROM deduped
+       WHERE attr_agent != ''
+       GROUP BY attr_agent
+       ORDER BY cnt DESC`,
+      [fromDate, toDate]
+    );
+    const allTeamNamesLower = new Set(
+      allTeamMembersResult.rows.map((r: { agent_name: string }) => r.agent_name.trim().toLowerCase())
+    );
+    const _dbgOrphanAgents: Record<string, number> = {};
+    for (const row of _dbgUnmatchedDestNames.rows) {
+      const name = (row.attr_agent ?? "").trim();
+      if (name && !allTeamNamesLower.has(name.toLowerCase())) {
+        _dbgOrphanAgents[name] = parseInt(row.cnt);
+      }
+    }
+
     // DEBUG: find agents NOT in salesAgentNames that have calls
     const _dbgExcludedAgents: Record<string, number> = {};
     for (const [agent, queueCallMap] of agentQueueCalls) {
@@ -839,6 +859,7 @@ export async function GET(req: Request) {
         totalAfterSalesFilter: totalCalls,
         salesAgentCount: salesAgentNames.size,
         excludedAgentsWithCalls: _dbgExcludedAgents,
+        orphanAgents_notInAnyTeam: _dbgOrphanAgents,
       },
     });
   } catch (err) {
