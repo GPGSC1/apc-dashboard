@@ -64,7 +64,33 @@ export async function GET() {
     [from, to]
   );
 
-  // Query 5: first_ext breakdown for Steven's calls in sales queues
+  // Query 5: Distinct phones — does Sara dedup by phone globally?
+  const phoneCounts = await query(
+    `SELECT
+       COUNT(*) AS total_calls,
+       COUNT(DISTINCT phone) AS unique_phones,
+       COUNT(*) - COUNT(DISTINCT phone) AS dupes_lost_if_global_dedup
+     FROM queue_calls
+     WHERE call_date BETWEEN $1 AND $2 AND LOWER(status) = 'answered'
+       AND TRIM(agent_name) = 'Steven Garner'
+       AND LOWER(queue) NOT LIKE '%spanish%'`,
+    [from, to]
+  );
+
+  // Query 5b: Show Steven's phones that appear in multiple queues
+  const multiQueuePhones = await query(
+    `SELECT phone, COUNT(DISTINCT queue) as queue_count, array_agg(DISTINCT queue) as queues
+     FROM queue_calls
+     WHERE call_date BETWEEN $1 AND $2 AND LOWER(status) = 'answered'
+       AND TRIM(agent_name) = 'Steven Garner'
+       AND LOWER(queue) NOT LIKE '%spanish%'
+     GROUP BY phone
+     HAVING COUNT(DISTINCT queue) > 1
+     ORDER BY queue_count DESC`,
+    [from, to]
+  );
+
+  // Query 6: first_ext breakdown for Steven's calls in sales queues
   const extBreakdown = await query(
     `SELECT
        COUNT(*) AS total,
@@ -102,6 +128,8 @@ export async function GET() {
     perQueue: byQueue.rows,
     transfersTO_Steven: { count: transfersTo.rows.length, rows: transfersTo.rows },
     transfersFROM_Steven: { count: transfersFrom.rows.length, rows: transfersFrom.rows },
+    phoneDedupAnalysis: phoneCounts.rows[0],
+    multiQueuePhones: { count: multiQueuePhones.rows.length, rows: multiQueuePhones.rows },
     firstExtBreakdown: extBreakdown.rows[0],
     nonHumanExtCalls: { count: nonHumanCalls.rows.length, rows: nonHumanCalls.rows },
   });
