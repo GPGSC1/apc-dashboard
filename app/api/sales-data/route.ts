@@ -371,15 +371,47 @@ export async function GET(req: Request) {
        GROUP BY attr_agent, norm_queue`,
       [fromDate, toDate]
     );
+
+    // DEBUG: count funnel steps to find where calls are lost
+    const _dbgRawAnswered = await query(
+      `SELECT COUNT(*) as cnt FROM queue_calls WHERE call_date BETWEEN $1 AND $2 AND LOWER(status) = 'answered'`,
+      [fromDate, toDate]
+    );
+    const _dbgSalesQueuesOnly = await query(
+      `SELECT COUNT(*) as cnt FROM queue_calls WHERE call_date BETWEEN $1 AND $2 AND LOWER(status) = 'answered'
+       AND ${NORM_QUEUE_SQL} IN ('mail 1','mail 2','mail 3','mail 4','mail 5','mail 6','home 1','home 2','home 3','home 4','home 5')`,
+      [fromDate, toDate]
+    );
+    const _dbgAfterDedup = await query(
+      `${DEDUP_CTE} SELECT COUNT(*) as cnt FROM deduped`,
+      [fromDate, toDate]
+    );
+    const _dbgDedupAllAgents = await query(
+      `${DEDUP_CTE} SELECT SUM(cnt)::int as total FROM (SELECT attr_agent, COUNT(*) as cnt FROM deduped GROUP BY attr_agent) x`,
+      [fromDate, toDate]
+    );
+
     // Map: agentName -> queue -> calls
     const agentQueueCalls: Map<string, Record<string, number>> = new Map();
+    let _dbgTotalBeforeFilter = 0;
     for (const row of agentCallsResult.rows) {
       const agent = (row.attr_agent ?? "").trim();
       const mapped = mapQueue(row.norm_queue);
       if (!agent || !mapped) continue;
+      _dbgTotalBeforeFilter += parseInt(row.cnt);
       if (!agentQueueCalls.has(agent)) agentQueueCalls.set(agent, {});
       const rec = agentQueueCalls.get(agent)!;
       rec[mapped] = (rec[mapped] ?? 0) + parseInt(row.cnt);
+    }
+
+    // DEBUG: find agents NOT in salesAgentNames that have calls
+    const _dbgExcludedAgents: Record<string, number> = {};
+    for (const [agent, queueCallMap] of agentQueueCalls) {
+      if (!salesAgentNames.has(agent.toLowerCase())) {
+        let total = 0;
+        for (const cnt of Object.values(queueCallMap)) total += cnt;
+        _dbgExcludedAgents[agent] = total;
+      }
     }
 
     // ── 3b2. Compute queue call totals from sales agents only ────────
@@ -798,6 +830,16 @@ export async function GET(req: Request) {
       toCloserStats,
       toCalls: { total: toCallCount, byAgent: toByAgent },
       spanishCalls: { total: spanishTotal, byAgent: spanishByAgent, _debug: _spDebug },
+      _callDebug: {
+        rawAnsweredInDB: parseInt(_dbgRawAnswered.rows[0]?.cnt ?? 0),
+        salesQueuesOnly: parseInt(_dbgSalesQueuesOnly.rows[0]?.cnt ?? 0),
+        afterPhoneQueueDedup: parseInt(_dbgAfterDedup.rows[0]?.cnt ?? 0),
+        allAgentsSumAfterDedup: parseInt(_dbgDedupAllAgents.rows[0]?.total ?? 0),
+        totalBeforeSalesFilter: _dbgTotalBeforeFilter,
+        totalAfterSalesFilter: totalCalls,
+        salesAgentCount: salesAgentNames.size,
+        excludedAgentsWithCalls: _dbgExcludedAgents,
+      },
     });
   } catch (err) {
     console.error("[sales-data] Error:", err);
