@@ -849,6 +849,16 @@ export async function GET(req: Request) {
         salesAgentCount: salesAgentNames.size,
         excludedAgentsWithCalls: _dbgExcludedAgents,
         orphanAgents_notInAnyTeam: _dbgOrphanAgents,
+        perAgentCalls: (() => {
+          const result: Record<string, number> = {};
+          for (const [agent, queueCallMap] of agentQueueCalls) {
+            if (!salesAgentNames.has(agent.toLowerCase())) continue;
+            let total = 0;
+            for (const cnt of Object.values(queueCallMap)) total += cnt;
+            result[agent] = total;
+          }
+          return Object.fromEntries(Object.entries(result).sort((a, b) => a[0].localeCompare(b[0])));
+        })(),
         emptyAgentBreakdown: await (async () => {
           const r = await query(
             `SELECT
