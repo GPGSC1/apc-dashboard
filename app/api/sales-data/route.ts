@@ -212,10 +212,11 @@ export async function GET(req: Request) {
            ELSE LOWER(TRIM(queue))
          END`;
 
-    const HUMAN_FILTER = `first_ext IS NOT NULL AND first_ext != ''
-         AND LENGTH(TRIM(first_ext)) <= 4
-         AND TRIM(first_ext) NOT LIKE '99%'
-         AND LOWER(status) = 'answered'`;
+    // Relaxed filter: only require answered status. The old first_ext conditions
+    // (non-empty, ≤4 digits, not 99xx) were too restrictive — calls can have a
+    // dest_name (routed to a human) even when first_ext is blank or AI (99xx).
+    // Agent attribution uses dest_name anyway, so first_ext doesn't matter.
+    const HUMAN_FILTER = `LOWER(status) = 'answered'`;
 
     // Dedup CTE: first chronological phone per queue per month for sales queues only
     // Uses dest_name (Destination Name = who the call was routed to) for agent attribution,
