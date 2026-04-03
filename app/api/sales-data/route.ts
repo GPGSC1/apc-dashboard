@@ -218,10 +218,13 @@ export async function GET(req: Request) {
          AND LOWER(status) = 'answered'`;
 
     // Dedup CTE: first chronological phone per queue per month for sales queues only
-    // T.O. is now identified by dest_name matching T.O. team members, not by queue
+    // Uses dest_name (Destination Name = who the call was routed to) for agent attribution,
+    // falling back to agent_name (First Ext Name) when dest_name is empty.
+    // This matches the user's COUNTIFS methodology on 3CX column L (Destination Name).
     const DEDUP_CTE = `
       WITH answered AS (
-        SELECT phone, call_date, agent_name,
+        SELECT phone, call_date,
+          COALESCE(NULLIF(TRIM(dest_name), ''), agent_name) as attr_agent,
           ${NORM_QUEUE_SQL} as norm_queue
         FROM queue_calls
         WHERE call_date BETWEEN $1 AND $2
@@ -235,7 +238,7 @@ export async function GET(req: Request) {
         FROM answered
       ),
       deduped AS (
-        SELECT phone, norm_queue, call_date, agent_name FROM ranked
+        SELECT phone, norm_queue, call_date, attr_agent FROM ranked
         WHERE rn = 1
           AND norm_queue IN ('mail 1','mail 2','mail 3','mail 4','mail 5','mail 6',
                              'home 1','home 2','home 3','home 4','home 5')
@@ -263,12 +266,12 @@ export async function GET(req: Request) {
     const spanishNames = new Set(spanishTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.trim().toLowerCase()));
     const _spDebug = { spanishTeamNames: [...spanishNames], spanishTeamCount: spanishNames.size };
 
+    // Spanish: count dest_name occurrences across ALL queues, ALL calls (no status filter)
+    // Matches user's COUNTIF on Destination Name column L across entire raw 3CX report
     const spanishCountResult = await query(
       `SELECT dest_name, COUNT(*) as cnt
        FROM queue_calls
        WHERE call_date BETWEEN $1 AND $2
-         AND LOWER(queue) LIKE '%spanish%'
-         AND LOWER(status) = 'answered'
          AND dest_name IS NOT NULL AND dest_name != ''
        GROUP BY dest_name`,
       [fromDate, toDate]
@@ -294,17 +297,11 @@ export async function GET(req: Request) {
     );
     const toNames = new Set(toTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.trim().toLowerCase()));
 
-    const toCountResult = await query(
-      `SELECT dest_name, COUNT(*) as cnt
-       FROM to_transfers
-       WHERE call_date BETWEEN $1 AND $2
-         AND LOWER(status) = 'answered'
-         AND dest_name IS NOT NULL AND dest_name != ''
-       GROUP BY dest_name`,
-      [fromDate, toDate]
-    );
+    // T.O.: count dest_name occurrences across ALL queues, ALL calls (no status filter)
+    // Matches user's COUNTIF on Destination Name column L across entire raw 3CX report
+    // Reuse the same broad dest_name query result from Spanish counting
     const toByAgent: Record<string, number> = {};
-    for (const row of toCountResult.rows) {
+    for (const row of spanishCountResult.rows) {
       const name = (row.dest_name ?? "").trim();
       if (name && toNames.has(name.toLowerCase())) {
         const cnt = parseInt(row.cnt);
@@ -364,17 +361,19 @@ export async function GET(req: Request) {
     }
 
     // ── 3b. CALLS per agent per queue (deduped) ─────────────────────
+    // Uses attr_agent (dest_name with agent_name fallback) to match user's
+    // COUNTIFS on Destination Name column
     const agentCallsResult = await query(
       `${DEDUP_CTE}
-       SELECT agent_name, norm_queue, COUNT(*) as cnt
+       SELECT attr_agent, norm_queue, COUNT(*) as cnt
        FROM deduped
-       GROUP BY agent_name, norm_queue`,
+       GROUP BY attr_agent, norm_queue`,
       [fromDate, toDate]
     );
     // Map: agentName -> queue -> calls
     const agentQueueCalls: Map<string, Record<string, number>> = new Map();
     for (const row of agentCallsResult.rows) {
-      const agent = (row.agent_name ?? "").trim();
+      const agent = (row.attr_agent ?? "").trim();
       const mapped = mapQueue(row.norm_queue);
       if (!agent || !mapped) continue;
       if (!agentQueueCalls.has(agent)) agentQueueCalls.set(agent, {});
