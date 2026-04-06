@@ -706,3 +706,116 @@ All phones are normalized to 10-digit: strip non-digits, if 11 digits starting w
 13. Built AIDA system with wallboard polling, throttle engine, and KV state management
 14. Added `aim_phone_agent` table for phone-to-agent mapping across ALL calls (not just transfers)
 15. Added `aim_phone_history` table for list tiebreaking in multi-list phones
+
+---
+
+## Date & Time Troubleshooting Guide (CRITICAL -- READ THIS FIRST)
+
+This project has been plagued by date/time bugs. Every external API returns dates differently, and Postgres DATE columns drop time components, causing subtle off-by-one and timezone-shift bugs. **All new features that touch dates MUST follow these patterns.**
+
+### Core Rule: Everything is Central Time (America/Chicago)
+GPG operates in CT. All dates displayed, queried, and compared must be CT. The server (Vercel) runs in UTC. **Never use `new Date()` directly for date logic** -- always convert to CT first.
+
+### The Timestamp-After-Date Trap
+**Problem**: API responses often return dates with timestamps appended (e.g., `"4/1/2026 12:00:00 AM"`, `"2026-04-01T05:00:00.000Z"`). If you naively pass these to `new Date()`, JavaScript interprets them in UTC, which can shift the date backward by one day in CT (e.g., `2026-04-01T05:00:00Z` → March 31 in CT).
+
+**Solution**: Always strip the time component before using the date. The `parseDate()` function in `lib/date-utils.ts` handles this:
+```typescript
+// parseDate("4/1/2026 12:00:00 AM") → "2026-04-01"
+// parseDate("2026-04-01T05:00:00.000Z") → "2026-04-01"
+// parseDate("2026-04-01") → "2026-04-01"
+// parseDate(46113) → "2026-04-01" (Excel serial)
+```
+It splits on space first (`s.split(" ")[0]`), then on `T`, extracting just the YYYY-MM-DD portion. **Always use `parseDate()` for any date from an external API.**
+
+### Date Range Queries: BETWEEN is Inclusive
+Postgres `BETWEEN $1 AND $2` is inclusive on both ends. When the user selects "Apr 1 - Apr 5", pass `start=2026-04-01&end=2026-04-05` and the SQL `WHERE sold_date BETWEEN $1 AND $2` correctly includes both Apr 1 and Apr 5.
+
+**Pitfall**: Moxy API's `toDate` parameter is EXCLUSIVE (it returns records up to but not including `toDate`). So to get deals through Apr 5, you must pass `toDate=2026-04-06` (the next day). The seed-refresh handles this with `tomorrowLocal()` or `addDays(date, 1)`.
+
+### API Date Format Reference
+
+| Source | Format Returned | Gotcha |
+|--------|----------------|--------|
+| **Moxy API** | `"M/D/YYYY h:mm:ss AM/PM"` (e.g., `"4/1/2026 12:00:00 AM"`) | Must strip time. The `12:00:00 AM` is meaningless filler. |
+| **Moxy API dates param** | `fromDate=YYYY-MM-DD&toDate=YYYY-MM-DD` | `toDate` is EXCLUSIVE -- pass day+1 to include the target date |
+| **3CX CSV** | ISO-ish: `"2026-04-01T13:45:22"` or sometimes `"M/D/YYYY H:MM"` | Column positions vary. Always use parseDate(). |
+| **AIM API** | ISO 8601: `"2026-04-01T17:30:00.000Z"` (UTC) | The Z means UTC. Strip time or convert to CT before comparing dates. |
+| **Postgres DATE column** | Returns as JS Date object or `"YYYY-MM-DD"` depending on driver | When comparing in JS, always `.toISOString().slice(0,10)` or format explicitly. `date instanceof Date ? date.toISOString().slice(0,10) : String(date).slice(0,10)` |
+| **Excel serial numbers** | Integer (e.g., `46113` = April 1, 2026) | `parseDate()` handles these. Base epoch is Dec 30, 1899. |
+
+### todayLocal() and tomorrowLocal()
+Both use `Intl.DateTimeFormat` with `timeZone: "America/Chicago"` and `en-CA` locale (which gives YYYY-MM-DD format). They return the correct CT date even when the server is in UTC.
+
+```typescript
+// WRONG -- gives UTC date, could be yesterday in CT after midnight UTC
+const today = new Date().toISOString().slice(0, 10);
+
+// RIGHT -- gives CT date
+const today = todayLocal(); // from lib/date-utils.ts
+```
+
+### centralParts() in seed-refresh
+For business-hours gating and date arithmetic in the cron job, `centralParts()` uses `Intl.DateTimeFormat` to decompose the current time into CT year/month/day/hour/minute/dow. This avoids all UTC conversion issues.
+
+### addDays() Safety
+When doing date arithmetic, always anchor at noon UTC to avoid DST boundary issues:
+```typescript
+function addDays(dateStr: string, n: number): string {
+  const d = new Date(dateStr + "T12:00:00Z"); // noon UTC = safe from DST
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+```
+
+### Postgres DATE vs TIMESTAMP
+- All date columns in this project are `DATE` type (no time component).
+- When inserting, pass `"YYYY-MM-DD"` strings. Postgres handles it cleanly.
+- When reading back, the `pg` driver may return a JS `Date` object. Always convert: `row.sold_date instanceof Date ? row.sold_date.toISOString().slice(0,10) : String(row.sold_date).slice(0,10)`
+- **Never store timestamps in DATE columns** -- the time is silently dropped and you lose precision.
+
+### Common Date Bugs We've Hit and Fixed
+
+1. **Moxy dates shifted back one day**: Moxy returns `"4/1/2026 12:00:00 AM"`. Old code passed this to `new Date()` which interpreted it as midnight local time, then `.toISOString()` converted to UTC, shifting to previous day. **Fix**: `parseDate()` strips the time before any conversion.
+
+2. **3CX call_date off by one**: 3CX CSV times are in CT but were being parsed as UTC. A call at 11pm CT on Apr 1 became Apr 2 in UTC. **Fix**: `parseDate()` only extracts the date portion, ignoring the time entirely.
+
+3. **Date range returning wrong day count**: Using `new Date("2026-04-05")` creates midnight UTC, which is 7pm previous day in CT. Comparisons like `date <= endDate` could miss the last day. **Fix**: Always compare date strings (`"2026-04-05" <= "2026-04-05"`) not Date objects.
+
+4. **Moxy toDate exclusivity**: Passing `toDate=2026-04-05` to Moxy API returns deals through Apr 4 only. **Fix**: Always add 1 day to the end date when calling Moxy: `addDays(toDate, 1)`.
+
+5. **Stale deal statuses**: The seed-refresh cron only fetches yesterday+today. Deals from earlier in the month can have their status change (Sold→Back Out, Sold→Cancelled) without our DB knowing. **Fix**: Periodic manual re-seed for the full month (`?dates=2026-04-01,2026-04-02,...`), or the upsert `ON CONFLICT DO UPDATE SET deal_status` catches it when the same date range is re-fetched.
+
+### Template: Safe Date Handling for New API Integrations
+
+```typescript
+import { parseDate, todayLocal } from "../../../lib/date-utils";
+
+// 1. Get current date in CT
+const today = todayLocal();
+
+// 2. Parse any API date safely
+const soldDate = parseDate(apiRecord.sold_date); // handles all formats
+if (!soldDate) continue; // skip unparseable dates
+
+// 3. Date range for queries
+const fromDate = url.searchParams.get("start") ?? todayLocal();
+const toDate = url.searchParams.get("end") ?? todayLocal();
+
+// 4. For Moxy API calls (toDate is exclusive)
+const moxyTo = addDays(toDate, 1);
+const moxyUrl = `${MOXY_BASE}/api/GetDealLog?fromDate=${fromDate}&toDate=${moxyTo}`;
+
+// 5. SQL queries (BETWEEN is inclusive)
+const result = await query(
+  `SELECT * FROM table WHERE date_col BETWEEN $1 AND $2`,
+  [fromDate, toDate]
+);
+
+// 6. Reading dates back from Postgres
+for (const row of result.rows) {
+  const dateStr = row.call_date instanceof Date
+    ? row.call_date.toISOString().slice(0, 10)
+    : String(row.call_date).slice(0, 10);
+}
+```
