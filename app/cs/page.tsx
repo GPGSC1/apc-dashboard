@@ -1113,6 +1113,7 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth }: { perfData: any; 
   const [callsEnd, setCallsEnd] = useState(todayStr());
   const [callsData, setCallsData] = useState<Record<string, number> | null>(null);
   const [callsLoading, setCallsLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   // Fetch calls made when dates change
   useEffect(() => {
@@ -1125,33 +1126,173 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth }: { perfData: any; 
       .finally(() => setCallsLoading(false));
   }, [callsStart, callsEnd]);
 
-  if (!perfData) return <div style={{ padding: 40, textAlign: "center", color: C.muted }}>Loading weekly report...</div>;
+  if (!perfData) return <div style={{ padding: 40, textAlign: "center", color: C.muted }}>Loading performance data...</div>;
 
-  const { weeks, collections, callVolume, conversion, reps, dispoByRep } = perfData;
+  const { weeks, collections, callVolume, conversion, reps, dispoByRep, accountsByRepWeek } = perfData;
   const weekCount = weeks?.length || 0;
-
-  const pctStr = (n: number) => n > 0 ? (n * 100).toFixed(1) + "%" : "--";
 
   // Merge reps from weekly report + calls data for complete list
   const allCallReps = callsData ? Object.keys(callsData).sort() : [];
   const totalCalls = callsData ? Object.values(callsData).reduce((s, n) => s + n, 0) : 0;
+
+  // ── MTD Totals for stat cards ──
+  const mtdCollections = (collections?.totals || []).reduce((s: number, t: { collections: number }) => s + t.collections, 0);
+  const mtdZeroPays = (collections?.totals || []).reduce((s: number, t: { zeroPays: number }) => s + t.zeroPays, 0);
+  const mtdAmount = (collections?.totals || []).reduce((s: number, t: { amtCollected: number }) => s + t.amtCollected, 0);
+  const mtdOutbound = (callVolume?.outboundTotals || []).reduce((s: number, n: number) => s + n, 0);
+  const mtdInbound = (callVolume?.inboundTotals || []).reduce((s: number, d: { total: number }) => s + d.total, 0);
+  const mtdDropped = (callVolume?.inboundTotals || []).reduce((s: number, d: { dropped: number }) => s + d.dropped, 0);
+  const mtdConversion = mtdOutbound > 0 ? ((mtdCollections / mtdOutbound) * 100).toFixed(1) + "%" : "--";
+  const mtdDropRate = mtdInbound > 0 ? ((mtdDropped / mtdInbound) * 100).toFixed(1) + "%" : "--";
 
   const dateInputStyle: React.CSSProperties = {
     background: C.input, color: C.text, border: `1px solid ${C.border}`,
     borderRadius: 4, padding: "4px 8px", fontSize: 12, fontFamily: FONT,
   };
 
+  // ── Export Weekly Report CSV ──
+  const exportCSV = () => {
+    setExporting(true);
+    try {
+      const rows: string[][] = [];
+      const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
+
+      // Section 1: Collections WoW
+      rows.push(["COLLECTIONS — WEEK OVER WEEK"]);
+      rows.push(["Rep", ...weeks.flatMap((w: string) => [`${w} Coll`, `${w} 0-Pay`, `${w} Amt`])]);
+      for (const rep of reps || []) {
+        const rd = collections?.byRep?.[rep] || [];
+        const vals: (string | number)[] = [rep];
+        for (let wi = 0; wi < weekCount; wi++) {
+          const d = rd[wi] || { collections: 0, zeroPays: 0, amtCollected: 0 };
+          vals.push(d.collections, d.zeroPays, d.amtCollected.toFixed(2));
+        }
+        rows.push(vals.map(v => String(v)));
+      }
+      // Totals
+      const totVals: (string | number)[] = ["TOTAL"];
+      for (const t of collections?.totals || []) {
+        totVals.push(t.collections, t.zeroPays, t.amtCollected.toFixed(2));
+      }
+      rows.push(totVals.map(v => String(v)));
+      rows.push([]);
+
+      // Section 2: Outbound Calls by Rep WoW
+      rows.push(["OUTBOUND CALLS BY REP — WEEK OVER WEEK"]);
+      rows.push(["Rep", ...(weeks || []), "Total"]);
+      for (const [agent, weekCounts] of Object.entries(callVolume?.outboundByRep || {}).sort(([a], [b]) => a.localeCompare(b))) {
+        const counts = weekCounts as number[];
+        const total = counts.reduce((s, n) => s + n, 0);
+        if (total > 0) rows.push([agent, ...counts.map(String), String(total)]);
+      }
+      rows.push(["TOTAL", ...(callVolume?.outboundTotals || []).map(String), String(mtdOutbound)]);
+      rows.push([]);
+
+      // Section 3: Inbound Calls WoW
+      rows.push(["INBOUND CALLS — WEEK OVER WEEK"]);
+      rows.push(["Metric", ...(weeks || [])]);
+      rows.push(["Total Calls", ...(callVolume?.inboundTotals || []).map((d: { total: number }) => String(d.total))]);
+      rows.push(["Dropped", ...(callVolume?.inboundTotals || []).map((d: { dropped: number }) => String(d.dropped))]);
+      rows.push(["Drop Rate %", ...(callVolume?.inboundTotals || []).map((d: { total: number; dropped: number }) =>
+        d.total > 0 ? ((d.dropped / d.total) * 100).toFixed(1) + "%" : "0%"
+      )]);
+      rows.push([]);
+
+      // Section 4: Conversion % WoW
+      rows.push(["CONVERSION % — WEEK OVER WEEK"]);
+      rows.push(["Rep", ...(weeks || [])]);
+      for (const rep of reps || []) {
+        const pcts = conversion?.byRep?.[rep] || [];
+        rows.push([rep, ...Array.from({ length: weekCount }).map((_, wi) => {
+          const p = pcts[wi] || 0;
+          return p > 0 ? (p * 100).toFixed(1) + "%" : "0%";
+        })]);
+      }
+      rows.push([]);
+
+      // Section 5: Full Disposition Breakdown
+      rows.push(["DISPOSITION BREAKDOWN — MTD"]);
+      const allDispos = new Set<string>();
+      for (const rep of reps || []) {
+        for (const k of Object.keys(dispoByRep?.[rep] || {})) allDispos.add(k);
+      }
+      const dispoList = [...allDispos].sort();
+      rows.push(["Rep", ...dispoList, "Total"]);
+      for (const rep of reps || []) {
+        const d = dispoByRep?.[rep] || {};
+        const total = Object.values(d as Record<string, number>).reduce((s: number, v: number) => s + v, 0);
+        rows.push([rep, ...dispoList.map(k => String((d as Record<string, number>)[k] || 0)), String(total)]);
+      }
+      rows.push([]);
+
+      // Section 6: Account Totals by Rep WoW
+      if (accountsByRepWeek) {
+        rows.push(["ACCOUNTS ASSIGNED — WEEK OVER WEEK"]);
+        rows.push(["Rep", ...(weeks || [])]);
+        for (const rep of reps || []) {
+          const wk = accountsByRepWeek[rep] || [];
+          rows.push([rep, ...Array.from({ length: weekCount }).map((_, wi) => String(wk[wi] || 0))]);
+        }
+      }
+
+      // Build CSV and download
+      const csv = rows.map(r => r.map(esc).join(",")).join("\n");
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `CS_Weekly_Report_${perfMonth}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // Stat card component
+  const StatCard = ({ label, value, color }: { label: string; value: string | number; color?: string }) => (
+    <div style={{
+      background: C.card, borderRadius: 8, padding: "12px 16px", flex: "1 1 140px", minWidth: 140,
+      border: `1px solid ${C.border}`,
+    }}>
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: color || C.text }}>{value}</div>
+    </div>
+  );
+
   return (
     <div>
-      {/* Month Selector */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>CS Weekly Report</h2>
+      {/* Header: Title + Month + Export */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+        <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>Collections Performance</h2>
         <input
           type="month"
           value={perfMonth}
           onChange={(e) => setPerfMonth(e.target.value)}
           style={dateInputStyle}
         />
+        <button
+          onClick={exportCSV}
+          disabled={exporting}
+          style={{
+            marginLeft: "auto", background: C.teal, color: "#fff", border: "none", borderRadius: 6,
+            padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
+            opacity: exporting ? 0.6 : 1,
+          }}
+        >
+          {exporting ? "Exporting..." : "Export Weekly Report"}
+        </button>
+      </div>
+
+      {/* ═══ MTD STAT CARDS ═══ */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 20 }}>
+        <StatCard label="Collections" value={fmt(mtdCollections)} color={C.green} />
+        <StatCard label="0-Pay Collections" value={fmt(mtdZeroPays)} color={C.amber} />
+        <StatCard label="Amount Collected" value={fmtMoney(mtdAmount)} color={C.green} />
+        <StatCard label="Outbound Calls" value={fmt(mtdOutbound)} />
+        <StatCard label="Conversion Rate" value={mtdConversion} color={parseFloat(String(mtdConversion)) >= 4 ? C.green : C.amber} />
+        <StatCard label="Inbound Drop Rate" value={mtdDropRate} color={parseFloat(String(mtdDropRate)) > 10 ? C.red : C.green} />
+        <StatCard label="Active Reps" value={reps?.length || 0} />
       </div>
 
       {/* ═══ CALLS MADE — CUSTOM DATE RANGE ═══ */}
@@ -1191,203 +1332,15 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth }: { perfData: any; 
         </table>
       </div>
 
-      {/* ═══ COLLECTIONS — WEEK OVER WEEK ═══ */}
-      <SectionHeader>COLLECTIONS — WEEK OVER WEEK</SectionHeader>
-      <div style={{ overflowX: "auto", borderRadius: 8, border: `1px solid ${C.border}` }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: C.card }}>
-              <WTh style={{ textAlign: "left", minWidth: 120 }}>Rep</WTh>
-              {weeks?.map((w: string, i: number) => (
-                <WTh key={i} colSpan={3} style={{ textAlign: "center", borderLeft: `1px solid ${C.border}` }}>{w}</WTh>
-              ))}
-            </tr>
-            <tr style={{ background: C.card }}>
-              <WTh style={{ textAlign: "left" }}></WTh>
-              {weeks?.map((_: string, i: number) => (
-                <React.Fragment key={i}>
-                  <WTh style={{ borderLeft: `1px solid ${C.border}` }}>Coll</WTh>
-                  <WTh>0 Pay</WTh>
-                  <WTh>Amt $</WTh>
-                </React.Fragment>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {(reps || []).map((rep: string) => {
-              const repData = collections?.byRep?.[rep] || [];
-              return (
-                <tr key={rep}>
-                  <WTd style={{ textAlign: "left", fontWeight: 600 }}>{rep}</WTd>
-                  {Array.from({ length: weekCount }).map((_, wi) => {
-                    const d = repData[wi] || { collections: 0, zeroPays: 0, amtCollected: 0 };
-                    return (
-                      <React.Fragment key={wi}>
-                        <WTd style={{ borderLeft: `1px solid ${C.border}`, color: d.collections > 0 ? C.green : C.muted }}>
-                          {d.collections || "--"}
-                        </WTd>
-                        <WTd style={{ color: d.zeroPays > 0 ? C.amber : C.muted }}>{d.zeroPays || "--"}</WTd>
-                        <WTd>{d.amtCollected > 0 ? fmtMoney(d.amtCollected) : "--"}</WTd>
-                      </React.Fragment>
-                    );
-                  })}
-                </tr>
-              );
-            })}
-            {/* Totals row */}
-            <tr style={{ background: "rgba(20,184,166,0.06)" }}>
-              <WTd style={{ textAlign: "left", fontWeight: 800, color: C.teal }}>TOTAL</WTd>
-              {(collections?.totals || []).map((t: { collections: number; zeroPays: number; amtCollected: number }, wi: number) => (
-                <React.Fragment key={wi}>
-                  <WTd style={{ borderLeft: `1px solid ${C.border}`, fontWeight: 700, color: C.teal }}>{t.collections}</WTd>
-                  <WTd style={{ fontWeight: 700, color: C.amber }}>{t.zeroPays}</WTd>
-                  <WTd style={{ fontWeight: 700 }}>{fmtMoney(t.amtCollected)}</WTd>
-                </React.Fragment>
-              ))}
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      {/* ═══ CALL VOLUME — WEEK OVER WEEK ═══ */}
-      <SectionHeader>CALL VOLUME — WEEK OVER WEEK</SectionHeader>
-
-      {/* Outbound Summary */}
-      <div style={{ fontSize: 12, fontWeight: 700, color: C.secondary, marginBottom: 6 }}>Outbound Collections Calls</div>
-      <div style={{ overflowX: "auto", borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 16 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: C.card }}>
-              <WTh style={{ textAlign: "left", minWidth: 120 }}>Metric</WTh>
-              {weeks?.map((w: string, i: number) => <WTh key={i}>{w}</WTh>)}
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <WTd style={{ textAlign: "left", fontWeight: 600 }}>Total Calls</WTd>
-              {(callVolume?.outboundTotals || []).map((n: number, i: number) => (
-                <WTd key={i}>{n > 0 ? fmt(n) : "--"}</WTd>
-              ))}
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      {/* Inbound Summary */}
-      <div style={{ fontSize: 12, fontWeight: 700, color: C.secondary, marginBottom: 6 }}>Inbound Collections Calls</div>
-      <div style={{ overflowX: "auto", borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 16 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: C.card }}>
-              <WTh style={{ textAlign: "left", minWidth: 120 }}>Metric</WTh>
-              {weeks?.map((w: string, i: number) => <WTh key={i}>{w}</WTh>)}
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <WTd style={{ textAlign: "left", fontWeight: 600 }}>Total Calls</WTd>
-              {(callVolume?.inboundTotals || []).map((d: { total: number }, i: number) => (
-                <WTd key={i}>{d.total > 0 ? fmt(d.total) : "--"}</WTd>
-              ))}
-            </tr>
-            <tr>
-              <WTd style={{ textAlign: "left", fontWeight: 600 }}>Dropped Calls</WTd>
-              {(callVolume?.inboundTotals || []).map((d: { dropped: number }, i: number) => (
-                <WTd key={i} style={{ color: d.dropped > 0 ? C.red : C.muted }}>{d.dropped > 0 ? fmt(d.dropped) : "--"}</WTd>
-              ))}
-            </tr>
-            <tr>
-              <WTd style={{ textAlign: "left", fontWeight: 600 }}>Drop Rate %</WTd>
-              {(callVolume?.inboundTotals || []).map((d: { total: number; dropped: number }, i: number) => (
-                <WTd key={i} style={{ color: d.total > 0 && (d.dropped / d.total) > 0.1 ? C.red : C.text }}>
-                  {d.total > 0 ? ((d.dropped / d.total) * 100).toFixed(1) + "%" : "--"}
-                </WTd>
-              ))}
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      {/* Outbound Calls by Rep */}
-      <div style={{ fontSize: 12, fontWeight: 700, color: C.secondary, marginBottom: 6 }}>Outbound Calls by Rep</div>
-      <div style={{ overflowX: "auto", borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 16 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: C.card }}>
-              <WTh style={{ textAlign: "left", minWidth: 120 }}>Rep</WTh>
-              {weeks?.map((w: string, i: number) => <WTh key={i}>{w}</WTh>)}
-              <WTh>Total</WTh>
-            </tr>
-          </thead>
-          <tbody>
-            {Object.entries(callVolume?.outboundByRep || {}).sort(([a], [b]) => a.localeCompare(b)).map(([agent, weekCounts]) => {
-              const counts = weekCounts as number[];
-              const total = counts.reduce((s, n) => s + n, 0);
-              if (total === 0) return null;
-              return (
-                <tr key={agent}>
-                  <WTd style={{ textAlign: "left", fontWeight: 600 }}>{agent}</WTd>
-                  {counts.map((n: number, i: number) => (
-                    <WTd key={i}>{n > 0 ? fmt(n) : "--"}</WTd>
-                  ))}
-                  <WTd style={{ fontWeight: 700 }}>{fmt(total)}</WTd>
-                </tr>
-              );
-            })}
-            <tr style={{ background: "rgba(20,184,166,0.06)" }}>
-              <WTd style={{ textAlign: "left", fontWeight: 800, color: C.teal }}>TOTAL</WTd>
-              {(callVolume?.outboundTotals || []).map((n: number, i: number) => (
-                <WTd key={i} style={{ fontWeight: 700, color: C.teal }}>{n > 0 ? fmt(n) : "--"}</WTd>
-              ))}
-              <WTd style={{ fontWeight: 700, color: C.teal }}>
-                {fmt((callVolume?.outboundTotals || []).reduce((s: number, n: number) => s + n, 0))}
-              </WTd>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      {/* ═══ CONVERSION % — WEEK OVER WEEK ═══ */}
-      <SectionHeader>CONVERSION % — WEEK OVER WEEK</SectionHeader>
-      <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Collections / Outbound Calls</div>
-      <div style={{ overflowX: "auto", borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 16 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: C.card }}>
-              <WTh style={{ textAlign: "left", minWidth: 120 }}>Rep</WTh>
-              {weeks?.map((w: string, i: number) => <WTh key={i}>{w}</WTh>)}
-            </tr>
-          </thead>
-          <tbody>
-            {(reps || []).map((rep: string) => {
-              const pcts = conversion?.byRep?.[rep] || [];
-              return (
-                <tr key={rep}>
-                  <WTd style={{ textAlign: "left", fontWeight: 600 }}>{rep}</WTd>
-                  {Array.from({ length: weekCount }).map((_, wi) => {
-                    const p = pcts[wi] || 0;
-                    return (
-                      <WTd key={wi} style={{ color: p >= 0.04 ? C.green : p >= 0.02 ? C.amber : p > 0 ? C.red : C.muted }}>
-                        {pctStr(p)}
-                      </WTd>
-                    );
-                  })}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {/* ═══ DISPOSITION BREAKDOWN ═══ */}
+      {/* ═══ DISPOSITION BREAKDOWN — CONDENSED ═══ */}
       <SectionHeader>DISPOSITION BREAKDOWN — MTD</SectionHeader>
       <div style={{ overflowX: "auto", borderRadius: 8, border: `1px solid ${C.border}` }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: C.card }}>
               <WTh style={{ textAlign: "left", minWidth: 120 }}>Rep</WTh>
-              {["Collected", "LVM", "No Voicemail", "VM Full", "Follow Up", "Sent Email", "PUHU", "Scheduled PDP", "Wrong #/NIS", "Sent To CS", "Other"].map(d => (
-                <WTh key={d} style={{ fontSize: 9 }}>{d}</WTh>
+              {["Collected", "LVM", "Follow Up", "PUHU", "Other"].map(d => (
+                <WTh key={d}>{d}</WTh>
               ))}
               <WTh>Total</WTh>
             </tr>
@@ -1395,13 +1348,13 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth }: { perfData: any; 
           <tbody>
             {(reps || []).map((rep: string) => {
               const d = dispoByRep?.[rep] || {};
-              const namedDispos = ["Collected", "LVM", "No Voicemail", "VM Full", "Follow Up", "Sent Email", "PUHU", "Scheduled PDP", "Wrong #/NIS", "Sent To CS"];
-              const other = Object.entries(d).filter(([k]) => !namedDispos.includes(k)).reduce((s, [, v]) => s + (v as number), 0);
+              const coreDispos = ["Collected", "LVM", "Follow Up", "PUHU"];
+              const other = Object.entries(d).filter(([k]) => !coreDispos.includes(k)).reduce((s, [, v]) => s + (v as number), 0);
               const total = Object.values(d as Record<string, number>).reduce((s: number, v: number) => s + v, 0);
               return (
                 <tr key={rep}>
                   <WTd style={{ textAlign: "left", fontWeight: 600 }}>{rep}</WTd>
-                  {namedDispos.map(name => (
+                  {coreDispos.map(name => (
                     <WTd key={name} style={{ color: ((d as Record<string, number>)[name] || 0) > 0 ? (name === "Collected" ? C.green : C.text) : C.muted }}>
                       {(d as Record<string, number>)[name] || "--"}
                     </WTd>
