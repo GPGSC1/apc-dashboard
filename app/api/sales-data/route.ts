@@ -114,21 +114,43 @@ export async function GET(req: Request) {
     }
 
     // ── 1. DEALS from Moxy Auto + Moxy Home ─────────────────────────
+    // Auto deals: exclude rows with empty contract_no when the same customer_id
+    // already has a row with a real contract_no (prevents double-counting)
     const autoDealsResult = await query(
       `SELECT DISTINCT ON (customer_id || '|' || contract_no)
          customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, make, model, campaign, promo_code, first_name, last_name
-       FROM moxy_deals
+       FROM moxy_deals d
        WHERE sold_date BETWEEN $1 AND $2
          ${statusFilter}
+         AND NOT (
+           (contract_no IS NULL OR contract_no = '')
+           AND EXISTS (
+             SELECT 1 FROM moxy_deals d2
+             WHERE d2.customer_id = d.customer_id
+               AND d2.contract_no IS NOT NULL AND d2.contract_no != ''
+               AND d2.sold_date BETWEEN $1 AND $2
+           )
+         )
        ORDER BY customer_id || '|' || contract_no, sold_date DESC`,
       [fromDate, toDate]
     );
+    // Home deals: exclude rows with empty contract_no when the same customer_id
+    // already has a row with a real contract_no (prevents double-counting)
     const homeDealsResult = await query(
       `SELECT DISTINCT ON (customer_id || '|' || contract_no)
          customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, campaign, promo_code, first_name, last_name
-       FROM moxy_home_deals
+       FROM moxy_home_deals h
        WHERE sold_date BETWEEN $1 AND $2
          ${statusFilter}
+         AND NOT (
+           (contract_no IS NULL OR contract_no = '')
+           AND EXISTS (
+             SELECT 1 FROM moxy_home_deals h2
+             WHERE h2.customer_id = h.customer_id
+               AND h2.contract_no IS NOT NULL AND h2.contract_no != ''
+               AND h2.sold_date BETWEEN $1 AND $2
+           )
+         )
        ORDER BY customer_id || '|' || contract_no, sold_date DESC`,
       [fromDate, toDate]
     );
