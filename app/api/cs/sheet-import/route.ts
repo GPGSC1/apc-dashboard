@@ -61,6 +61,7 @@ export async function GET(request: Request) {
     // === IMPORT MODE ===
     // Find column positions from header row
     const colIdx: Record<string, number> = {};
+    // findCol: fuzzy (includes) match
     const findCol = (patterns: string[]): number => {
       for (const p of patterns) {
         const idx = header.findIndex((h: string) => h.toLowerCase().includes(p.toLowerCase()));
@@ -68,26 +69,34 @@ export async function GET(request: Request) {
       }
       return -1;
     };
+    // findColExact: exact (equals) match — for short ambiguous names like "Date"
+    const findColExact = (patterns: string[]): number => {
+      for (const p of patterns) {
+        const idx = header.findIndex((h: string) => h.toLowerCase() === p.toLowerCase());
+        if (idx >= 0) return idx;
+      }
+      return -1;
+    };
 
     colIdx.rep = findCol(["Rep", "Assigned"]);
     colIdx.accountNum = findCol(["Account Number", "Account #", "Acct"]);
-    colIdx.insuredName = findCol(["Insured Name", "Name", "Insured"]);
+    colIdx.insuredName = findCol(["Insured Name", "Customer Name", "Name", "Insured"]);
     colIdx.policyNum = findCol(["Policy Number", "Policy #", "Policy"]);
     colIdx.agent = findCol(["Agent", "Entity"]);
     colIdx.installments = findCol(["Installments", "Inst"]);
     colIdx.nextDue = findCol(["Next Due", "Due Date"]);
-    colIdx.schedCxl = findCol(["Scheduled Cancel", "CXL Date", "Cancellation Date", "Cancel"]);
+    colIdx.schedCxl = findCol(["Sched CXL Date", "Scheduled Cancel", "CXL Date", "Cancellation Date"]);
     colIdx.billHold = findCol(["Bill Hold"]);
     colIdx.billingMethod = findCol(["Billing Method", "Billing"]);
     colIdx.amountDue = findCol(["Amount Due", "Amt Due"]);
-    colIdx.mainPhone = findCol(["Main Phone", "Phone"]);
+    colIdx.mainPhone = findCol(["Main Phone"]);
     colIdx.workPhone = findCol(["Work Phone", "Alt Phone", "Phone 2"]);
     colIdx.homePhone = findCol(["Home Phone"]);
-    colIdx.email = findCol(["Email", "Customer Email"]);
-    colIdx.state = findCol(["State"]);
-    colIdx.dispo1 = findCol(["Dispo 1", "Disposition 1", "Dispo"]);
-    colIdx.dispo2 = findCol(["Dispo 2", "Disposition 2", "Notes"]);
-    colIdx.dispoDate = findCol(["Date", "Dispo Date"]);
+    colIdx.email = findCol(["Customer Email", "Email"]);
+    colIdx.state = findColExact(["State"]);
+    colIdx.dispo1 = findCol(["Dispo 1", "Disposition 1"]);
+    colIdx.dispo2 = findCol(["Dispo 2", "Disposition 2"]);
+    colIdx.dispoDate = findColExact(["Date", "Dispo Date"]);
     colIdx.emailSent = findCol(["Email Sent"]);
 
     // Must have at minimum account number
