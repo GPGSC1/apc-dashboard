@@ -196,49 +196,7 @@ export async function GET(request: Request) {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 5. CS RETENTION (from Moxy deals - cancels, saves approximation)
-    // ═══════════════════════════════════════════════════════════════════════
-    // Cancels = Moxy deals that changed to Cancelled/Cancel POA status
-    // We track deal_status in moxy_deals
-    const cancelResult = await query(
-      `SELECT
-        sold_date::TEXT as sold_date,
-        deal_status,
-        COUNT(*) as cnt
-      FROM (
-        SELECT sold_date, deal_status FROM moxy_deals
-        WHERE sold_date >= $1 AND sold_date <= $2
-        UNION ALL
-        SELECT sold_date, deal_status FROM moxy_home_deals
-        WHERE sold_date >= $1 AND sold_date <= $2
-      ) combined
-      GROUP BY sold_date, deal_status
-      ORDER BY sold_date`,
-      [monthStart, monthEnd]
-    );
-
-    const retentionByWeek = weeks.map(() => ({
-      totalDeals: 0,
-      activeSold: 0,
-      cancelled: 0,
-      backOut: 0,
-      cancelPOA: 0,
-    }));
-
-    for (const row of cancelResult.rows) {
-      const wi = dateToWeekIdx(row.sold_date, weeks);
-      if (wi < 0) continue;
-      const cnt = parseInt(row.cnt) || 0;
-      retentionByWeek[wi].totalDeals += cnt;
-      const status = (row.deal_status || "").toLowerCase();
-      if (status === "cancelled") retentionByWeek[wi].cancelled += cnt;
-      else if (status === "cancel poa") retentionByWeek[wi].cancelPOA += cnt;
-      else if (status === "back out") retentionByWeek[wi].backOut += cnt;
-      else retentionByWeek[wi].activeSold += cnt;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // 6. DISPOSITION SUMMARY (all dispos by rep for the month)
+    // 5. DISPOSITION SUMMARY (all dispos by rep for the month)
     // ═══════════════════════════════════════════════════════════════════════
     const dispoResult = await query(
       `SELECT
@@ -303,7 +261,6 @@ export async function GET(request: Request) {
       conversion: {
         byRep: conversionByRep,
       },
-      retention: retentionByWeek,
       dispoByRep,
       accountsByRepWeek,
       reps: [...repSet].sort(),

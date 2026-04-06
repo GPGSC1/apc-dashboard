@@ -1127,7 +1127,7 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth }: { perfData: any; 
 
   if (!perfData) return <div style={{ padding: 40, textAlign: "center", color: C.muted }}>Loading weekly report...</div>;
 
-  const { weeks, collections, callVolume, conversion, retention, reps, dispoByRep } = perfData;
+  const { weeks, collections, callVolume, conversion, reps, dispoByRep } = perfData;
   const weekCount = weeks?.length || 0;
 
   const pctStr = (n: number) => n > 0 ? (n * 100).toFixed(1) + "%" : "--";
@@ -1379,50 +1379,6 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth }: { perfData: any; 
         </table>
       </div>
 
-      {/* ═══ DEAL STATUS / RETENTION ═══ */}
-      <SectionHeader>DEAL STATUS — WEEK OVER WEEK</SectionHeader>
-      <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>From Moxy deals (auto + home combined by sold date)</div>
-      <div style={{ overflowX: "auto", borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 16 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: C.card }}>
-              <WTh style={{ textAlign: "left", minWidth: 120 }}>Metric</WTh>
-              {weeks?.map((w: string, i: number) => <WTh key={i}>{w}</WTh>)}
-            </tr>
-          </thead>
-          <tbody>
-            {[
-              { label: "Active / Sold", key: "activeSold", color: C.green },
-              { label: "Cancelled", key: "cancelled", color: C.red },
-              { label: "Cancel POA", key: "cancelPOA", color: C.amber },
-              { label: "Back Out", key: "backOut", color: C.red },
-              { label: "Total Deals", key: "totalDeals", color: C.text },
-            ].map(({ label, key, color }) => (
-              <tr key={key}>
-                <WTd style={{ textAlign: "left", fontWeight: 600 }}>{label}</WTd>
-                {(retention || []).map((r: Record<string, number>, i: number) => (
-                  <WTd key={i} style={{ color: r[key] > 0 ? color : C.muted }}>
-                    {r[key] > 0 ? fmt(r[key]) : "--"}
-                  </WTd>
-                ))}
-              </tr>
-            ))}
-            <tr>
-              <WTd style={{ textAlign: "left", fontWeight: 600 }}>Cancel Rate</WTd>
-              {(retention || []).map((r: { totalDeals: number; cancelled: number; cancelPOA: number }, i: number) => {
-                const cancels = (r.cancelled || 0) + (r.cancelPOA || 0);
-                const rate = r.totalDeals > 0 ? cancels / r.totalDeals : 0;
-                return (
-                  <WTd key={i} style={{ color: rate > 0.15 ? C.red : rate > 0.1 ? C.amber : C.green, fontWeight: 600 }}>
-                    {r.totalDeals > 0 ? (rate * 100).toFixed(1) + "%" : "--"}
-                  </WTd>
-                );
-              })}
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
       {/* ═══ DISPOSITION BREAKDOWN ═══ */}
       <SectionHeader>DISPOSITION BREAKDOWN — MTD</SectionHeader>
       <div style={{ overflowX: "auto", borderRadius: 8, border: `1px solid ${C.border}` }}>
@@ -1459,24 +1415,6 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth }: { perfData: any; 
         </table>
       </div>
 
-      {/* ═══ FUTURE SECTIONS (Placeholders) ═══ */}
-      {[
-        "FUNDING BREAKDOWNS",
-        "QA — COMPLIANCE",
-        "MERCHANT INFORMATION — CHARGEBACKS",
-        "BOUNCED ACH & WALCO RETURN PAYMENTS",
-        "REFUNDS",
-      ].map(title => (
-        <div key={title}>
-          <SectionHeader>{title}</SectionHeader>
-          <div style={{
-            padding: "20px 16px", background: C.card, borderRadius: 8,
-            border: `1px dashed ${C.border}`, color: C.muted, fontSize: 12, textAlign: "center",
-          }}>
-            Coming soon — requires additional data source integration
-          </div>
-        </div>
-      ))}
     </div>
   );
 }
