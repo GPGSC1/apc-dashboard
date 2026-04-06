@@ -8,10 +8,12 @@ import {
   filterPastDue,
   sortByPriority,
   roundRobinAssign,
+  weightedAssign,
   dedup,
   mergeAndSort,
   buildRepBreakdown,
   CleanAccount,
+  RepWeight,
 } from "../../../../lib/cs/scrub";
 
 export async function POST(request: Request) {
@@ -86,8 +88,33 @@ export async function POST(request: Request) {
       }, { status: 400 });
     }
 
-    // 6. Round-robin assign
-    roundRobinAssign(sorted, workingReps);
+    // 6. Assign accounts — use weighted distribution if percentages exist, else round-robin
+    const schedRows = await query(
+      `SELECT r.name,
+              COALESCE(s.zero_pay_pct, 0) as zero_pay_pct,
+              COALESCE(s.non_zero_pay_pct, 0) as non_zero_pay_pct
+       FROM cs_reps r
+       JOIN cs_rep_schedule s ON s.rep_id = r.id AND s.work_date = $1
+       WHERE r.is_active = true AND s.is_working = true
+       ORDER BY r.name`,
+      [today]
+    );
+
+    const hasWeights = schedRows.rows.some(
+      (r: { zero_pay_pct: string; non_zero_pay_pct: string }) =>
+        parseFloat(r.zero_pay_pct) > 0 || parseFloat(r.non_zero_pay_pct) > 0
+    );
+
+    if (hasWeights && schedRows.rows.length > 0) {
+      const weights: RepWeight[] = schedRows.rows.map((r: { name: string; zero_pay_pct: string; non_zero_pay_pct: string }) => ({
+        name: r.name,
+        zeroPayPct: parseFloat(r.zero_pay_pct) || 0,
+        nonZeroPayPct: parseFloat(r.non_zero_pay_pct) || 0,
+      }));
+      weightedAssign(sorted, weights);
+    } else {
+      roundRobinAssign(sorted, workingReps);
+    }
 
     // 7. Build fresh account set for carry-over validation
     const freshAccountSet = new Set(allAccounts.map((a) => a.account_number));

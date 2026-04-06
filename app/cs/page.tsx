@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 
 /* ── design tokens ─────────────────────────────────────────────────────────── */
 const C = {
@@ -62,6 +62,8 @@ interface RepScheduleEntry {
   name: string;
   is_active: boolean;
   is_working: boolean;
+  zero_pay_pct: number;
+  non_zero_pay_pct: number;
 }
 
 interface ScrubSummary {
@@ -322,7 +324,12 @@ export default function CSPage() {
 
   // Save schedule
   const saveSchedule = async () => {
-    const repSchedule = schedule.map((s) => ({ repId: s.id, isWorking: s.is_working }));
+    const repSchedule = schedule.map((s) => ({
+      repId: s.id,
+      isWorking: s.is_working,
+      zeroPayPct: s.zero_pay_pct,
+      nonZeroPayPct: s.non_zero_pay_pct,
+    }));
     try {
       await fetch("/api/cs/reps", {
         method: "POST",
@@ -1004,9 +1011,9 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
   );
 }
 
-function WTh({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+function WTh({ children, style, colSpan }: { children?: React.ReactNode; style?: React.CSSProperties; colSpan?: number }) {
   return (
-    <th style={{
+    <th colSpan={colSpan} style={{
       padding: "6px 8px", textAlign: "right", fontWeight: 700, fontSize: 10,
       color: C.secondary, borderBottom: `1px solid ${C.border}`,
       whiteSpace: "nowrap", ...style,
@@ -1016,9 +1023,9 @@ function WTh({ children, style }: { children: React.ReactNode; style?: React.CSS
   );
 }
 
-function WTd({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+function WTd({ children, style, colSpan }: { children?: React.ReactNode; style?: React.CSSProperties; colSpan?: number }) {
   return (
-    <td style={{
+    <td colSpan={colSpan} style={{
       padding: "5px 8px", fontSize: 12, color: C.text,
       borderBottom: `1px solid ${C.border}`, textAlign: "right",
       whiteSpace: "nowrap", ...style,
@@ -1030,12 +1037,38 @@ function WTd({ children, style }: { children: React.ReactNode; style?: React.CSS
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function PerformanceTab({ perfData, perfMonth, setPerfMonth }: { perfData: any; perfMonth: string; setPerfMonth: (m: string) => void }) {
+  // Calls Made date range state
+  const [callsStart, setCallsStart] = useState(todayStr());
+  const [callsEnd, setCallsEnd] = useState(todayStr());
+  const [callsData, setCallsData] = useState<Record<string, number> | null>(null);
+  const [callsLoading, setCallsLoading] = useState(false);
+
+  // Fetch calls made when dates change
+  useEffect(() => {
+    if (!callsStart || !callsEnd) return;
+    setCallsLoading(true);
+    fetch(`/api/cs/calls-made?start=${callsStart}&end=${callsEnd}`)
+      .then(r => r.json())
+      .then(d => { if (d.ok) setCallsData(d.callsByRep); })
+      .catch(() => {})
+      .finally(() => setCallsLoading(false));
+  }, [callsStart, callsEnd]);
+
   if (!perfData) return <div style={{ padding: 40, textAlign: "center", color: C.muted }}>Loading weekly report...</div>;
 
   const { weeks, collections, callVolume, conversion, retention, reps, dispoByRep } = perfData;
   const weekCount = weeks?.length || 0;
 
   const pctStr = (n: number) => n > 0 ? (n * 100).toFixed(1) + "%" : "--";
+
+  // Merge reps from weekly report + calls data for complete list
+  const allCallReps = callsData ? Object.keys(callsData).sort() : [];
+  const totalCalls = callsData ? Object.values(callsData).reduce((s, n) => s + n, 0) : 0;
+
+  const dateInputStyle: React.CSSProperties = {
+    background: C.input, color: C.text, border: `1px solid ${C.border}`,
+    borderRadius: 4, padding: "4px 8px", fontSize: 12, fontFamily: FONT,
+  };
 
   return (
     <div>
@@ -1046,11 +1079,45 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth }: { perfData: any; 
           type="month"
           value={perfMonth}
           onChange={(e) => setPerfMonth(e.target.value)}
-          style={{
-            background: C.input, color: C.text, border: `1px solid ${C.border}`,
-            borderRadius: 4, padding: "4px 8px", fontSize: 12, fontFamily: FONT,
-          }}
+          style={dateInputStyle}
         />
+      </div>
+
+      {/* ═══ CALLS MADE — CUSTOM DATE RANGE ═══ */}
+      <SectionHeader>CALLS MADE BY REP</SectionHeader>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: C.secondary }}>From:</span>
+        <input type="date" value={callsStart} onChange={e => setCallsStart(e.target.value)} style={dateInputStyle} />
+        <span style={{ fontSize: 12, color: C.secondary }}>To:</span>
+        <input type="date" value={callsEnd} onChange={e => setCallsEnd(e.target.value)} style={dateInputStyle} />
+        {callsLoading && <span style={{ fontSize: 11, color: C.muted }}>Loading...</span>}
+      </div>
+      <div style={{ overflowX: "auto", borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 16 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: C.card }}>
+              <WTh style={{ textAlign: "left", minWidth: 140 }}>Rep</WTh>
+              <WTh>Calls Made</WTh>
+            </tr>
+          </thead>
+          <tbody>
+            {callsData && allCallReps.map((rep) => (
+              <tr key={rep}>
+                <WTd style={{ textAlign: "left", fontWeight: 600 }}>{rep}</WTd>
+                <WTd style={{ color: callsData[rep] > 0 ? C.text : C.muted }}>{fmt(callsData[rep])}</WTd>
+              </tr>
+            ))}
+            {callsData && (
+              <tr style={{ background: "rgba(20,184,166,0.06)" }}>
+                <WTd style={{ textAlign: "left", fontWeight: 800, color: C.teal }}>TOTAL</WTd>
+                <WTd style={{ fontWeight: 700, color: C.teal }}>{fmt(totalCalls)}</WTd>
+              </tr>
+            )}
+            {!callsData && !callsLoading && (
+              <tr><WTd colSpan={2} style={{ textAlign: "center", color: C.muted }}>No data</WTd></tr>
+            )}
+          </tbody>
+        </table>
       </div>
 
       {/* ═══ COLLECTIONS — WEEK OVER WEEK ═══ */}
@@ -1303,17 +1370,17 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth }: { perfData: any; 
               const d = dispoByRep?.[rep] || {};
               const namedDispos = ["Collected", "LVM", "No Voicemail", "VM Full", "Follow Up", "Sent Email", "PUHU", "Scheduled PDP", "Wrong #/NIS", "Sent To CS"];
               const other = Object.entries(d).filter(([k]) => !namedDispos.includes(k)).reduce((s, [, v]) => s + (v as number), 0);
-              const total = Object.values(d).reduce((s, v) => s + (v as number), 0);
+              const total = Object.values(d as Record<string, number>).reduce((s: number, v: number) => s + v, 0);
               return (
                 <tr key={rep}>
                   <WTd style={{ textAlign: "left", fontWeight: 600 }}>{rep}</WTd>
                   {namedDispos.map(name => (
-                    <WTd key={name} style={{ color: (d[name] || 0) > 0 ? (name === "Collected" ? C.green : C.text) : C.muted }}>
-                      {d[name] || "--"}
+                    <WTd key={name} style={{ color: ((d as Record<string, number>)[name] || 0) > 0 ? (name === "Collected" ? C.green : C.text) : C.muted }}>
+                      {(d as Record<string, number>)[name] || "--"}
                     </WTd>
                   ))}
-                  <WTd style={{ color: other > 0 ? C.text : C.muted }}>{other || "--"}</WTd>
-                  <WTd style={{ fontWeight: 700 }}>{total || "--"}</WTd>
+                  <WTd style={{ color: other > 0 ? C.text : C.muted }}>{other > 0 ? other : "--"}</WTd>
+                  <WTd style={{ fontWeight: 700 }}>{total > 0 ? total : "--"}</WTd>
                 </tr>
               );
             })}
@@ -1356,30 +1423,86 @@ function ScheduleTab({
   saveSchedule: () => void;
 }) {
   const [loaded, setLoaded] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (!loaded) {
       fetch(`/api/cs/reps?action=schedule&date=${todayStr()}`)
         .then((r) => r.json())
         .then((d) => {
-          if (d.ok) setSchedule(d.schedule);
+          if (d.ok) setSchedule(d.schedule.map((s: RepScheduleEntry) => ({
+            ...s,
+            zero_pay_pct: parseFloat(String(s.zero_pay_pct)) || 0,
+            non_zero_pay_pct: parseFloat(String(s.non_zero_pay_pct)) || 0,
+          })));
           setLoaded(true);
         })
         .catch(() => setLoaded(true));
     }
   }, [loaded, setSchedule]);
 
-  const toggleRep = (id: number) => {
-    setSchedule(schedule.map((s) => (s.id === id ? { ...s, is_working: !s.is_working } : s)));
+  // Auto-balance percentages evenly among working reps
+  const autoBalance = (sched: RepScheduleEntry[]): RepScheduleEntry[] => {
+    const working = sched.filter(s => s.is_working);
+    if (working.length === 0) return sched.map(s => ({ ...s, zero_pay_pct: 0, non_zero_pay_pct: 0 }));
+    const evenPct = Math.round((100 / working.length) * 10) / 10;
+    return sched.map(s => ({
+      ...s,
+      zero_pay_pct: s.is_working ? evenPct : 0,
+      non_zero_pay_pct: s.is_working ? evenPct : 0,
+    }));
   };
 
-  const workingCount = schedule.filter((s) => s.is_working).length;
+  const toggleRep = (id: number) => {
+    const updated = schedule.map((s) =>
+      s.id === id ? { ...s, is_working: !s.is_working } : s
+    );
+    // Auto-balance when toggling
+    setSchedule(autoBalance(updated));
+    setSaved(false);
+  };
+
+  const updatePct = (id: number, field: "zero_pay_pct" | "non_zero_pay_pct", value: number) => {
+    setSchedule(schedule.map(s => s.id === id ? { ...s, [field]: value } : s));
+    setSaved(false);
+  };
+
+  const handleSave = async () => {
+    await saveSchedule();
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const workingReps = schedule.filter(s => s.is_working);
+  const workingCount = workingReps.length;
+
+  // Sum percentages for validation
+  const zeroPayTotal = workingReps.reduce((s, r) => s + r.zero_pay_pct, 0);
+  const nonZeroPayTotal = workingReps.reduce((s, r) => s + r.non_zero_pay_pct, 0);
+  const zeroPayOk = Math.abs(zeroPayTotal - 100) < 1;
+  const nonZeroPayOk = Math.abs(nonZeroPayTotal - 100) < 1;
+
+  const pctInputStyle: React.CSSProperties = {
+    width: 56,
+    padding: "4px 6px",
+    borderRadius: 4,
+    border: `1px solid ${C.border}`,
+    background: C.input,
+    color: C.text,
+    fontSize: 12,
+    textAlign: "right" as const,
+    fontFamily: FONT,
+  };
 
   return (
-    <div style={{ maxWidth: 400 }}>
-      <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>
-        Rep Schedule for {todayStr()} ({workingCount}/{schedule.length} working)
+    <div style={{ maxWidth: 700 }}>
+      <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>
+        Rep Schedule for {todayStr()}
       </h3>
+      <p style={{ fontSize: 12, color: C.secondary, marginBottom: 12, marginTop: 0 }}>
+        {workingCount}/{schedule.length} working &mdash; Set the percentage of 0-pay and non-0-pay accounts each rep receives
+      </p>
+
       <div
         style={{
           background: C.card,
@@ -1391,15 +1514,20 @@ function ScheduleTab({
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
-              <Th>Rep Name</Th>
-              <Th style={{ textAlign: "center" }}>Working Today?</Th>
+              <Th>Rep</Th>
+              <Th style={{ textAlign: "center", width: 70 }}>Working</Th>
+              <Th style={{ textAlign: "center" }}>0-Pay %</Th>
+              <Th style={{ textAlign: "center" }}>Non-0-Pay %</Th>
             </tr>
           </thead>
           <tbody>
             {schedule.map((s, i) => (
               <tr
                 key={s.id}
-                style={{ background: i % 2 === 1 ? "rgba(255,255,255,0.02)" : "transparent" }}
+                style={{
+                  background: i % 2 === 1 ? "rgba(255,255,255,0.02)" : "transparent",
+                  opacity: s.is_working ? 1 : 0.4,
+                }}
               >
                 <Td style={{ fontWeight: 600 }}>{s.name}</Td>
                 <Td style={{ textAlign: "center" }}>
@@ -1410,14 +1538,62 @@ function ScheduleTab({
                     style={{ cursor: "pointer", width: 16, height: 16 }}
                   />
                 </Td>
+                <Td style={{ textAlign: "center" }}>
+                  {s.is_working ? (
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={0.1}
+                      value={s.zero_pay_pct}
+                      onChange={(e) => updatePct(s.id, "zero_pay_pct", parseFloat(e.target.value) || 0)}
+                      style={pctInputStyle}
+                    />
+                  ) : (
+                    <span style={{ color: C.muted }}>—</span>
+                  )}
+                </Td>
+                <Td style={{ textAlign: "center" }}>
+                  {s.is_working ? (
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={0.1}
+                      value={s.non_zero_pay_pct}
+                      onChange={(e) => updatePct(s.id, "non_zero_pay_pct", parseFloat(e.target.value) || 0)}
+                      style={pctInputStyle}
+                    />
+                  ) : (
+                    <span style={{ color: C.muted }}>—</span>
+                  )}
+                </Td>
               </tr>
             ))}
+            {/* Totals row */}
+            <tr style={{ borderTop: `2px solid ${C.border}` }}>
+              <Td style={{ fontWeight: 700, fontSize: 11 }}>TOTAL</Td>
+              <Td>{""}</Td>
+              <Td style={{ textAlign: "center", fontWeight: 700, color: zeroPayOk ? C.green : C.red }}>
+                {zeroPayTotal.toFixed(1)}%
+              </Td>
+              <Td style={{ textAlign: "center", fontWeight: 700, color: nonZeroPayOk ? C.green : C.red }}>
+                {nonZeroPayTotal.toFixed(1)}%
+              </Td>
+            </tr>
           </tbody>
         </table>
       </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+
+      {(!zeroPayOk || !nonZeroPayOk) && workingCount > 0 && (
+        <p style={{ fontSize: 11, color: C.amber, marginTop: 8, marginBottom: 0 }}>
+          Percentages should total 100%. Distribution will normalize automatically but uneven totals may cause unexpected splits.
+        </p>
+      )}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
         <button
-          onClick={() => setSchedule(schedule.map((s) => ({ ...s, is_working: true })))}
+          onClick={() => { setSchedule(autoBalance(schedule.map(s => ({ ...s, is_working: true })))); setSaved(false); }}
           style={{
             padding: "6px 16px",
             borderRadius: 6,
@@ -1432,7 +1608,7 @@ function ScheduleTab({
           All On
         </button>
         <button
-          onClick={() => setSchedule(schedule.map((s) => ({ ...s, is_working: false })))}
+          onClick={() => { setSchedule(schedule.map(s => ({ ...s, is_working: false, zero_pay_pct: 0, non_zero_pay_pct: 0 }))); setSaved(false); }}
           style={{
             padding: "6px 16px",
             borderRadius: 6,
@@ -1447,21 +1623,37 @@ function ScheduleTab({
           All Off
         </button>
         <button
-          onClick={saveSchedule}
+          onClick={() => { setSchedule(autoBalance(schedule)); setSaved(false); }}
+          style={{
+            padding: "6px 16px",
+            borderRadius: 6,
+            border: `1px solid ${C.border}`,
+            background: "transparent",
+            color: C.amber,
+            fontSize: 12,
+            cursor: "pointer",
+            fontFamily: FONT,
+          }}
+        >
+          Even Split
+        </button>
+        <button
+          onClick={handleSave}
           style={{
             padding: "6px 16px",
             borderRadius: 6,
             border: "none",
-            background: C.teal,
+            background: saved ? C.green : C.teal,
             color: "#000",
             fontSize: 12,
             fontWeight: 700,
             cursor: "pointer",
             fontFamily: FONT,
             marginLeft: "auto",
+            transition: "background 0.2s",
           }}
         >
-          Save Schedule
+          {saved ? "Saved!" : "Save Schedule"}
         </button>
       </div>
     </div>

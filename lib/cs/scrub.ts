@@ -193,6 +193,74 @@ export function roundRobinAssign(accounts: CleanAccount[], reps: string[]): void
 }
 
 /**
+ * Weighted distribution: assign accounts to reps based on percentage allocations.
+ * Splits accounts into 0-pay (installments_made === 0) and non-0-pay buckets,
+ * then distributes each bucket according to the rep's percentage for that bucket.
+ * Mutates accounts in place (sets assigned_rep).
+ *
+ * @param accounts - sorted accounts (0-pay first via sortByPriority)
+ * @param repWeights - array of { name, zeroPayPct, nonZeroPayPct }
+ *   Percentages should sum to ~100 for each bucket. If they don't, we normalize.
+ */
+export interface RepWeight {
+  name: string;
+  zeroPayPct: number;
+  nonZeroPayPct: number;
+}
+
+export function weightedAssign(accounts: CleanAccount[], repWeights: RepWeight[]): void {
+  if (repWeights.length === 0) return;
+
+  // Split into 0-pay and non-0-pay
+  const zeroPay = accounts.filter(a => a.installments_made === 0);
+  const nonZeroPay = accounts.filter(a => a.installments_made > 0);
+
+  distributeByPct(zeroPay, repWeights.map(r => ({ name: r.name, pct: r.zeroPayPct })));
+  distributeByPct(nonZeroPay, repWeights.map(r => ({ name: r.name, pct: r.nonZeroPayPct })));
+}
+
+function distributeByPct(accounts: CleanAccount[], reps: { name: string; pct: number }[]): void {
+  if (accounts.length === 0 || reps.length === 0) return;
+
+  // Normalize percentages so they sum to 100
+  const totalPct = reps.reduce((sum, r) => sum + r.pct, 0);
+  if (totalPct <= 0) {
+    // Fallback: equal distribution
+    for (let i = 0; i < accounts.length; i++) {
+      accounts[i].assigned_rep = reps[i % reps.length].name;
+    }
+    return;
+  }
+
+  const normalized = reps.map(r => ({ name: r.name, pct: r.pct / totalPct }));
+
+  // Calculate target counts using largest remainder method for fair rounding
+  const rawCounts = normalized.map(r => r.pct * accounts.length);
+  const floorCounts = rawCounts.map(c => Math.floor(c));
+  let remainder = accounts.length - floorCounts.reduce((s, c) => s + c, 0);
+
+  // Sort by fractional remainder descending, give extras to highest remainders
+  const indexed = rawCounts.map((raw, i) => ({ i, frac: raw - floorCounts[i] }));
+  indexed.sort((a, b) => b.frac - a.frac);
+  for (const item of indexed) {
+    if (remainder <= 0) break;
+    floorCounts[item.i]++;
+    remainder--;
+  }
+
+  // Assign accounts to reps based on calculated counts
+  let cursor = 0;
+  for (let i = 0; i < normalized.length; i++) {
+    for (let j = 0; j < floorCounts[i]; j++) {
+      if (cursor < accounts.length) {
+        accounts[cursor].assigned_rep = normalized[i].name;
+        cursor++;
+      }
+    }
+  }
+}
+
+/**
  * Remove fresh accounts whose account_number is in the carry-over set.
  * Returns { fresh, dupeCount }.
  */
