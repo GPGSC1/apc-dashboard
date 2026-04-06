@@ -47,7 +47,8 @@ interface Account {
   dispo_date: string | null;
   email_sent: boolean;
   is_carryover: boolean;
-  last_called: string | null;
+  last_called_phone1: string | null;
+  last_called_phone2: string | null;
 }
 
 interface DispoOption {
@@ -108,6 +109,24 @@ function shortDate(d: string | null): string {
   const parts = d.slice(0, 10).split("-");
   if (parts.length !== 3) return d;
   return `${parseInt(parts[1])}/${parseInt(parts[2])}`;
+}
+
+function shortDateTime(d: string | null): string {
+  if (!d) return "";
+  // d is like "2026-04-06 14:35:12" or "2026-04-06T14:35:12"
+  const datePart = d.slice(0, 10);
+  const timePart = d.slice(11, 19);
+  const parts = datePart.split("-");
+  if (parts.length !== 3) return d;
+  const month = parseInt(parts[1]);
+  const day = parseInt(parts[2]);
+  if (!timePart) return `${month}/${day}`;
+  const [hh, mm] = timePart.split(":");
+  let hour = parseInt(hh);
+  const ampm = hour >= 12 ? "PM" : "AM";
+  if (hour > 12) hour -= 12;
+  if (hour === 0) hour = 12;
+  return `${month}/${day} ${hour}:${mm} ${ampm}`;
 }
 
 /* ── components ─────────────────────────────────────────────────────────────── */
@@ -571,10 +590,11 @@ function WorkListTab({
                 <Th onClick={() => handleSort("next_due_date")}>Due Date{arrow("next_due_date")}</Th>
                 <Th onClick={() => handleSort("sched_cxl_date")}>CXL Date{arrow("sched_cxl_date")}</Th>
                 <Th>Phone 1</Th>
+                <Th onClick={() => handleSort("last_called_phone1")}>Called{arrow("last_called_phone1")}</Th>
                 <Th>Phone 2</Th>
+                <Th onClick={() => handleSort("last_called_phone2")}>Called{arrow("last_called_phone2")}</Th>
                 <Th onClick={() => handleSort("billing_method")}>Billing{arrow("billing_method")}</Th>
                 <Th onClick={() => handleSort("state")}>State{arrow("state")}</Th>
-                <Th onClick={() => handleSort("last_called")}>Last Called{arrow("last_called")}</Th>
                 <Th style={{ minWidth: 120 }}>Dispo 1</Th>
                 <Th style={{ minWidth: 100 }}>Dispo 2</Th>
                 <Th style={{ minWidth: 90 }}>Date</Th>
@@ -611,21 +631,31 @@ function WorkListTab({
                   <Td>{shortDate(a.next_due_date)}</Td>
                   <Td>{shortDate(a.sched_cxl_date)}</Td>
                   <Td style={{ fontSize: 11 }}>{a.main_phone}</Td>
+                  <Td style={{ fontSize: 10, textAlign: "center" }}>
+                    {(() => {
+                      if (!a.last_called_phone1) return <span style={{ color: C.muted }}>--</span>;
+                      const today = todayStr();
+                      const d = a.last_called_phone1.slice(0, 10);
+                      const daysAgo = Math.floor((new Date(today).getTime() - new Date(d).getTime()) / 86400000);
+                      const color = daysAgo === 0 ? C.green : daysAgo <= 2 ? C.amber : C.red;
+                      return <span style={{ color, fontWeight: 600 }}>{shortDateTime(a.last_called_phone1)}</span>;
+                    })()}
+                  </Td>
                   <Td style={{ fontSize: 11, color: a.work_phone && a.work_phone !== a.main_phone ? C.text : C.muted }}>
                     {a.work_phone && a.work_phone !== a.main_phone ? a.work_phone : ""}
                   </Td>
-                  <Td style={{ fontSize: 10 }}>{a.billing_method}</Td>
-                  <Td style={{ textAlign: "center", fontSize: 10 }}>{a.state}</Td>
-                  <Td style={{ textAlign: "center", fontSize: 11 }}>
+                  <Td style={{ fontSize: 10, textAlign: "center" }}>
                     {(() => {
-                      if (!a.last_called) return <span style={{ color: C.muted }}>--</span>;
+                      if (!a.work_phone || a.work_phone === a.main_phone || !a.last_called_phone2) return <span style={{ color: C.muted }}>--</span>;
                       const today = todayStr();
-                      const d = a.last_called.slice(0, 10);
+                      const d = a.last_called_phone2.slice(0, 10);
                       const daysAgo = Math.floor((new Date(today).getTime() - new Date(d).getTime()) / 86400000);
                       const color = daysAgo === 0 ? C.green : daysAgo <= 2 ? C.amber : C.red;
-                      return <span style={{ color, fontWeight: 600 }}>{shortDate(d)}</span>;
+                      return <span style={{ color, fontWeight: 600 }}>{shortDateTime(a.last_called_phone2)}</span>;
                     })()}
                   </Td>
+                  <Td style={{ fontSize: 10 }}>{a.billing_method}</Td>
+                  <Td style={{ textAlign: "center", fontSize: 10 }}>{a.state}</Td>
                   <Td>
                     <select
                       value={a.dispo_1 || ""}

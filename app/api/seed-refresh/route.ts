@@ -86,6 +86,29 @@ function isCatchupHour(): boolean {
 
 // ─── Date parsing ─────────────────────────────────────────────────────────────
 
+// Parse full timestamp from 3CX: "4/6/2026 2:35:12 PM" -> "2026-04-06 14:35:12"
+function parseTimestamp(raw: string | number | null | undefined): string | null {
+  if (raw == null) return null;
+  const s = String(raw).replace(/"/g, "").trim();
+  if (!s) return null;
+  // Try "M/D/YYYY h:mm:ss AM/PM" format
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)?$/i);
+  if (m) {
+    let hour = parseInt(m[4]);
+    const ampm = (m[7] || "").toUpperCase();
+    if (ampm === "PM" && hour < 12) hour += 12;
+    if (ampm === "AM" && hour === 12) hour = 0;
+    return `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")} ${String(hour).padStart(2, "0")}:${m[5]}:${m[6]}`;
+  }
+  // Try ISO format "2026-04-06T14:35:12"
+  const iso = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/);
+  if (iso) return `${iso[1]} ${iso[2]}`;
+  // Fallback: just date at midnight
+  const d = parseDate(s);
+  if (d) return `${d} 00:00:00`;
+  return null;
+}
+
 function parseDate(raw: string | number | null | undefined): string | null {
   if (raw == null) return null;
   const s = String(raw).replace(/"/g, "").trim();
@@ -447,11 +470,21 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
   )`).catch(() => {});
   await query(`ALTER TABLE to_transfers ADD COLUMN IF NOT EXISTS queue TEXT DEFAULT ''`).catch(() => {});
   // Create cs_outbound_calls table for CS collections "Last Called" tracking
+  // Migrate: drop old table with (phone, call_date) PK and recreate with call_time TIMESTAMP
+  await query(`DO $$ BEGIN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'cs_outbound_calls' AND column_name = 'call_date'
+      AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'cs_outbound_calls' AND column_name = 'call_time')
+    ) THEN
+      DROP TABLE cs_outbound_calls;
+    END IF;
+  END $$`).catch(() => {});
   await query(`CREATE TABLE IF NOT EXISTS cs_outbound_calls (
     phone VARCHAR(10) NOT NULL,
-    call_date DATE NOT NULL,
+    call_time TIMESTAMP NOT NULL,
     agent_name VARCHAR(100) DEFAULT '',
-    PRIMARY KEY (phone, call_date)
+    PRIMARY KEY (phone, call_time)
   )`).catch(() => {});
   await query(`CREATE INDEX IF NOT EXISTS idx_cs_outbound_phone ON cs_outbound_calls(phone)`).catch(() => {});
 
@@ -574,10 +607,10 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
       if (inOut.toLowerCase() === "outbound") {
         const obPhone = normalizePhone(c[10] || "");
         if (obPhone && obPhone.length === 10) {
-          const dateStr = parseDate(startTime);
-          if (dateStr) {
+          const ts = parseTimestamp(startTime);
+          if (ts) {
             const agentName = (c[5] || "").trim();
-            outboundCallRows.push([obPhone, dateStr, agentName]);
+            outboundCallRows.push([obPhone, ts, agentName]);
           }
         }
       }
@@ -743,7 +776,7 @@ async function refresh3cx(dates: string[], cleanReimport = false): Promise<{ add
         return true;
       });
       await batchInsert(
-        `INSERT INTO cs_outbound_calls (phone,call_date,agent_name) VALUES __VALUES__ ON CONFLICT (phone,call_date) DO NOTHING`,
+        `INSERT INTO cs_outbound_calls (phone,call_time,agent_name) VALUES __VALUES__ ON CONFLICT (phone,call_time) DO NOTHING`,
         3, uniqueOB, 500
       );
     }

@@ -20,44 +20,70 @@ export async function GET(request: Request) {
 
     const result = await query(sql, params);
 
-    // Normalize phones and look up last outbound call dates
-    const phoneToAcctIds = new Map<string, number[]>();
+    // Normalize phones and look up last outbound call timestamps per phone
+    const normPhone = (raw: string): string => {
+      const digits = String(raw || "").replace(/\D/g, "");
+      return digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+    };
+
+    // Build maps: normalized phone -> account IDs, and which phone field it came from
+    const phone1Map = new Map<string, number[]>(); // normalized main_phone -> account ids
+    const phone2Map = new Map<string, number[]>(); // normalized work_phone -> account ids
+    const allPhones = new Set<string>();
+
     for (const row of result.rows) {
-      const phones = [row.main_phone, row.work_phone].filter(Boolean);
-      for (const raw of phones) {
-        const digits = String(raw).replace(/\D/g, "");
-        const normalized = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
-        if (normalized.length === 10) {
-          if (!phoneToAcctIds.has(normalized)) phoneToAcctIds.set(normalized, []);
-          phoneToAcctIds.get(normalized)!.push(row.id);
+      if (row.main_phone) {
+        const n = normPhone(row.main_phone);
+        if (n.length === 10) {
+          if (!phone1Map.has(n)) phone1Map.set(n, []);
+          phone1Map.get(n)!.push(row.id);
+          allPhones.add(n);
+        }
+      }
+      if (row.work_phone) {
+        const n = normPhone(row.work_phone);
+        if (n.length === 10) {
+          if (!phone2Map.has(n)) phone2Map.set(n, []);
+          phone2Map.get(n)!.push(row.id);
+          allPhones.add(n);
         }
       }
     }
 
-    // Query last outbound call for all phones in one shot
-    const lastCalledMap = new Map<number, string>(); // accountId -> last_called date
-    if (phoneToAcctIds.size > 0) {
-      const phoneArr = [...phoneToAcctIds.keys()];
+    // Query last outbound call timestamp for all phones in one shot
+    const lastCalledPhone1 = new Map<number, string>(); // accountId -> timestamp
+    const lastCalledPhone2 = new Map<number, string>(); // accountId -> timestamp
+    if (allPhones.size > 0) {
+      const phoneArr = [...allPhones];
       const obResult = await query(
-        `SELECT phone, MAX(call_date)::TEXT as last_called FROM cs_outbound_calls WHERE phone = ANY($1) GROUP BY phone`,
+        `SELECT phone, MAX(call_time)::TEXT as last_called FROM cs_outbound_calls WHERE phone = ANY($1) GROUP BY phone`,
         [phoneArr]
       );
-      // Map phone results back to account IDs, keeping the most recent date per account
       for (const row of obResult.rows) {
-        const acctIds = phoneToAcctIds.get(row.phone) || [];
-        for (const id of acctIds) {
-          const existing = lastCalledMap.get(id);
+        // Map to phone 1 accounts
+        const p1Ids = phone1Map.get(row.phone) || [];
+        for (const id of p1Ids) {
+          const existing = lastCalledPhone1.get(id);
           if (!existing || row.last_called > existing) {
-            lastCalledMap.set(id, row.last_called);
+            lastCalledPhone1.set(id, row.last_called);
+          }
+        }
+        // Map to phone 2 accounts
+        const p2Ids = phone2Map.get(row.phone) || [];
+        for (const id of p2Ids) {
+          const existing = lastCalledPhone2.get(id);
+          if (!existing || row.last_called > existing) {
+            lastCalledPhone2.set(id, row.last_called);
           }
         }
       }
     }
 
-    // Merge last_called into accounts
+    // Merge last_called per phone into accounts
     const accounts = result.rows.map((row: Record<string, unknown>) => ({
       ...row,
-      last_called: lastCalledMap.get(row.id as number) || null,
+      last_called_phone1: lastCalledPhone1.get(row.id as number) || null,
+      last_called_phone2: lastCalledPhone2.get(row.id as number) || null,
     }));
 
     // Get upload metadata for this date
