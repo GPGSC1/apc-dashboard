@@ -12,6 +12,10 @@
     {
       "path": "/api/aida/tick",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cs/daily-pull",
+      "schedule": "15 13 * * 1-6"
     }
   ],
   "functions": {
@@ -20,6 +24,9 @@
     },
     "app/api/aida/tick/route.ts": {
       "maxDuration": 30
+    },
+    "app/api/cs/daily-pull/route.ts": {
+      "maxDuration": 120
     }
   }
 }

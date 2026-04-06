@@ -194,6 +194,9 @@ export default function CSPage() {
   const [uploading, setUploading] = useState(false);
   const [scrubResult, setScrubResult] = useState<ScrubSummary | null>(null);
 
+  // Pull status state
+  const [pullStatus, setPullStatus] = useState<{ pull_status?: string; schedule_saved?: boolean; accounts_distributed?: number } | null>(null);
+
   // Performance tab state
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [perfData, setPerfData] = useState<any>(null);
@@ -229,6 +232,18 @@ export default function CSPage() {
     fetch("/api/cs/dispositions")
       .then((r) => r.json())
       .then((d) => { if (d.ok) setDispoOptions(d.dispositions); })
+      .catch(() => {});
+  }, []);
+
+  // Fetch daily pull status
+  useEffect(() => {
+    fetch("/api/cs/daily-pull", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "status" }),
+    })
+      .then(r => r.json())
+      .then(d => { if (d.ok) setPullStatus(d); })
       .catch(() => {});
   }, []);
 
@@ -411,6 +426,62 @@ export default function CSPage() {
           >
             X
           </button>
+        </div>
+      )}
+
+      {/* ── Pull Status Banner ──────────────────────────────────────────────── */}
+      {pullStatus?.pull_status === "waiting_schedule" && (
+        <div
+          style={{
+            margin: "8px 24px",
+            padding: "10px 16px",
+            background: "linear-gradient(135deg, #78350F 0%, #92400E 100%)",
+            color: "#FDE68A",
+            borderRadius: 8,
+            fontSize: 13,
+            fontWeight: 600,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <span style={{ fontSize: 18 }}>!</span>
+          <span>
+            PBS pull is waiting — set today&apos;s rep schedule and save it. The pull will run automatically once saved.
+          </span>
+          <button
+            onClick={() => setTab("Rep Schedule")}
+            style={{
+              marginLeft: "auto",
+              padding: "5px 14px",
+              borderRadius: 6,
+              border: "none",
+              background: "#F59E0B",
+              color: "#000",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+              fontFamily: FONT,
+              whiteSpace: "nowrap",
+            }}
+          >
+            Set Schedule
+          </button>
+        </div>
+      )}
+      {pullStatus?.pull_status === "complete" && pullStatus.accounts_distributed && pullStatus.accounts_distributed > 0 && (
+        <div
+          style={{
+            margin: "8px 24px",
+            padding: "8px 16px",
+            background: "rgba(16,185,129,0.1)",
+            border: `1px solid rgba(16,185,129,0.3)`,
+            color: C.green,
+            borderRadius: 8,
+            fontSize: 12,
+          }}
+        >
+          Today&apos;s pull complete — {fmt(pullStatus.accounts_distributed)} accounts distributed
         </div>
       )}
 

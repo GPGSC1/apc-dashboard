@@ -90,7 +90,34 @@ export async function POST(request: Request) {
       } finally {
         client.release();
       }
-      return NextResponse.json({ ok: true });
+
+      // If CS_PULL_ENABLED and pull is waiting for schedule, auto-trigger it
+      let pullTriggered = false;
+      if (process.env.CS_PULL_ENABLED === "true") {
+        try {
+          const statusResult = await query(
+            "SELECT pull_status FROM cs_daily_pull_status WHERE pull_date = $1",
+            [date]
+          );
+          const pullStatus = statusResult.rows[0]?.pull_status;
+          if (pullStatus === "waiting_schedule" || pullStatus === "pending") {
+            // Fire-and-forget: trigger pull via internal API call
+            const baseUrl = process.env.VERCEL_URL
+              ? `https://${process.env.VERCEL_URL}`
+              : "http://localhost:3000";
+            fetch(`${baseUrl}/api/cs/daily-pull`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "schedule_saved" }),
+            }).catch(() => {}); // fire and forget
+            pullTriggered = true;
+          }
+        } catch {
+          // daily_pull_status table may not exist yet — that's fine
+        }
+      }
+
+      return NextResponse.json({ ok: true, pullTriggered });
     }
 
     if (action === "add_rep") {
