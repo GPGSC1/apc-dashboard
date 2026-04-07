@@ -129,6 +129,15 @@ export async function pullPBSReport(): Promise<PBSPullResult> {
     const formHtml = await formRes.text();
     cookies = mergeCookies(cookies, extractCookies(formRes.headers));
 
+    // DEBUG: if PBS_DEBUG_FORM=1, dump relevant form snippets and return
+    if (process.env.PBS_DEBUG_FORM === "1") {
+      const btnMatches = formHtml.match(/<(input|a|button)[^>]*(btnRun|Run)[^>]*>/gi) || [];
+      const formTag = formHtml.match(/<form[^>]*>/i)?.[0] || "";
+      const ctl13 = [...formHtml.matchAll(/name="(ctl\d+\$[^"]+)"/gi)].map(m => m[1]).slice(0, 60);
+      const scriptMgr = formHtml.match(/ScriptManager[^<]*?<\/[^>]+>/i)?.[0]?.slice(0, 300) || "";
+      return { ok: false, error: `DEBUG len=${formHtml.length} | form=${formTag} | btn=${JSON.stringify(btnMatches)} | names=${JSON.stringify(ctl13)} | sm=${scriptMgr}` };
+    }
+
     // Harvest ALL inputs (hidden + text + checkboxes) so we can replay the form
     const formFields = extractAllInputs(formHtml);
     if (!formFields["SS"]) formFields["SS"] = ss;
