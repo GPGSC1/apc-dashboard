@@ -295,7 +295,7 @@ export default function CSPage() {
   useEffect(() => {
     if (tab !== "Overview") return;
     setOverviewLoading(true);
-    fetch(`/api/cs/overview?start=${overviewStart}&end=${overviewEnd}`)
+    fetch(`/api/cs/overview-v2?start=${overviewStart}&end=${overviewEnd}`)
       .then((r) => r.json())
       .then((d) => { if (d.ok) setOverview(d); })
       .catch(() => {})
@@ -709,9 +709,12 @@ function WorkListTab({
 
   const arrow = (col: string) => (sortCol === col ? (sortAsc ? " \u25B2" : " \u25BC") : "");
 
-  // ─── Overview stat boxes ─────────────────────────────────────────────────
-  const today = overview?.today;
-  const activity = overview?.activity;
+  // ─── Overview stat boxes (v2 — 4-row layout) ─────────────────────────────
+  const m = overview?.metrics;
+  const records = m?.records;
+  const calls = m?.calls;
+  const pct = m?.percentages;
+  const amts = m?.amounts;
   const isTodayRange = overviewStart === overviewEnd && overviewStart === todayStr();
 
   const quickRange = (days: number) => {
@@ -777,41 +780,10 @@ function WorkListTab({
 
   return (
     <>
-      {/* ═══ TODAY SNAPSHOT (always current) ═══ */}
-      <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
-        Today &middot; Live
-      </div>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 20 }}>
-        <StatBox
-          label="Open Past Due"
-          value={today ? fmt(today.total_accounts) : "—"}
-          sub={today ? `${fmt(today.zero_pay_accounts)} zero-pay · ${fmt(today.non_zero_accounts)} non-0` : undefined}
-        />
-        <StatBox
-          label="0-Pay Accounts"
-          value={today ? fmt(today.zero_pay_accounts) : "—"}
-          color={C.amber}
-        />
-        <StatBox
-          label="Non-0-Pay Accounts"
-          value={today ? fmt(today.non_zero_accounts) : "—"}
-        />
-        <StatBox
-          label="Called Today"
-          value={today ? fmt(today.accounts_called) : "—"}
-          sub={today ? `${fmt(today.calls_remaining)} remaining` : undefined}
-        />
-        <StatBox
-          label="Calls Remaining"
-          value={today ? fmt(today.calls_remaining) : "—"}
-          color={today && today.calls_remaining > 0 ? C.amber : C.green}
-        />
-      </div>
-
-      {/* ═══ ACTIVITY (range-aware) ═══ */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+      {/* ═══ Range selector ═══ */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase", letterSpacing: 0.5 }}>
-          Activity
+          Range
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           {quickBtn("Today", setTodayRange, isTodayRange)}
@@ -819,34 +791,83 @@ function WorkListTab({
           {overviewLoading && <span style={{ fontSize: 11, color: C.muted }}>Loading…</span>}
         </div>
       </div>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 24 }}>
+
+      {/* ═══ ROW 1 — RECORDS ═══ */}
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+        Records
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+        <StatBox label="Total Count" value={records ? fmt(records.total) : "—"} />
+        <StatBox label="0 Pay Count" value={records ? fmt(records.zero) : "—"} color={C.amber} />
+        <StatBox label="Non 0 Pay Count" value={records ? fmt(records.non_zero) : "—"} />
         <StatBox
-          label="Collections"
-          value={activity ? fmt(activity.collections) : "—"}
-          color={C.green}
+          label="Follow Ups"
+          value={records ? fmt(records.followups) : "—"}
+          color={C.teal}
+          sub={records ? `${fmt(records.followups_zero)} 0P · ${fmt(records.followups_non_zero)} N0P` : undefined}
+        />
+      </div>
+
+      {/* ═══ ROW 2 — CALLS ═══ */}
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+        Calls
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+        <StatBox label="0 Pay" value={calls ? fmt(calls.zero_pay_calls) : "—"} color={C.amber} />
+        <StatBox label="N0P" value={calls ? fmt(calls.non_zero_calls) : "—"} />
+        <StatBox label="Inbound" value={calls ? fmt(calls.inbound_answered) : "—"} color={C.green} />
+        <StatBox label="Abandoned" value={calls ? fmt(calls.abandoned) : "—"} color={C.red} />
+      </div>
+
+      {/* ═══ ROW 3 — PERCENTAGES ═══ */}
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+        Percentages
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+        <StatBox
+          label="List Complete"
+          value={pct ? `${pct.list_complete.toFixed(1)}%` : "—"}
+          color={pct && pct.list_complete >= 80 ? C.green : C.amber}
         />
         <StatBox
-          label="Non-0-Pay Collected"
-          value={activity ? fmt(activity.non_zero_collections) : "—"}
-        />
-        <StatBox
-          label="0-Pay Collected"
-          value={activity ? fmt(activity.zero_pay_collections) : "—"}
+          label="0 Pay %"
+          value={pct ? `${pct.zero_pay_pct.toFixed(1)}%` : "—"}
           color={C.amber}
         />
         <StatBox
-          label="Amount Collected"
-          value={activity ? fmtMoney(activity.amt_collected) : "—"}
+          label="N0P %"
+          value={pct ? `${pct.non_zero_pct.toFixed(1)}%` : "—"}
+        />
+        <StatBox
+          label="Available to Collect"
+          value={pct ? `${pct.available_to_collect.toFixed(1)}%` : "—"}
+          color={C.green}
+        />
+      </div>
+
+      {/* ═══ ROW 4 — AMOUNTS ═══ */}
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+        Amounts
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 24 }}>
+        <StatBox
+          label="Total Amount Collected"
+          value={amts ? fmtMoney(amts.total_collected) : "—"}
           color={C.green}
         />
         <StatBox
-          label="Calls Dialed"
-          value={activity ? fmt(activity.calls_dialed) : "—"}
+          label="0 Pay"
+          value={amts ? fmtMoney(amts.zero_pay_collected) : "—"}
+          color={C.amber}
         />
         <StatBox
-          label="Collection %"
-          value={activity ? `${activity.collection_rate.toFixed(1)}%` : "—"}
-          color={activity && activity.collection_rate >= 10 ? C.green : C.amber}
+          label="N0P"
+          value={amts ? fmtMoney(amts.non_zero_collected) : "—"}
+        />
+        <StatBox
+          label="Down Payments"
+          value="Coming Soon"
+          color={C.muted}
         />
       </div>
 
