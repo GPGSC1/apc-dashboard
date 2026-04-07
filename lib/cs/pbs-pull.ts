@@ -105,11 +105,22 @@ export async function pullPBSReport(): Promise<PBSPullResult> {
     }
     const ss = ssMatch[1];
 
-    // Extract the conn token from the OpenReportMonitor(...) call on the page
-    const connMatch = mainHtml.match(/OpenReportMonitor\([^)]*?,\s*'([^']*)'\s*\)/);
-    const conn = connMatch ? connMatch[1] : "";
+    // Extract the conn token from the OpenReportMonitor(...) call on the page.
+    // Try several patterns — single-quoted, double-quoted, and raw conn= param.
+    let conn = "";
+    const patterns = [
+      /OpenReportMonitor\([^)]*?,\s*'([^']+)'\s*\)/,
+      /OpenReportMonitor\([^)]*?,\s*"([^"]+)"\s*\)/,
+      /OpenReportMonitor\([^)]*?,\s*&#39;([^&]+)&#39;\s*\)/,
+      /[?&]conn=([^&"'\s]+)/,
+    ];
+    for (const p of patterns) {
+      const m = mainHtml.match(p);
+      if (m && m[1]) { conn = decodeURIComponent(m[1]); break; }
+    }
     if (!conn) {
-      return { ok: false, error: "Could not extract conn token from Mainview" };
+      const snippet = mainHtml.slice(0, 2000).replace(/\s+/g, " ");
+      return { ok: false, error: `Could not extract conn token from Mainview. len=${mainHtml.length} snippet=${snippet.slice(0, 800)}` };
     }
 
     // ── 3. Load the Pending Cancellation report form ─────────────────────
