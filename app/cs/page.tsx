@@ -172,7 +172,7 @@ function Td({ children, style }: { children: React.ReactNode; style?: React.CSSP
 }
 
 /* ── tabs definition ────────────────────────────────────────────────────────── */
-const TABS = ["Work List", "Performance", "Availability", "Trends", "Text Owners"] as const;
+const TABS = ["Overview", "Performance", "Availability", "Trends", "Text Owners"] as const;
 type TabName = (typeof TABS)[number];
 
 /* ── Coming Soon placeholder ─────────────────────────────────────────────────── */
@@ -203,7 +203,7 @@ function ComingSoon({ title, desc }: { title: string; desc: string }) {
    MAIN PAGE
    ══════════════════════════════════════════════════════════════════════════════ */
 export default function CSPage() {
-  const [tab, setTab] = useState<TabName>("Work List");
+  const [tab, setTab] = useState<TabName>("Overview");
   const [date, setDate] = useState(todayStr());
   const [repFilter, setRepFilter] = useState("");
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -220,6 +220,13 @@ export default function CSPage() {
 
   // Pull status state
   const [pullStatus, setPullStatus] = useState<{ pull_status?: string; schedule_saved?: boolean; accounts_distributed?: number } | null>(null);
+
+  // Overview tab state
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [overview, setOverview] = useState<any>(null);
+  const [overviewStart, setOverviewStart] = useState(todayStr());
+  const [overviewEnd, setOverviewEnd] = useState(todayStr());
+  const [overviewLoading, setOverviewLoading] = useState(false);
 
   // Performance tab state
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -273,7 +280,7 @@ export default function CSPage() {
 
   // Fetch accounts on date/rep change
   useEffect(() => {
-    if (tab === "Work List") fetchAccounts();
+    if (tab === "Overview") fetchAccounts();
   }, [tab, fetchAccounts]);
 
   // Fetch schedule on mount (used by Manage Reps modal)
@@ -283,6 +290,17 @@ export default function CSPage() {
       .then((d) => { if (d.ok) setSchedule(d.schedule); })
       .catch(() => {});
   }, []);
+
+  // Fetch overview data (today + range activity)
+  useEffect(() => {
+    if (tab !== "Overview") return;
+    setOverviewLoading(true);
+    fetch(`/api/cs/overview?start=${overviewStart}&end=${overviewEnd}`)
+      .then((r) => r.json())
+      .then((d) => { if (d.ok) setOverview(d); })
+      .catch(() => {})
+      .finally(() => setOverviewLoading(false));
+  }, [tab, overviewStart, overviewEnd]);
 
   // Fetch performance data (weekly report)
   useEffect(() => {
@@ -347,7 +365,7 @@ export default function CSPage() {
         // Switch to work list
         setTimeout(() => {
           setDate(todayStr());
-          setTab("Work List");
+          setTab("Overview");
         }, 3000);
       } else {
         setError(data.error || "Scrub failed");
@@ -553,7 +571,7 @@ export default function CSPage() {
 
       {/* ── Tab Content ─────────────────────────────────────────────────────── */}
       <div style={{ maxWidth: 1400, margin: "0 auto", padding: "16px 24px 48px" }}>
-        {tab === "Work List" && (
+        {tab === "Overview" && (
           <WorkListTab
             accounts={accounts}
             dispoOptions={dispoOptions}
@@ -564,6 +582,12 @@ export default function CSPage() {
             uniqueReps={uniqueReps}
             loading={loading}
             updateDispo={updateDispo}
+            overview={overview}
+            overviewStart={overviewStart}
+            overviewEnd={overviewEnd}
+            setOverviewStart={setOverviewStart}
+            setOverviewEnd={setOverviewEnd}
+            overviewLoading={overviewLoading}
           />
         )}
         {tab === "Performance" && (
@@ -625,6 +649,12 @@ function WorkListTab({
   uniqueReps,
   loading,
   updateDispo,
+  overview,
+  overviewStart,
+  overviewEnd,
+  setOverviewStart,
+  setOverviewEnd,
+  overviewLoading,
 }: {
   accounts: Account[];
   dispoOptions: DispoOption[];
@@ -635,6 +665,13 @@ function WorkListTab({
   uniqueReps: string[];
   loading: boolean;
   updateDispo: (id: number, field: string, value: string | boolean) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  overview: any;
+  overviewStart: string;
+  overviewEnd: string;
+  setOverviewStart: (d: string) => void;
+  setOverviewEnd: (d: string) => void;
+  overviewLoading: boolean;
 }) {
   const [sortCol, setSortCol] = useState<string>("assigned_rep");
   const [sortAsc, setSortAsc] = useState(true);
@@ -671,8 +708,159 @@ function WorkListTab({
 
   const arrow = (col: string) => (sortCol === col ? (sortAsc ? " \u25B2" : " \u25BC") : "");
 
+  // ─── Overview stat boxes ─────────────────────────────────────────────────
+  const today = overview?.today;
+  const activity = overview?.activity;
+  const isTodayRange = overviewStart === overviewEnd && overviewStart === todayStr();
+
+  const quickRange = (days: number) => {
+    const end = todayStr();
+    const [y, m, d] = end.split("-").map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    dt.setUTCDate(dt.getUTCDate() - (days - 1));
+    const start = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+    setOverviewStart(start);
+    setOverviewEnd(end);
+  };
+  const setTodayRange = () => { const t = todayStr(); setOverviewStart(t); setOverviewEnd(t); };
+  const setMTD = () => { const t = todayStr(); setOverviewStart(t.slice(0, 8) + "01"); setOverviewEnd(t); };
+  const setYesterday = () => {
+    const [y, m, d] = todayStr().split("-").map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    dt.setUTCDate(dt.getUTCDate() - 1);
+    const yd = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+    setOverviewStart(yd);
+    setOverviewEnd(yd);
+  };
+
+  const StatBox = ({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) => (
+    <div
+      style={{
+        flex: "1 1 160px",
+        minWidth: 160,
+        background: C.card,
+        border: `1px solid ${C.border}`,
+        borderRadius: 10,
+        padding: "14px 16px",
+      }}
+    >
+      <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: color || C.text, lineHeight: 1.1 }}>{value}</div>
+      {sub && <div style={{ fontSize: 10, color: C.secondary, marginTop: 4 }}>{sub}</div>}
+    </div>
+  );
+
+  const quickBtn = (label: string, onClick: () => void, active: boolean) => (
+    <button
+      onClick={onClick}
+      style={{
+        padding: "4px 12px",
+        borderRadius: 6,
+        border: `1px solid ${active ? C.teal : C.border}`,
+        background: active ? C.teal : "transparent",
+        color: active ? "#000" : C.secondary,
+        fontSize: 11,
+        fontWeight: 700,
+        cursor: "pointer",
+        fontFamily: FONT,
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  const dateInputStyle: React.CSSProperties = {
+    background: C.input, color: C.text, border: `1px solid ${C.border}`,
+    borderRadius: 4, padding: "4px 8px", fontSize: 12, fontFamily: FONT,
+  };
+
   return (
     <>
+      {/* ═══ TODAY SNAPSHOT (always current) ═══ */}
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+        Today &middot; Live
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 20 }}>
+        <StatBox
+          label="Open Past Due"
+          value={today ? fmt(today.total_accounts) : "—"}
+          sub={today ? `${fmt(today.zero_pay_accounts)} zero-pay · ${fmt(today.non_zero_accounts)} non-0` : undefined}
+        />
+        <StatBox
+          label="0-Pay Accounts"
+          value={today ? fmt(today.zero_pay_accounts) : "—"}
+          color={C.amber}
+        />
+        <StatBox
+          label="Non-0-Pay Accounts"
+          value={today ? fmt(today.non_zero_accounts) : "—"}
+        />
+        <StatBox
+          label="Called Today"
+          value={today ? fmt(today.accounts_called) : "—"}
+          sub={today ? `${fmt(today.calls_remaining)} remaining` : undefined}
+        />
+        <StatBox
+          label="Calls Remaining"
+          value={today ? fmt(today.calls_remaining) : "—"}
+          color={today && today.calls_remaining > 0 ? C.amber : C.green}
+        />
+      </div>
+
+      {/* ═══ ACTIVITY (range-aware) ═══ */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase", letterSpacing: 0.5 }}>
+          Activity
+        </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          {quickBtn("Today", setTodayRange, isTodayRange)}
+          {quickBtn("Yesterday", setYesterday, false)}
+          {quickBtn("7D", () => quickRange(7), false)}
+          {quickBtn("30D", () => quickRange(30), false)}
+          {quickBtn("MTD", setMTD, false)}
+          <span style={{ fontSize: 11, color: C.muted, marginLeft: 4 }}>or</span>
+          <input type="date" value={overviewStart} onChange={(e) => setOverviewStart(e.target.value)} style={dateInputStyle} />
+          <span style={{ fontSize: 11, color: C.muted }}>–</span>
+          <input type="date" value={overviewEnd} onChange={(e) => setOverviewEnd(e.target.value)} style={dateInputStyle} />
+          {overviewLoading && <span style={{ fontSize: 11, color: C.muted }}>Loading…</span>}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 24 }}>
+        <StatBox
+          label="Collections"
+          value={activity ? fmt(activity.collections) : "—"}
+          color={C.green}
+        />
+        <StatBox
+          label="Non-0-Pay Collected"
+          value={activity ? fmt(activity.non_zero_collections) : "—"}
+        />
+        <StatBox
+          label="0-Pay Collected"
+          value={activity ? fmt(activity.zero_pay_collections) : "—"}
+          color={C.amber}
+        />
+        <StatBox
+          label="Amount Collected"
+          value={activity ? fmtMoney(activity.amt_collected) : "—"}
+          color={C.green}
+        />
+        <StatBox
+          label="Calls Dialed"
+          value={activity ? fmt(activity.calls_dialed) : "—"}
+        />
+        <StatBox
+          label="Collection %"
+          value={activity ? `${activity.collection_rate.toFixed(1)}%` : "—"}
+          color={activity && activity.collection_rate >= 10 ? C.green : C.amber}
+        />
+      </div>
+
+      {/* ═══ WORK LIST (always today, unaffected by range) ═══ */}
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+        Work List
+      </div>
+
       {/* Controls */}
       <div style={{ display: "flex", gap: 12, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
         <div>
