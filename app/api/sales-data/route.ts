@@ -269,9 +269,22 @@ export async function GET(req: Request) {
     // Every answered call transferred to a T.O. rep counts (no dedup)
     let toCallCount = 0;
 
-    // Spanish agent attribution: count how many times Spanish team members
-    // appear in dest_name across ALL transfers. Never deduped.
-    // First get Spanish team member names, then count their occurrences in dest_name
+    // Spanish + T.O. counting comes from the to_transfers table, NOT queue_calls.
+    // queue_calls only stores INBOUND calls with valid 10-digit phones — internal
+    // transfers to T.O./Spanish agents have extensions in the phone field and never
+    // make it into queue_calls. They're captured separately in to_transfers during
+    // seed-refresh (every row from a Spanish or T.O. queue with a dest_name).
+    // No status filter, no scrubbing — every transfer row counts.
+    const transferCountResult = await query(
+      `SELECT dest_name, queue, COUNT(*) as cnt
+       FROM to_transfers
+       WHERE call_date BETWEEN $1 AND $2
+         AND dest_name IS NOT NULL AND dest_name != ''
+       GROUP BY dest_name, queue`,
+      [fromDate, toDate]
+    );
+
+    // Load Spanish team members
     const spanishTeamResult = await query(
       `SELECT tm.agent_name FROM team_members tm
        JOIN teams t ON t.id = tm.team_id
@@ -279,31 +292,8 @@ export async function GET(req: Request) {
       []
     );
     const spanishNames = new Set(spanishTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.trim().toLowerCase()));
-    // Spanish team names loaded above for dest_name matching
 
-    // Spanish: count dest_name occurrences across ALL queues, ALL calls (no status filter)
-    // Matches user's COUNTIF on Destination Name column L across entire raw 3CX report
-    const spanishCountResult = await query(
-      `SELECT dest_name, COUNT(*) as cnt
-       FROM queue_calls
-       WHERE call_date BETWEEN $1 AND $2
-         AND dest_name IS NOT NULL AND dest_name != ''
-       GROUP BY dest_name`,
-      [fromDate, toDate]
-    );
-    const spanishByAgent: Record<string, number> = {};
-    let spanishTotal = 0;
-    for (const row of spanishCountResult.rows) {
-      const name = (row.dest_name ?? "").trim();
-      if (name && spanishNames.has(name.toLowerCase())) {
-        const cnt = parseInt(row.cnt);
-        spanishByAgent[name] = cnt;
-        spanishTotal += cnt;
-      }
-    }
-
-    // T.O. agent attribution: count how many times T.O. team members
-    // appear in dest_name across ALL transfers. Never deduped.
+    // Load T.O. team members
     const toTeamResult = await query(
       `SELECT tm.agent_name FROM team_members tm
        JOIN teams t ON t.id = tm.team_id
@@ -312,15 +302,21 @@ export async function GET(req: Request) {
     );
     const toNames = new Set(toTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.trim().toLowerCase()));
 
-    // T.O.: count dest_name occurrences across ALL queues, ALL calls (no status filter)
-    // Matches user's COUNTIF on Destination Name column L across entire raw 3CX report
-    // Reuse the same broad dest_name query result from Spanish counting
+    // Bucket transfer rows by team. Use both the queue tag AND the team membership
+    // so a Spanish rep showing up in the T.O. queue still counts as Spanish, etc.
+    const spanishByAgent: Record<string, number> = {};
+    let spanishTotal = 0;
     const toByAgent: Record<string, number> = {};
-    for (const row of spanishCountResult.rows) {
+    for (const row of transferCountResult.rows) {
       const name = (row.dest_name ?? "").trim();
-      if (name && toNames.has(name.toLowerCase())) {
-        const cnt = parseInt(row.cnt);
-        toByAgent[name] = cnt;
+      if (!name) continue;
+      const lowerName = name.toLowerCase();
+      const cnt = parseInt(row.cnt);
+      if (spanishNames.has(lowerName)) {
+        spanishByAgent[name] = (spanishByAgent[name] ?? 0) + cnt;
+        spanishTotal += cnt;
+      } else if (toNames.has(lowerName)) {
+        toByAgent[name] = (toByAgent[name] ?? 0) + cnt;
         toCallCount += cnt;
       }
     }
