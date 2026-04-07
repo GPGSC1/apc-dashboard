@@ -105,29 +105,22 @@ export async function pullPBSReport(): Promise<PBSPullResult> {
     }
     const ss = ssMatch[1];
 
-    // Extract the conn token from the OpenReportMonitor(...) call on the page.
-    // Try several patterns — single-quoted, double-quoted, and raw conn= param.
-    let conn = "";
-    const patterns = [
-      /OpenReportMonitor\([^)]*?,\s*'([^']+)'\s*\)/,
-      /OpenReportMonitor\([^)]*?,\s*"([^"]+)"\s*\)/,
-      /OpenReportMonitor\([^)]*?,\s*&#39;([^&]+)&#39;\s*\)/,
-      /[?&]conn=([^&"'\s]+)/,
-    ];
-    for (const p of patterns) {
-      const m = mainHtml.match(p);
-      if (m && m[1]) { conn = decodeURIComponent(m[1]); break; }
+    // conn is a stable per-user encrypted blob. Prefer PBS_CONN env var;
+    // fallback to parsing it out of Mainview if present.
+    let conn = process.env.PBS_CONN || "";
+    if (!conn) {
+      const patterns = [
+        /OpenReportMonitor\([^)]*?,\s*'([^']+)'\s*\)/,
+        /OpenReportMonitor\([^)]*?,\s*"([^"]+)"\s*\)/,
+        /[?&]conn=([^&"'\s]+)/,
+      ];
+      for (const p of patterns) {
+        const m = mainHtml.match(p);
+        if (m && m[1]) { conn = decodeURIComponent(m[1]); break; }
+      }
     }
     if (!conn) {
-      // Find a context window around "OpenReportMonitor" or "conn" if present
-      const markers = ["OpenReportMonitor", "ReportControl", "ReportMonitor", "conn=", "Report Activity", "snapshotId"];
-      const found: string[] = [];
-      for (const mk of markers) {
-        const i = mainHtml.indexOf(mk);
-        if (i >= 0) found.push(`${mk}@${i}:${mainHtml.slice(Math.max(0, i - 60), i + 200).replace(/\s+/g, " ")}`);
-      }
-      const ctx = found.length ? found.join(" || ") : `(none of markers found) head=${mainHtml.slice(0, 300).replace(/\s+/g, " ")}`;
-      return { ok: false, error: `Could not extract conn token from Mainview. len=${mainHtml.length} ctx=${ctx}` };
+      return { ok: false, error: "PBS_CONN env var not set and conn token not found in Mainview" };
     }
 
     // ── 3. Load the Pending Cancellation report form ─────────────────────
