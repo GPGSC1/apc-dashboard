@@ -119,8 +119,12 @@ export async function pullPBSReport(): Promise<PBSPullResult> {
       if (m && m[1]) { conn = decodeURIComponent(m[1]); break; }
     }
     if (!conn) {
-      const snippet = mainHtml.slice(0, 2000).replace(/\s+/g, " ");
-      return { ok: false, error: `Could not extract conn token from Mainview. len=${mainHtml.length} snippet=${snippet.slice(0, 800)}` };
+      // Find a context window around "OpenReportMonitor" or "conn" if present
+      const idxORM = mainHtml.indexOf("OpenReportMonitor");
+      const idxConn = mainHtml.search(/conn[=:]/i);
+      const idx = idxORM >= 0 ? idxORM : idxConn;
+      const ctx = idx >= 0 ? mainHtml.slice(Math.max(0, idx - 100), idx + 500).replace(/\s+/g, " ") : "(no OpenReportMonitor/conn found)";
+      return { ok: false, error: `Could not extract conn token from Mainview. len=${mainHtml.length} ctx=${ctx}` };
     }
 
     // ── 3. Load the Pending Cancellation report form ─────────────────────
