@@ -36,29 +36,25 @@ export async function pullPBSReport(): Promise<PBSPullResult> {
 
   try {
     // Step 1: GET login page to extract ASP.NET form tokens
-    const loginPageRes = await fetch(`${PBS_BASE()}${PBS_LOGIN_PATH()}`, {
-      redirect: "manual",
-    });
+    const loginPageRes = await fetch(`${PBS_BASE()}${PBS_LOGIN_PATH()}`);
     const loginHtml = await loginPageRes.text();
     const cookies = extractCookies(loginPageRes.headers);
 
-    const viewState = extractFormField(loginHtml, "__VIEWSTATE");
-    const eventValidation = extractFormField(loginHtml, "__EVENTVALIDATION");
-    const viewStateGenerator = extractFormField(loginHtml, "__VIEWSTATEGENERATOR");
-
-    if (!viewState || !eventValidation) {
+    // Harvest every hidden input on the page (viewstate, SS, GUIDs, etc.)
+    const hiddens = extractAllHiddens(loginHtml);
+    if (!hiddens["__VIEWSTATE"] || !hiddens["__EVENTVALIDATION"]) {
       return { ok: false, error: "Could not extract ASP.NET form tokens from login page" };
     }
 
-    // Step 2: POST login credentials
-    const loginBody = new URLSearchParams({
-      __VIEWSTATE: viewState,
-      __EVENTVALIDATION: eventValidation,
-      ...(viewStateGenerator ? { __VIEWSTATEGENERATOR: viewStateGenerator } : {}),
-      txtUserName: username,
-      txtPassword: password,
-      btnLogin: "Log In",
-    });
+    // Step 2: POST login credentials as __doPostBack(ctlLogin$btnLogin)
+    const loginParams: Record<string, string> = {
+      ...hiddens,
+      __EVENTTARGET: "ctlLogin$btnLogin",
+      __EVENTARGUMENT: "",
+      "ctlLogin$txtUserName": username,
+      "ctlLogin$txtPassword": password,
+    };
+    const loginBody = new URLSearchParams(loginParams);
 
     const loginRes = await fetch(`${PBS_BASE()}${PBS_LOGIN_PATH()}`, {
       method: "POST",
@@ -70,11 +66,17 @@ export async function pullPBSReport(): Promise<PBSPullResult> {
       redirect: "manual",
     });
 
-    // Collect auth cookies from the login response
-    const authCookies = mergeCookies(cookies, extractCookies(loginRes.headers));
-
-    if (!authCookies.includes(".ASPXAUTH")) {
-      return { ok: false, error: "PBS login failed — no auth cookie received" };
+    // Collect auth cookies from the login response.
+    // PBS sets a "PBSAuth" cookie with a non-empty value on success
+    // (the login page sets PBSAuth="" expired on load, so we check for a value).
+    const freshCookies = extractCookies(loginRes.headers);
+    const authCookies = mergeCookies(cookies, freshCookies);
+    const pbsAuthMatch = authCookies.match(/PBSAuth=([^;]*)/);
+    if (!pbsAuthMatch || !pbsAuthMatch[1]) {
+      return {
+        ok: false,
+        error: `PBS login failed — no PBSAuth cookie. status=${loginRes.status} location=${loginRes.headers.get("location") || "none"}`,
+      };
     }
 
     // Step 3: Download the Pending Cancellation report
@@ -104,6 +106,19 @@ export async function pullPBSReport(): Promise<PBSPullResult> {
 }
 
 // --- Helpers ---
+
+function extractAllHiddens(html: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const re = /<input[^>]*type="hidden"[^>]*>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const tag = m[0];
+    const name = tag.match(/name="([^"]+)"/i)?.[1];
+    const value = tag.match(/value="([^"]*)"/i)?.[1] ?? "";
+    if (name) out[name] = value;
+  }
+  return out;
+}
 
 function extractFormField(html: string, fieldName: string): string {
   // Try id= first, then name=, both orderings of attributes
