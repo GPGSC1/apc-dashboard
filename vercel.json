@@ -16,6 +16,10 @@
     {
       "path": "/api/cs/daily-pull",
       "schedule": "15 13 * * 1-6"
+    },
+    {
+      "path": "/api/cs/stats-sync",
+      "schedule": "0 6 * * *"
     }
   ],
   "functions": {
@@ -27,6 +31,9 @@
     },
     "app/api/cs/daily-pull/route.ts": {
       "maxDuration": 120
+    },
+    "app/api/cs/stats-sync/route.ts": {
+      "maxDuration": 300
     }
   }
 }
