@@ -709,6 +709,79 @@ All phones are normalized to 10-digit: strip non-digits, if 11 digits starting w
 
 ---
 
+## Future Architecture: Raw Seed + Query-Time Logic (PLANNED, NOT YET IMPLEMENTED)
+
+**Decision date:** April 2026. Owner directive — do NOT execute until owner kicks it off.
+
+### The Problem
+Current seed-refresh applies filters at insert time, dropping rows we may need later:
+1. `isTrackedQueue` filter — drops rows whose queue isn't in the hardcoded TRACKED_QUEUES list
+2. `if (!phone || phone.length !== 10) continue;` — drops rows without 10-digit phones (this is why T.O. takeovers, which use extensions, never land in queue_calls)
+3. `if (isInbound)` — only inbound calls reach queue_calls; outbound only used for CS Last Called
+4. JS dedup picking "best row" by dest_name preference, dropping the rest
+5. Status='answered', Mail 4 specific filters, AI-fwd filters, etc.
+
+This means we can't measure new metrics without re-seeding, and "picking and choosing what we add to the seed hinders our ability to measure different metrics in the future."
+
+### The Target Architecture
+- **One raw table per source** (e.g., `raw_3cx_calls`, `raw_moxy_deals`, `raw_aim_calls`) that preserves EVERY row from the source export, untouched, no filtering, no dedup, no transformation.
+- **Year-to-date initial pull** for every report we ingest, then morning pulls APPEND new rows (`ON CONFLICT DO NOTHING` on a synthetic call_id / row_id).
+- **Dashboard becomes two layers:**
+  1. **Real-time view** — live queries against AIM/3CX/Moxy APIs for today's daily performance
+  2. **Historical view** — applies all dedup/counting/percentage logic to the raw seed at query time
+- **`to_transfers` and other derived tables get retired** — they become query-time buckets on the raw data.
+- **New queues, new agents, new call types automatically work** without seed-refresh code changes.
+
+### NON-NEGOTIABLE: Preserve Existing Logic Verbatim
+When this refactor happens, the exact dedup/count/attribution logic that's currently giving us numbers matching Sara's reports MUST be preserved. The transformation moves the logic from seed time to query time — it does NOT change the math. After the refactor:
+- Auto Sold count must still match Sara (currently 405 for Apr 1-5)
+- Auto All count must still match Sara (currently 436 for Apr 1-5)
+- Home Sold/All must still match (63 / 66)
+- Sales call totals must still be within ~1% of Sara's per-rep numbers
+- T.O. and Spanish counts (currently from `to_transfers`) must match the legacy methodology
+
+### Logic That Must Survive (Snapshot for Reference)
+
+**Deal counting (currently in `app/api/sales-data/route.ts`):**
+- `DISTINCT ON (customer_id || '|' || contract_no)` for primary dedup
+- `NOT EXISTS` empty-contract dedup with `deal_status` match: drops empty-contract rows when same `customer_id + deal_status` already has a real-contract row. The `deal_status` match is critical — without it, Back Out/Cancelled rows with empty contracts get incorrectly excluded when a Sold row exists for the same customer.
+- `statusFilter`: `soldOnly=true` → `AND deal_status = 'Sold'`, else `AND deal_status != ''`
+- Auto and Home use identical dedup logic against `moxy_deals` and `moxy_home_deals` respectively.
+
+**Call counting (currently in `app/api/sales-data/route.ts`):**
+- `HUMAN_FILTER = LOWER(status) = 'answered'` (relaxed — no first_ext conditions)
+- Attribution: `COALESCE(NULLIF(TRIM(dest_name), ''), agent_name)` — prefer dest_name, fallback to first_ext name
+- Per-day dedup ONLY via the DB unique constraint on `(phone, queue, call_date)` — no cross-date ROW_NUMBER dedup
+- `NORM_QUEUE_SQL` CASE statement normalizes queue names (mail 1-6, home 1-5, spanish, to). Spanish checked BEFORE T.O. to avoid "Spanish - Auto" matching the "to" substring.
+- Bottom-up team filter: only count calls for sales team agents (build `salesAgentNames` from team_members joined to non-excluded teams). Excluded patterns: `['t.o.', 'to.', 'spanish', 'customer service', 'unassigned']`
+
+**T.O. and Spanish counting (currently from `to_transfers` table):**
+- Read every row from `to_transfers` where `call_date BETWEEN $1 AND $2 AND dest_name IS NOT NULL AND dest_name != ''`
+- Bucket by team membership (`spanishNames` set, `toNames` set) — Spanish wins if a name is in both sets
+- No status filter, no dedup — every transfer row counts
+- T.O. team query: `WHERE LOWER(t.name) IN ('to.', 't.o.')`
+- Spanish team query: `WHERE LOWER(t.name) = 'spanish'`
+
+**JS dedup in seed-refresh (queue_calls insert):**
+- Map-based "prefer best row" by composite key `${phone}|${queue}|${call_date}`:
+  1. Prefer rows with populated `dest_name` over empty
+  2. If both empty/both populated, prefer rows with populated `first_ext`
+- This logic exists because of the DB unique constraint on `(phone, queue, call_date)` — when the constraint goes away in the new architecture, this JS dedup also goes away (or moves to query time as a CTE).
+
+**Stale deal status workaround:**
+- Moxy upserts use `ON CONFLICT DO UPDATE SET deal_status=EXCLUDED.deal_status` so re-seeding catches status changes.
+- Cron only refreshes yesterday+today, so deals from earlier in the month can go stale until a manual full-month re-seed.
+
+### Migration Path (When We Execute)
+1. Create `raw_3cx_calls`, `raw_moxy_deals`, `raw_moxy_home_deals`, `raw_aim_calls` tables — minimum schema, all source columns preserved as TEXT, no constraints except synthetic `row_id` PK.
+2. Pull YTD into the new raw tables.
+3. Build views or query CTEs that reproduce the exact existing dedup/count logic against the raw tables.
+4. Run side-by-side: query both old (`queue_calls`, `moxy_deals`) and new (raw + view) for the same date range. Counts must match exactly before swapping over.
+5. Switch dashboard routes to read from views.
+6. Once confidence is high, retire the legacy filtered tables and the seed-refresh filter logic.
+
+---
+
 ## Date & Time Troubleshooting Guide (CRITICAL -- READ THIS FIRST)
 
 This project has been plagued by date/time bugs. Every external API returns dates differently, and Postgres DATE columns drop time components, causing subtle off-by-one and timezone-shift bugs. **All new features that touch dates MUST follow these patterns.**
