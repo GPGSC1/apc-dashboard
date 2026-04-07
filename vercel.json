@@ -24,6 +24,14 @@
     {
       "path": "/api/cs/snapshot",
       "schedule": "55 5 * * *"
+    },
+    {
+      "path": "/api/cs/calls-pull",
+      "schedule": "*/5 * * * 1-6"
+    },
+    {
+      "path": "/api/cs/dispo-freeze",
+      "schedule": "0 3 * * *"
     }
   ],
   "functions": {
@@ -38,6 +46,12 @@
     },
     "app/api/cs/stats-sync/route.ts": {
       "maxDuration": 300
+    },
+    "app/api/cs/calls-pull/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/cs/dispo-freeze/route.ts": {
+      "maxDuration": 120
     }
   }
 }

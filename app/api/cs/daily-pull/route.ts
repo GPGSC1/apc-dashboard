@@ -336,6 +336,44 @@ async function executePull(today: string): Promise<{ ok: boolean; accountCount?:
     const { fresh } = dedup(sorted, carryoverNums);
     const merged = mergeAndSort(carryOvers, fresh);
 
+    // ─── Append-only historical snapshot (cs_account_daily) ───
+    // Stores EVERY raw PBS row for permanent reference. Dedup within a single
+    // pull on account_number (PBS sometimes duplicates). Never updated after.
+    {
+      const { ensureHistoricalTables } = await import("../../../../lib/cs/historical");
+      await ensureHistoricalTables();
+      const seen = new Set<string>();
+      const histClient = await getPool().connect();
+      try {
+        await histClient.query("BEGIN");
+        for (const acct of allAccounts) {
+          if (!acct.account_number || seen.has(acct.account_number)) continue;
+          seen.add(acct.account_number);
+          await histClient.query(
+            `INSERT INTO cs_account_daily
+             (scrub_date, account_number, insured_name, policy_number, agent_entity,
+              installments_made, next_due_date, sched_cxl_date, bill_hold, billing_method,
+              amount_due, main_phone, home_phone, work_phone, customer_email, state,
+              assigned_rep, raw_row)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+             ON CONFLICT (scrub_date, account_number) DO NOTHING`,
+            [
+              today, acct.account_number, acct.insured_name, acct.policy_number, acct.agent_entity,
+              acct.installments_made, acct.next_due_date, acct.sched_cxl_date, acct.bill_hold, acct.billing_method,
+              acct.amount_due, acct.main_phone, acct.home_phone, acct.work_phone, acct.customer_email, acct.state,
+              acct.assigned_rep || null, JSON.stringify(acct),
+            ]
+          );
+        }
+        await histClient.query("COMMIT");
+      } catch (e) {
+        await histClient.query("ROLLBACK");
+        console.error("[daily-pull] cs_account_daily append failed:", e);
+      } finally {
+        histClient.release();
+      }
+    }
+
     // Insert into DB
     const client = await getPool().connect();
     try {
