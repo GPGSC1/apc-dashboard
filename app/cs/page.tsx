@@ -596,6 +596,7 @@ export default function CSPage() {
             perfMonth={perfMonth}
             setPerfMonth={setPerfMonth}
             onManageReps={() => setShowManageReps(true)}
+            csReps={schedule.map(s => s.name)}
           />
         )}
         {tab === "Availability" && (
@@ -814,14 +815,7 @@ function WorkListTab({
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           {quickBtn("Today", setTodayRange, isTodayRange)}
-          {quickBtn("Yesterday", setYesterday, false)}
-          {quickBtn("7D", () => quickRange(7), false)}
-          {quickBtn("30D", () => quickRange(30), false)}
           {quickBtn("MTD", setMTD, false)}
-          <span style={{ fontSize: 11, color: C.muted, marginLeft: 4 }}>or</span>
-          <input type="date" value={overviewStart} onChange={(e) => setOverviewStart(e.target.value)} style={dateInputStyle} />
-          <span style={{ fontSize: 11, color: C.muted }}>–</span>
-          <input type="date" value={overviewEnd} onChange={(e) => setOverviewEnd(e.target.value)} style={dateInputStyle} />
           {overviewLoading && <span style={{ fontSize: 11, color: C.muted }}>Loading…</span>}
         </div>
       </div>
@@ -863,23 +857,6 @@ function WorkListTab({
 
       {/* Controls */}
       <div style={{ display: "flex", gap: 12, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <div>
-          <label style={{ fontSize: 11, color: C.muted, marginRight: 6 }}>Date:</label>
-          <input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-            style={{
-              background: C.input,
-              color: C.text,
-              border: `1px solid ${C.border}`,
-              borderRadius: 4,
-              padding: "4px 8px",
-              fontSize: 12,
-              fontFamily: FONT,
-            }}
-          />
-        </div>
         <div>
           <label style={{ fontSize: 11, color: C.muted, marginRight: 6 }}>Rep:</label>
           <select
@@ -1386,7 +1363,9 @@ function WTd({ children, style, colSpan }: { children?: React.ReactNode; style?:
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps }: { perfData: any; perfMonth: string; setPerfMonth: (m: string) => void; onManageReps: () => void }) {
+function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps, csReps }: { perfData: any; perfMonth: string; setPerfMonth: (m: string) => void; onManageReps: () => void; csReps: string[] }) {
+  const csRepSet = new Set(csReps.map(r => r.trim().toLowerCase()));
+  const isCsRep = (name: string) => csRepSet.size === 0 || csRepSet.has((name || "").trim().toLowerCase());
   // Date range for stats view
   const [statsStart, setStatsStart] = useState(todayStr());
   const [statsEnd, setStatsEnd] = useState(todayStr());
@@ -1422,23 +1401,29 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps }: { p
       .finally(() => setCallsLoading(false));
   }, [callsStart, callsEnd]);
 
-  // Quick-set today only
-  const setToday = () => { setStatsStart(todayStr()); setStatsEnd(todayStr()); };
+  // Quick-set today only — drives both stats and calls
+  const setToday = () => {
+    const t = todayStr();
+    setStatsStart(t); setStatsEnd(t);
+    setCallsStart(t); setCallsEnd(t);
+  };
 
   // Quick-set MTD (1st of month through today)
   const setMTD = () => {
     const t = todayStr();
-    setStatsStart(t.slice(0, 8) + "01");
-    setStatsEnd(t);
+    const first = t.slice(0, 8) + "01";
+    setStatsStart(first); setStatsEnd(t);
+    setCallsStart(first); setCallsEnd(t);
   };
+  const isToday = statsStart === todayStr() && statsEnd === todayStr();
 
   // Weekly report data for export
   const { weeks, collections, callVolume, conversion, reps, dispoByRep, accountsByRepWeek } = perfData || {};
   const weekCount = weeks?.length || 0;
 
   // Calls Made data
-  const allCallReps = callsData ? Object.keys(callsData).sort() : [];
-  const totalCalls = callsData ? Object.values(callsData).reduce((s, n) => s + n, 0) : 0;
+  const allCallReps = callsData ? Object.keys(callsData).filter(isCsRep).sort() : [];
+  const totalCalls = allCallReps.reduce((s, r) => s + (callsData?.[r] || 0), 0);
 
   const dateInputStyle: React.CSSProperties = {
     background: C.input, color: C.text, border: `1px solid ${C.border}`,
@@ -1454,7 +1439,7 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps }: { p
   // Stats from daily-stats API
   const byRep = statsData?.byRep || {};
   const totals = statsData?.totals || {};
-  const statsReps = statsData?.reps || [];
+  const statsReps = (statsData?.reps || []).filter((r: string) => isCsRep(r));
 
   // ── Export Weekly Report CSV ──
   const exportCSV = () => {
@@ -1597,10 +1582,6 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps }: { p
       {/* ═══ COLLECTIONS STATS — DATE RANGE ═══ */}
       <SectionHeader>COLLECTIONS STATS</SectionHeader>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 12, color: C.secondary }}>From:</span>
-        <input type="date" value={statsStart} onChange={e => setStatsStart(e.target.value)} style={dateInputStyle} />
-        <span style={{ fontSize: 12, color: C.secondary }}>To:</span>
-        <input type="date" value={statsEnd} onChange={e => setStatsEnd(e.target.value)} style={dateInputStyle} />
         <button onClick={setToday} style={quickBtnStyle}>Today</button>
         <button onClick={setMTD} style={quickBtnStyle}>MTD</button>
         {statsLoading && <span style={{ fontSize: 11, color: C.muted }}>Loading...</span>}
@@ -1664,10 +1645,7 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps }: { p
       {/* ═══ CALLS MADE — CUSTOM DATE RANGE ═══ */}
       <SectionHeader>CALLS MADE BY REP</SectionHeader>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 12, color: C.secondary }}>From:</span>
-        <input type="date" value={callsStart} onChange={e => setCallsStart(e.target.value)} style={dateInputStyle} />
-        <span style={{ fontSize: 12, color: C.secondary }}>To:</span>
-        <input type="date" value={callsEnd} onChange={e => setCallsEnd(e.target.value)} style={dateInputStyle} />
+        <span style={{ fontSize: 11, color: C.muted }}>{isToday ? "Today" : "MTD"}</span>
         {callsLoading && <span style={{ fontSize: 11, color: C.muted }}>Loading...</span>}
       </div>
       <div style={{ overflowX: "auto", borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 16 }}>
