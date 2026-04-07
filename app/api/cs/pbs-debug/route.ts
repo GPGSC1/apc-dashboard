@@ -4,7 +4,7 @@
 import { NextResponse } from "next/server";
 
 export async function GET() {
-  const base = process.env.PBS_BASE_URL || "https://pbsnetaccess.com";
+  const base = process.env.PBS_BASE_URL || "https://www.pbsnetaccess.com";
   const path = process.env.PBS_LOGIN_PATH || "/EntityLogin.aspx?portfolio=1144";
   const url = `${base}${path}`;
 

@@ -13,7 +13,7 @@
 
 import * as XLSX from "xlsx";
 
-const PBS_BASE = () => process.env.PBS_BASE_URL || "https://pbsnetaccess.com";
+const PBS_BASE = () => process.env.PBS_BASE_URL || "https://www.pbsnetaccess.com";
 const PBS_LOGIN_PATH = () => process.env.PBS_LOGIN_PATH || "/EntityLogin.aspx?portfolio=1144";
 
 interface PBSPullResult {
