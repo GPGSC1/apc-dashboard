@@ -15,7 +15,6 @@
 
 import { NextResponse } from "next/server";
 import { query } from "../../../../lib/db/connection";
-import { sendSMS } from "../../../../lib/cs/twilio";
 
 const CT_TZ = "America/Chicago";
 
@@ -123,29 +122,11 @@ export async function GET() {
         [today]
       );
 
-      // Send SMS reminder if not already sent
-      if (!status.reminder_sent) {
-        const jeremyPhone = process.env.CS_MANAGER_PHONE;
-        if (jeremyPhone) {
-          const dashUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
-            ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}/cs`
-            : "the Collections dashboard";
-          await sendSMS(
-            jeremyPhone,
-            `Collections: Today's rep schedule hasn't been set yet. The PBS pull is waiting on you.\n\nSet it here: ${dashUrl}\n\nThe pull will run automatically once you save the schedule.`
-          );
-          await query(
-            `UPDATE cs_daily_pull_status SET reminder_sent = true, reminder_sent_at = NOW() WHERE pull_date = $1`,
-            [today]
-          );
-        }
-      }
-
+      // SMS reminder intentionally disabled for now — will re-enable before go-live.
       return NextResponse.json({
         ok: true,
         status: "waiting_schedule",
         date: today,
-        reminderSent: true,
       });
     }
   } catch (e) {
@@ -418,20 +399,7 @@ async function executePull(today: string): Promise<{ ok: boolean; accountCount?:
       client.release();
     }
 
-    // Send confirmation text
-    const jeremyPhone = process.env.CS_MANAGER_PHONE;
-    if (jeremyPhone) {
-      const breakdown = workingReps.map(rep => {
-        const count = merged.filter(a => a.assigned_rep === rep).length;
-        return `  ${rep}: ${count}`;
-      }).join("\n");
-
-      await sendSMS(
-        jeremyPhone,
-        `Collections pull complete!\n\n${merged.length} accounts distributed:\n${breakdown}\n\nCarry-overs: ${carryOvers.length}`
-      );
-    }
-
+    // Confirmation SMS intentionally disabled for now — will re-enable before go-live.
     return { ok: true, accountCount: merged.length };
   } catch (e) {
     console.error("[daily-pull] executePull error:", e);

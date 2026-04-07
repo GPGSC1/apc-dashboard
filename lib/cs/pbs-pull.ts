@@ -14,6 +14,7 @@
 import * as XLSX from "xlsx";
 
 const PBS_BASE = () => process.env.PBS_BASE_URL || "https://pbsnetaccess.com";
+const PBS_LOGIN_PATH = () => process.env.PBS_LOGIN_PATH || "/EntityLogin.aspx?portfolio=1144";
 
 interface PBSPullResult {
   ok: boolean;
@@ -35,7 +36,7 @@ export async function pullPBSReport(): Promise<PBSPullResult> {
 
   try {
     // Step 1: GET login page to extract ASP.NET form tokens
-    const loginPageRes = await fetch(`${PBS_BASE()}/Login.aspx`, {
+    const loginPageRes = await fetch(`${PBS_BASE()}${PBS_LOGIN_PATH()}`, {
       redirect: "manual",
     });
     const loginHtml = await loginPageRes.text();
@@ -59,7 +60,7 @@ export async function pullPBSReport(): Promise<PBSPullResult> {
       btnLogin: "Log In",
     });
 
-    const loginRes = await fetch(`${PBS_BASE()}/Login.aspx`, {
+    const loginRes = await fetch(`${PBS_BASE()}${PBS_LOGIN_PATH()}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -105,9 +106,18 @@ export async function pullPBSReport(): Promise<PBSPullResult> {
 // --- Helpers ---
 
 function extractFormField(html: string, fieldName: string): string {
-  const regex = new RegExp(`id="${fieldName}"[^>]*value="([^"]*)"`, "i");
-  const match = html.match(regex);
-  return match?.[1] || "";
+  // Try id= first, then name=, both orderings of attributes
+  const patterns = [
+    new RegExp(`id="${fieldName}"[^>]*value="([^"]*)"`, "i"),
+    new RegExp(`name="${fieldName}"[^>]*value="([^"]*)"`, "i"),
+    new RegExp(`value="([^"]*)"[^>]*name="${fieldName}"`, "i"),
+    new RegExp(`value="([^"]*)"[^>]*id="${fieldName}"`, "i"),
+  ];
+  for (const p of patterns) {
+    const m = html.match(p);
+    if (m?.[1]) return m[1];
+  }
+  return "";
 }
 
 function extractCookies(headers: Headers): string {
