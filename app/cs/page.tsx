@@ -172,8 +172,32 @@ function Td({ children, style }: { children: React.ReactNode; style?: React.CSSP
 }
 
 /* ── tabs definition ────────────────────────────────────────────────────────── */
-const TABS = ["Work List", "Upload & Scrub", "Performance", "Rep Schedule"] as const;
+const TABS = ["Work List", "Performance", "Availability", "Trends", "Text Owners"] as const;
 type TabName = (typeof TABS)[number];
+
+/* ── Coming Soon placeholder ─────────────────────────────────────────────────── */
+function ComingSoon({ title, desc }: { title: string; desc: string }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        minHeight: 360,
+        background: C.card,
+        borderRadius: 12,
+        padding: 40,
+        textAlign: "center",
+        border: `1px solid ${C.border}`,
+      }}
+    >
+      <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.5 }}>{"\u{1F6A7}"}</div>
+      <div style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: 8, fontFamily: FONT }}>{title}</div>
+      <div style={{ fontSize: 14, color: C.secondary, maxWidth: 460, fontFamily: FONT, lineHeight: 1.5 }}>{desc}</div>
+    </div>
+  );
+}
 
 /* ══════════════════════════════════════════════════════════════════════════════
    MAIN PAGE
@@ -252,15 +276,13 @@ export default function CSPage() {
     if (tab === "Work List") fetchAccounts();
   }, [tab, fetchAccounts]);
 
-  // Fetch schedule when upload tab activates
+  // Fetch schedule on mount (used by Manage Reps modal)
   useEffect(() => {
-    if (tab === "Upload & Scrub") {
-      fetch(`/api/cs/reps?action=schedule&date=${todayStr()}`)
-        .then((r) => r.json())
-        .then((d) => { if (d.ok) setSchedule(d.schedule); })
-        .catch(() => {});
-    }
-  }, [tab]);
+    fetch(`/api/cs/reps?action=schedule&date=${todayStr()}`)
+      .then((r) => r.json())
+      .then((d) => { if (d.ok) setSchedule(d.schedule); })
+      .catch(() => {});
+  }, []);
 
   // Fetch performance data (weekly report)
   useEffect(() => {
@@ -359,44 +381,85 @@ export default function CSPage() {
   // Get unique reps from accounts for filter dropdown
   const uniqueReps = [...new Set(accounts.map((a) => a.assigned_rep))].filter(Boolean).sort();
 
+  // Manage Reps modal (combines schedule + upload)
+  const [showManageReps, setShowManageReps] = useState(false);
+
   return (
     <div style={{ minHeight: "100vh", background: C.bg, fontFamily: FONT, color: C.text }}>
-      {/* ── Header ──────────────────────────────────────────────────────────── */}
+      {/* ── Sticky Header ───────────────────────────────────────────────────── */}
       <div
         style={{
-          padding: "16px 24px",
+          position: "sticky",
+          top: 0,
+          zIndex: 100,
+          background: `linear-gradient(135deg, ${C.tealDark} 0%, ${C.bg} 100%)`,
           borderBottom: `1px solid ${C.border}`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
+          padding: "16px 24px",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <a href="/" style={{ color: C.muted, textDecoration: "none", fontSize: 13 }}>
-            &larr; Home
-          </a>
-          <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>CS Collections</h1>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: 16,
+            maxWidth: 1400,
+            margin: "0 auto",
+          }}
+        >
+          {/* Logo Section */}
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <a href="/" style={{ color: C.secondary, textDecoration: "none", fontSize: 13 }}>
+              &larr; Home
+            </a>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: C.text, fontFamily: FONT, lineHeight: 1.2 }}>
+                Guardian Protection Group
+              </div>
+              <div style={{ fontSize: 12, color: C.secondary, fontFamily: FONT }}>
+                Customer Service Dashboard
+              </div>
+            </div>
+          </div>
+
+          {/* Last scrub indicator */}
           {upload && (
-            <span style={{ fontSize: 11, color: C.muted }}>
-              Last scrub: {new Date(upload.uploaded_at).toLocaleString()} ({fmt(upload.final_row_count)} accounts)
-            </span>
+            <div style={{ fontSize: 11, color: C.secondary, textAlign: "right" }}>
+              <div style={{ fontWeight: 600, color: C.text }}>Last Scrub</div>
+              <div>{new Date(upload.uploaded_at).toLocaleString()} &middot; {fmt(upload.final_row_count)} accounts</div>
+            </div>
           )}
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+      </div>
+
+      {/* ── Tab Bar ─────────────────────────────────────────────────────────── */}
+      <div style={{ maxWidth: 1400, margin: "0 auto", padding: "16px 24px 0" }}>
+        <div
+          style={{
+            display: "flex",
+            background: C.card,
+            borderRadius: 12,
+            padding: 4,
+            gap: 4,
+          }}
+        >
           {TABS.map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
               style={{
-                padding: "6px 14px",
-                borderRadius: 6,
+                flex: 1,
+                padding: "10px 16px",
                 border: "none",
-                fontSize: 12,
+                borderRadius: 8,
+                fontSize: 13,
                 fontWeight: 600,
                 fontFamily: FONT,
                 cursor: "pointer",
-                background: tab === t ? C.teal : "transparent",
+                transition: "all 0.2s",
                 color: tab === t ? "#000" : C.secondary,
+                background: tab === t ? `linear-gradient(135deg, ${C.teal}, ${C.tealDark})` : "transparent",
               }}
             >
               {t}
@@ -407,86 +470,89 @@ export default function CSPage() {
 
       {/* ── Error Banner ────────────────────────────────────────────────────── */}
       {error && (
-        <div
-          style={{
-            margin: "8px 24px",
-            padding: "8px 12px",
-            background: "#7F1D1D",
-            color: "#FCA5A5",
-            borderRadius: 6,
-            fontSize: 12,
-            display: "flex",
-            justifyContent: "space-between",
-          }}
-        >
-          <span>{error}</span>
-          <button
-            onClick={() => setError("")}
-            style={{ background: "none", border: "none", color: "#FCA5A5", cursor: "pointer" }}
+        <div style={{ maxWidth: 1400, margin: "8px auto 0", padding: "0 24px" }}>
+          <div
+            style={{
+              padding: "8px 12px",
+              background: "#7F1D1D",
+              color: "#FCA5A5",
+              borderRadius: 6,
+              fontSize: 12,
+              display: "flex",
+              justifyContent: "space-between",
+            }}
           >
-            X
-          </button>
+            <span>{error}</span>
+            <button
+              onClick={() => setError("")}
+              style={{ background: "none", border: "none", color: "#FCA5A5", cursor: "pointer" }}
+            >
+              X
+            </button>
+          </div>
         </div>
       )}
 
       {/* ── Pull Status Banner ──────────────────────────────────────────────── */}
       {pullStatus?.pull_status === "waiting_schedule" && (
-        <div
-          style={{
-            margin: "8px 24px",
-            padding: "10px 16px",
-            background: "linear-gradient(135deg, #78350F 0%, #92400E 100%)",
-            color: "#FDE68A",
-            borderRadius: 8,
-            fontSize: 13,
-            fontWeight: 600,
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-          }}
-        >
-          <span style={{ fontSize: 18 }}>!</span>
-          <span>
-            PBS pull is waiting — set today&apos;s rep schedule and save it. The pull will run automatically once saved.
-          </span>
-          <button
-            onClick={() => setTab("Rep Schedule")}
+        <div style={{ maxWidth: 1400, margin: "8px auto 0", padding: "0 24px" }}>
+          <div
             style={{
-              marginLeft: "auto",
-              padding: "5px 14px",
-              borderRadius: 6,
-              border: "none",
-              background: "#F59E0B",
-              color: "#000",
-              fontSize: 12,
-              fontWeight: 700,
-              cursor: "pointer",
-              fontFamily: FONT,
-              whiteSpace: "nowrap",
+              padding: "10px 16px",
+              background: "linear-gradient(135deg, #78350F 0%, #92400E 100%)",
+              color: "#FDE68A",
+              borderRadius: 8,
+              fontSize: 13,
+              fontWeight: 600,
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
             }}
           >
-            Set Schedule
-          </button>
+            <span style={{ fontSize: 18 }}>!</span>
+            <span>
+              PBS pull is waiting — set today&apos;s rep schedule and save it. The pull will run automatically once saved.
+            </span>
+            <button
+              onClick={() => { setTab("Performance"); setShowManageReps(true); }}
+              style={{
+                marginLeft: "auto",
+                padding: "5px 14px",
+                borderRadius: 6,
+                border: "none",
+                background: "#F59E0B",
+                color: "#000",
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: "pointer",
+                fontFamily: FONT,
+                whiteSpace: "nowrap",
+              }}
+            >
+              Manage Reps
+            </button>
+          </div>
         </div>
       )}
       {pullStatus?.pull_status === "complete" && pullStatus.accounts_distributed && pullStatus.accounts_distributed > 0 && (
-        <div
-          style={{
-            margin: "8px 24px",
-            padding: "8px 16px",
-            background: "rgba(16,185,129,0.1)",
-            border: `1px solid rgba(16,185,129,0.3)`,
-            color: C.green,
-            borderRadius: 8,
-            fontSize: 12,
-          }}
-        >
-          Today&apos;s pull complete — {fmt(pullStatus.accounts_distributed)} accounts distributed
+        <div style={{ maxWidth: 1400, margin: "8px auto 0", padding: "0 24px" }}>
+          <div
+            style={{
+              padding: "8px 16px",
+              background: "rgba(16,185,129,0.1)",
+              border: `1px solid rgba(16,185,129,0.3)`,
+              color: C.green,
+              borderRadius: 8,
+              fontSize: 12,
+            }}
+          >
+            Today&apos;s pull complete — {fmt(pullStatus.accounts_distributed)} accounts distributed
+          </div>
         </div>
       )}
 
       {/* ── Tab Content ─────────────────────────────────────────────────────── */}
-      <div style={{ padding: "16px 24px" }}>
+      <div style={{ maxWidth: 1400, margin: "0 auto", padding: "16px 24px 48px" }}>
         {tab === "Work List" && (
           <WorkListTab
             accounts={accounts}
@@ -500,23 +566,48 @@ export default function CSPage() {
             updateDispo={updateDispo}
           />
         )}
-        {tab === "Upload & Scrub" && (
-          <UploadTab
-            file={file}
-            setFile={setFile}
-            schedule={schedule}
-            setSchedule={setSchedule}
-            uploading={uploading}
-            scrubResult={scrubResult}
-            handleScrub={handleScrub}
-            saveSchedule={saveSchedule}
+        {tab === "Performance" && (
+          <PerformanceTab
+            perfData={perfData}
+            perfMonth={perfMonth}
+            setPerfMonth={setPerfMonth}
+            onManageReps={() => setShowManageReps(true)}
           />
         )}
-        {tab === "Performance" && <PerformanceTab perfData={perfData} perfMonth={perfMonth} setPerfMonth={setPerfMonth} />}
-        {tab === "Rep Schedule" && (
-          <ScheduleTab schedule={schedule} setSchedule={setSchedule} saveSchedule={saveSchedule} />
+        {tab === "Availability" && (
+          <ComingSoon
+            title="Availability — Coming Soon"
+            desc="Real-time agent availability tracking: Idle, Talk, RONA, and Break time per rep. Same metrics as the Sales dashboard's availability view, scoped to the Collections team."
+          />
+        )}
+        {tab === "Trends" && (
+          <ComingSoon
+            title="Trends — Coming Soon"
+            desc="Daily and weekly trend charts for collections, conversion rates, call volume, and disposition mix. Powered by historical data from the daily stats sync."
+          />
+        )}
+        {tab === "Text Owners" && (
+          <ComingSoon
+            title="Text Owners — Coming Soon"
+            desc="Send SMS reminders to account owners with past-due balances. Pending Twilio A2P 10DLC campaign approval."
+          />
         )}
       </div>
+
+      {/* ── Manage Reps Modal ───────────────────────────────────────────────── */}
+      {showManageReps && (
+        <ManageRepsModal
+          schedule={schedule}
+          setSchedule={setSchedule}
+          saveSchedule={saveSchedule}
+          file={file}
+          setFile={setFile}
+          uploading={uploading}
+          scrubResult={scrubResult}
+          handleScrub={handleScrub}
+          onClose={() => setShowManageReps(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1107,7 +1198,7 @@ function WTd({ children, style, colSpan }: { children?: React.ReactNode; style?:
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function PerformanceTab({ perfData, perfMonth, setPerfMonth }: { perfData: any; perfMonth: string; setPerfMonth: (m: string) => void }) {
+function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps }: { perfData: any; perfMonth: string; setPerfMonth: (m: string) => void; onManageReps: () => void }) {
   // Date range for stats view
   const [statsStart, setStatsStart] = useState(todayStr());
   const [statsEnd, setStatsEnd] = useState(todayStr());
@@ -1274,7 +1365,7 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth }: { perfData: any; 
 
   return (
     <div>
-      {/* Header: Title + Export */}
+      {/* Header: Title + Export + Manage Reps */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
         <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>Collections Performance</h2>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
@@ -1283,12 +1374,34 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth }: { perfData: any; 
             onClick={exportCSV}
             disabled={exporting || !perfData}
             style={{
-              background: C.teal, color: "#fff", border: "none", borderRadius: 6,
+              background: C.teal, color: "#000", border: "none", borderRadius: 8,
               padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
               opacity: exporting || !perfData ? 0.6 : 1,
             }}
           >
             {exporting ? "Exporting..." : "Export Weekly Report"}
+          </button>
+          <button
+            onClick={onManageReps}
+            style={{
+              background: C.card,
+              color: C.secondary,
+              border: `1px solid ${C.border}`,
+              borderRadius: 8,
+              padding: "8px 14px",
+              fontSize: 12,
+              fontWeight: 600,
+              fontFamily: FONT,
+              cursor: "pointer",
+              transition: "all 0.2s",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = C.teal; e.currentTarget.style.color = C.text; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.secondary; }}
+          >
+            &#9881; Manage Reps
           </button>
         </div>
       </div>
@@ -1646,6 +1759,154 @@ function ScheduleTab({
         >
           {saved ? "Saved!" : "Save Schedule"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   MANAGE REPS MODAL
+   ══════════════════════════════════════════════════════════════════════════════ */
+function ManageRepsModal({
+  schedule,
+  setSchedule,
+  saveSchedule,
+  file,
+  setFile,
+  uploading,
+  scrubResult,
+  handleScrub,
+  onClose,
+}: {
+  schedule: RepScheduleEntry[];
+  setSchedule: (s: RepScheduleEntry[]) => void;
+  saveSchedule: () => void;
+  file: File | null;
+  setFile: (f: File | null) => void;
+  uploading: boolean;
+  scrubResult: ScrubSummary | null;
+  handleScrub: () => void;
+  onClose: () => void;
+}) {
+  const [section, setSection] = useState<"schedule" | "upload">("schedule");
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.7)",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        padding: "60px 20px 20px",
+        overflowY: "auto",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: C.bg,
+          borderRadius: 12,
+          border: `1px solid ${C.border}`,
+          maxWidth: 820,
+          width: "100%",
+          maxHeight: "90vh",
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
+        }}
+      >
+        {/* Modal Header */}
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: `1px solid ${C.border}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            background: `linear-gradient(135deg, ${C.tealDark} 0%, ${C.bg} 100%)`,
+          }}
+        >
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: C.text }}>Manage Reps</h2>
+          <button
+            onClick={onClose}
+            style={{
+              background: "transparent",
+              border: `1px solid ${C.border}`,
+              color: C.secondary,
+              borderRadius: 6,
+              padding: "4px 12px",
+              cursor: "pointer",
+              fontSize: 12,
+              fontFamily: FONT,
+            }}
+          >
+            Close
+          </button>
+        </div>
+
+        {/* Section toggle */}
+        <div style={{ padding: "12px 20px 0", display: "flex", gap: 6 }}>
+          <button
+            onClick={() => setSection("schedule")}
+            style={{
+              padding: "6px 14px",
+              borderRadius: 6,
+              border: "none",
+              fontSize: 12,
+              fontWeight: 700,
+              fontFamily: FONT,
+              cursor: "pointer",
+              background: section === "schedule" ? C.teal : "transparent",
+              color: section === "schedule" ? "#000" : C.secondary,
+            }}
+          >
+            Schedule & Distribution
+          </button>
+          <button
+            onClick={() => setSection("upload")}
+            style={{
+              padding: "6px 14px",
+              borderRadius: 6,
+              border: "none",
+              fontSize: 12,
+              fontWeight: 700,
+              fontFamily: FONT,
+              cursor: "pointer",
+              background: section === "upload" ? C.teal : "transparent",
+              color: section === "upload" ? "#000" : C.secondary,
+            }}
+          >
+            Upload PBS Report
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: 20, overflowY: "auto", flex: 1 }}>
+          {section === "schedule" && (
+            <ScheduleTab
+              schedule={schedule}
+              setSchedule={setSchedule}
+              saveSchedule={saveSchedule}
+            />
+          )}
+          {section === "upload" && (
+            <UploadTab
+              file={file}
+              setFile={setFile}
+              schedule={schedule}
+              setSchedule={setSchedule}
+              uploading={uploading}
+              scrubResult={scrubResult}
+              handleScrub={handleScrub}
+              saveSchedule={saveSchedule}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
