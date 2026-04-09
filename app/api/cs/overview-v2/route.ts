@@ -115,19 +115,23 @@ async function computeDay(date: string): Promise<DayMetrics> {
   const followups = accts.filter((a) => a.is_followup);
 
   // ── 2. Pull today's calls ─────────────────────────────────────────────────
-  const callsRes = await query(
-    `SELECT phone, direction, queue_name, status, started_at
-     FROM cs_raw_calls
-     WHERE call_date = $1`,
+  // Phase 1 data sources:
+  //   - Outbound calls: cs_outbound_calls (populated by seed-refresh every 15 min)
+  //   - Inbound calls: queue_calls (populated by seed-refresh every 15 min)
+  //   - cs_raw_calls is empty until Lenovo's realtime poller is online
+  // When cs_raw_calls has data, we use it as primary (has direction, queue, status).
+  // Until then, fall back to the tables that seed-refresh populates.
+
+  const rawCallsRes = await query(
+    `SELECT COUNT(*) AS cnt FROM cs_raw_calls WHERE call_date = $1`,
     [date]
   );
+  const hasRawCalls = parseInt(rawCallsRes.rows[0]?.cnt || "0", 10) > 0;
 
   // Build phone → account(s) lookup, only for workable
   const phoneToZero = new Map<string, boolean>(); // phone -> is_zero (if phone belongs to workable)
   for (const a of workable) {
     for (const p of a.phones) {
-      // If a phone belongs to both a zero-pay and non-zero workable (rare),
-      // prefer zero-pay for the match (more aggressive collection priority).
       const existing = phoneToZero.get(p);
       if (existing === undefined) phoneToZero.set(p, a.is_zero);
       else if (a.is_zero) phoneToZero.set(p, true);
@@ -141,65 +145,79 @@ async function computeDay(date: string): Promise<DayMetrics> {
   const outboundPhonesHitZero = new Set<string>();
   const outboundPhonesHitNon = new Set<string>();
 
-  // Inbound answered / abandoned counts (only to collections queue, business hours)
+  // Inbound answered / abandoned counts
   let inboundAnswered = 0;
   let abandoned = 0;
   const inboundPhonesHit = new Set<string>();
   const inboundPhonesHitZero = new Set<string>();
   const inboundPhonesHitNon = new Set<string>();
-  const unansweredPhones = new Set<string>(); // phone-level dedup for unanswered
-  const answeredPhones = new Set<string>();   // phones that got answered at least once
+  const unansweredPhones = new Set<string>();
+  const answeredPhones = new Set<string>();
 
-  for (const c of callsRes.rows) {
-    const phone = (c.phone || "").trim();
-    const dir = (c.direction || "").trim();
-    const queue = (c.queue_name || "").trim();
-    const status = (c.status || "").trim().toLowerCase();
-    const startedAt: Date | null = c.started_at ? new Date(c.started_at) : null;
+  if (hasRawCalls) {
+    // ── Primary path: cs_raw_calls has data (Lenovo poller online) ──────
+    const callsRes = await query(
+      `SELECT phone, direction, queue_name, status, started_at
+       FROM cs_raw_calls WHERE call_date = $1`,
+      [date]
+    );
+    for (const c of callsRes.rows) {
+      const phone = (c.phone || "").trim();
+      const dir = (c.direction || "").trim();
+      const queue = (c.queue_name || "").trim();
+      const status = (c.status || "").trim().toLowerCase();
+      const startedAt: Date | null = c.started_at ? new Date(c.started_at) : null;
 
-    // CT business-hours window
-    let inBH = false;
-    if (startedAt) {
-      const hourStr = new Intl.DateTimeFormat("en-US", {
-        timeZone: CT_TZ, hour: "numeric", hour12: false,
-      }).format(startedAt);
-      const hour = parseInt(hourStr, 10);
-      inBH = hour >= 8 && hour < 19;
+      let inBH = false;
+      if (startedAt) {
+        const hourStr = new Intl.DateTimeFormat("en-US", {
+          timeZone: CT_TZ, hour: "numeric", hour12: false,
+        }).format(startedAt);
+        const hour = parseInt(hourStr, 10);
+        inBH = hour >= 8 && hour < 19;
+      }
+
+      if (dir === "Outbound") {
+        if (phone && phoneToZero.has(phone)) {
+          const isZero = phoneToZero.get(phone)!;
+          if (isZero) { zeroPayCalls += 1; outboundPhonesHitZero.add(phone); }
+          else { nonZeroCalls += 1; outboundPhonesHitNon.add(phone); }
+          outboundPhonesHit.add(phone);
+        }
+      } else if (dir === "Inbound") {
+        const isCollections = /collections/i.test(queue);
+        if (!isCollections || !inBH) continue;
+        if (status === "answered") { inboundAnswered += 1; if (phone) answeredPhones.add(phone); }
+        else if (status === "unanswered") { abandoned += 1; if (phone) unansweredPhones.add(phone); }
+        if (phone && phoneToZero.has(phone)) {
+          const isZero = phoneToZero.get(phone)!;
+          if (isZero) inboundPhonesHitZero.add(phone); else inboundPhonesHitNon.add(phone);
+          inboundPhonesHit.add(phone);
+        }
+      }
     }
-
-    if (dir === "Outbound") {
-      // Every outbound call counts for call totals, by workable match
+  } else {
+    // ── Fallback path: use cs_outbound_calls + queue_calls from seed-refresh ──
+    // Outbound calls from cs_outbound_calls (phone, call_time, agent_name)
+    const outRes = await query(
+      `SELECT phone, call_time FROM cs_outbound_calls
+       WHERE call_time::date = $1::date`,
+      [date]
+    );
+    for (const c of outRes.rows) {
+      const phone = (c.phone || "").trim();
       if (phone && phoneToZero.has(phone)) {
         const isZero = phoneToZero.get(phone)!;
-        if (isZero) {
-          zeroPayCalls += 1;
-          outboundPhonesHitZero.add(phone);
-        } else {
-          nonZeroCalls += 1;
-          outboundPhonesHitNon.add(phone);
-        }
+        if (isZero) { zeroPayCalls += 1; outboundPhonesHitZero.add(phone); }
+        else { nonZeroCalls += 1; outboundPhonesHitNon.add(phone); }
         outboundPhonesHit.add(phone);
       }
-    } else if (dir === "Inbound") {
-      // Inbound only counts if it hit the collections queue in business hours
-      const isCollections = /collections/i.test(queue);
-      if (!isCollections || !inBH) continue;
-      if (status === "answered") {
-        inboundAnswered += 1;
-        if (phone) answeredPhones.add(phone);
-      } else if (status === "unanswered") {
-        abandoned += 1;
-        if (phone) unansweredPhones.add(phone);
-      }
-
-      // For percentage calculations, inbound phones matching workable count too
-      if (phone && phoneToZero.has(phone)) {
-        const isZero = phoneToZero.get(phone)!;
-        if (isZero) inboundPhonesHitZero.add(phone);
-        else inboundPhonesHitNon.add(phone);
-        inboundPhonesHit.add(phone);
-      }
     }
+
+    // Inbound collections calls: queue_calls only tracks sales queues (mail/home),
+    // NOT collections. Inbound data will come from cs_raw_calls once Lenovo's
+    // poller is online. Until then, inbound metrics stay at 0.
+    // No-op for now — inboundAnswered, abandoned stay 0.
   }
 
   // ── 3. Aggregates ────────────────────────────────────────────────────────
