@@ -97,25 +97,32 @@ export async function syncDisposFromSheet(): Promise<{
       continue;
     }
 
-    // Check if anything changed
+    // Parse the date from the sheet BEFORE change detection
+    // Supports M/D/YYYY, MM/DD/YYYY, and YYYY-MM-DD formats
+    let parsedDate: string | null = null;
+    if (sheetDate) {
+      const mdyParts = sheetDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (mdyParts) {
+        parsedDate = `${mdyParts[3]}-${mdyParts[1].padStart(2, "0")}-${mdyParts[2].padStart(2, "0")}`;
+      } else if (/^\d{4}-\d{2}-\d{2}/.test(sheetDate)) {
+        parsedDate = sheetDate.slice(0, 10);
+      }
+    }
+
+    // Compare DB date (may be "YYYY-MM-DDT05:00:00.000Z" from pg) to parsed date
+    const dbDateNorm = dbRow.dispo_date ? dbRow.dispo_date.slice(0, 10) : null;
+
+    // Check if anything changed (including date)
     const dbEmailSent = dbRow.email_sent || false;
     if (
       sheetRep === dbRow.assigned_rep &&
       sheetDispo1 === dbRow.dispo_1 &&
       sheetDispo2 === dbRow.dispo_2 &&
-      sheetEmailSent === dbEmailSent
+      sheetEmailSent === dbEmailSent &&
+      parsedDate === dbDateNorm
     ) {
       skipped++;
       continue;
-    }
-
-    // Parse the date from the sheet (could be M/D/YYYY or empty)
-    let parsedDate: string | null = null;
-    if (sheetDate) {
-      const parts = sheetDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-      if (parts) {
-        parsedDate = `${parts[3]}-${parts[1].padStart(2, "0")}-${parts[2].padStart(2, "0")}`;
-      }
     }
 
     // Update DB with sheet values (sheet wins during transition period)
