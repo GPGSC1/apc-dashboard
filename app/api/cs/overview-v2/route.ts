@@ -171,10 +171,11 @@ async function computeDay(date: string): Promise<DayMetrics> {
   // ── INBOUND: read from cs_raw_calls if available (has direction, queue, status) ──
   // cs_raw_calls is populated by Lenovo's poller. queue_calls only tracks sales queues.
   {
+    // Case-insensitive direction match (Lenovo's poller writes mixed case)
     const rawInRes = await query(
       `SELECT phone, queue_name, status, started_at
        FROM cs_raw_calls
-       WHERE call_date = $1 AND direction = 'Inbound'`,
+       WHERE call_date = $1 AND LOWER(direction) = 'inbound'`,
       [date]
     );
     for (const c of rawInRes.rows) {
@@ -186,7 +187,9 @@ async function computeDay(date: string): Promise<DayMetrics> {
       const isCollections = /collections/i.test(queue);
       if (!isCollections) continue;
 
-      let inBH = false;
+      // If started_at exists, check business hours. If null, assume in BH
+      // (the call happened today per call_date, most calls are during BH).
+      let inBH = true;
       if (startedAt) {
         const hourStr = new Intl.DateTimeFormat("en-US", {
           timeZone: CT_TZ, hour: "numeric", hour12: false,
