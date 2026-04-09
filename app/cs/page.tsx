@@ -862,7 +862,10 @@ function WorkListTab({
           label="Total Amount Collected"
           value={amts ? fmtMoney(amts.total_collected) : "—"}
           color={C.green}
-          sub={amts && amts.amt_due_workable ? `${((amts.total_collected / amts.amt_due_workable) * 100).toFixed(1)}% of list collected` : undefined}
+          sub={amts ? [
+            amts.amt_due_workable ? `${((amts.total_collected / amts.amt_due_workable) * 100).toFixed(1)}% of list collected` : "",
+            amts.scheduled_amt ? `${fmtMoney(amts.scheduled_amt)} scheduled` : "",
+          ].filter(Boolean).join(" · ") || undefined : undefined}
         />
         <StatBox
           label={`\u00D8 Pay`}
@@ -963,29 +966,25 @@ function WorkListTab({
           No accounts found for this date. Upload a PBS report in the Upload tab.
         </div>
       ) : (
-        <div style={{ overflowX: "auto", borderRadius: 8, border: `1px solid ${C.border}` }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <div style={{ borderRadius: 8, border: `1px solid ${C.border}` }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
             <thead>
               <tr style={{ background: C.card }}>
-                <Th onClick={() => handleSort("assigned_rep")}>Rep{arrow("assigned_rep")}</Th>
-                <Th onClick={() => handleSort("account_number")}>Account{arrow("account_number")}</Th>
-                <Th onClick={() => handleSort("insured_name")}>Name{arrow("insured_name")}</Th>
-                <Th onClick={() => handleSort("installments_made")}>Inst{arrow("installments_made")}</Th>
-                <Th onClick={() => handleSort("amount_due")}>Amt Due{arrow("amount_due")}</Th>
-                <Th onClick={() => handleSort("next_due_date")}>Due Date{arrow("next_due_date")}</Th>
-                <Th onClick={() => handleSort("sched_cxl_date")}>CXL Date{arrow("sched_cxl_date")}</Th>
-                <Th>Phone 1</Th>
-                <Th onClick={() => handleSort("last_called_phone1")}>Called{arrow("last_called_phone1")}</Th>
-                <Th>Phone 2</Th>
-                <Th onClick={() => handleSort("last_called_phone2")}>Called{arrow("last_called_phone2")}</Th>
-                <Th>Mobile</Th>
-                <Th onClick={() => handleSort("last_called_mobile")}>Called{arrow("last_called_mobile")}</Th>
-                <Th onClick={() => handleSort("billing_method")}>Billing{arrow("billing_method")}</Th>
-                <Th onClick={() => handleSort("state")}>State{arrow("state")}</Th>
-                <Th style={{ minWidth: 120 }}>Dispo 1</Th>
-                <Th style={{ minWidth: 100 }}>Dispo 2</Th>
-                <Th style={{ minWidth: 90 }}>Date</Th>
-                <Th>Email</Th>
+                <Th onClick={() => handleSort("assigned_rep")} style={{ width: 55 }}>Rep{arrow("assigned_rep")}</Th>
+                <Th onClick={() => handleSort("account_number")} style={{ width: 100 }}>Acct{arrow("account_number")}</Th>
+                <Th onClick={() => handleSort("insured_name")} style={{ width: 110 }}>Name{arrow("insured_name")}</Th>
+                <Th onClick={() => handleSort("installments_made")} style={{ width: 28 }}>I{arrow("installments_made")}</Th>
+                <Th onClick={() => handleSort("amount_due")} style={{ width: 65 }}>Due{arrow("amount_due")}</Th>
+                <Th onClick={() => handleSort("next_due_date")} style={{ width: 58 }}>Due Dt{arrow("next_due_date")}</Th>
+                <Th onClick={() => handleSort("sched_cxl_date")} style={{ width: 58 }}>CXL{arrow("sched_cxl_date")}</Th>
+                <Th style={{ width: 95 }}>Phone 1</Th>
+                <Th style={{ width: 95 }}>Phone 2</Th>
+                <Th style={{ width: 95 }}>Mobile</Th>
+                <Th onClick={() => handleSort("state")} style={{ width: 28 }}>St{arrow("state")}</Th>
+                <Th style={{ width: 100 }}>Dispo 1</Th>
+                <Th style={{ width: 80 }}>Dispo 2</Th>
+                <Th style={{ width: 80 }}>Date</Th>
+                <Th style={{ width: 24 }}>Em</Th>
               </tr>
             </thead>
             <tbody>
@@ -1000,71 +999,56 @@ function WorkListTab({
                       : "3px solid transparent",
                   }}
                 >
-                  <Td style={{ fontWeight: 600, fontSize: 11 }}>{a.assigned_rep}</Td>
-                  <Td style={{ fontSize: 11, fontFamily: "monospace" }}>
+                  <Td style={{ fontWeight: 600, fontSize: 10, overflow: "hidden", textOverflow: "ellipsis" }}>{a.assigned_rep}</Td>
+                  <Td style={{ fontSize: 9, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {a.account_number}
                     {a.is_carryover && (
                       <span style={{
-                        marginLeft: 4, fontSize: 8, fontWeight: 700, fontFamily: FONT,
-                        color: C.teal, border: `1px solid ${C.teal}`, borderRadius: 3,
-                        padding: "0 3px", verticalAlign: "middle",
+                        marginLeft: 2, fontSize: 7, fontWeight: 700, fontFamily: FONT,
+                        color: C.teal, border: `1px solid ${C.teal}`, borderRadius: 2,
+                        padding: "0 2px", verticalAlign: "middle",
                       }}>CO</span>
                     )}
                   </Td>
-                  <Td style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" }}>
+                  <Td style={{ overflow: "hidden", textOverflow: "ellipsis", fontSize: 10 }}>
                     {a.insured_name}
                   </Td>
-                  <Td
-                    style={{
-                      textAlign: "center",
-                      color: a.installments_made === 0 ? C.amber : C.text,
-                      fontWeight: a.installments_made === 0 ? 700 : 400,
-                    }}
-                  >
+                  <Td style={{ textAlign: "center", color: a.installments_made === 0 ? C.amber : C.text, fontWeight: a.installments_made === 0 ? 700 : 400, fontSize: 10 }}>
                     {a.installments_made}
                   </Td>
-                  <Td style={{ textAlign: "right" }}>{fmtMoney(a.amount_due)}</Td>
-                  <Td>{shortDate(a.next_due_date)}</Td>
-                  <Td>{shortDate(a.sched_cxl_date)}</Td>
-                  <Td style={{ fontSize: 11 }}>{a.main_phone}</Td>
-                  <Td style={{ fontSize: 10, textAlign: "center" }}>
-                    {(() => {
-                      if (!a.last_called_phone1) return <span style={{ color: C.muted }}>--</span>;
-                      const today = todayStr();
-                      const d = a.last_called_phone1.slice(0, 10);
-                      const daysAgo = Math.floor((new Date(today).getTime() - new Date(d).getTime()) / 86400000);
-                      const color = daysAgo === 0 ? C.green : daysAgo <= 2 ? C.amber : C.red;
-                      return <span style={{ color, fontWeight: 600 }}>{shortDateTime(a.last_called_phone1)}</span>;
-                    })()}
+                  <Td style={{ textAlign: "right", fontSize: 10 }}>{fmtMoney(a.amount_due)}</Td>
+                  <Td style={{ fontSize: 9 }}>{shortDate(a.next_due_date)}</Td>
+                  <Td style={{ fontSize: 9 }}>{shortDate(a.sched_cxl_date)}</Td>
+                  {/* Phone 1 + called stacked */}
+                  <Td style={{ fontSize: 9, lineHeight: 1.3 }}>
+                    <div>{a.main_phone}</div>
+                    {a.last_called_phone1 && a.last_called_phone1.slice(0, 10) === todayStr() ? (
+                      <div style={{ fontSize: 8, color: C.green, fontWeight: 600 }}>{shortDateTime(a.last_called_phone1)}</div>
+                    ) : null}
                   </Td>
-                  <Td style={{ fontSize: 11, color: a.work_phone && a.work_phone !== a.main_phone ? C.text : C.muted }}>
-                    {a.work_phone && a.work_phone !== a.main_phone ? a.work_phone : ""}
+                  {/* Phone 2 + called stacked */}
+                  <Td style={{ fontSize: 9, lineHeight: 1.3, color: a.work_phone && a.work_phone !== a.main_phone ? C.text : C.muted }}>
+                    {a.work_phone && a.work_phone !== a.main_phone ? (
+                      <>
+                        <div>{a.work_phone}</div>
+                        {a.last_called_phone2 && a.last_called_phone2.slice(0, 10) === todayStr() ? (
+                          <div style={{ fontSize: 8, color: C.green, fontWeight: 600 }}>{shortDateTime(a.last_called_phone2)}</div>
+                        ) : null}
+                      </>
+                    ) : null}
                   </Td>
-                  <Td style={{ fontSize: 10, textAlign: "center" }}>
-                    {(() => {
-                      if (!a.work_phone || a.work_phone === a.main_phone || !a.last_called_phone2) return <span style={{ color: C.muted }}>--</span>;
-                      const today = todayStr();
-                      const d = a.last_called_phone2.slice(0, 10);
-                      const daysAgo = Math.floor((new Date(today).getTime() - new Date(d).getTime()) / 86400000);
-                      const color = daysAgo === 0 ? C.green : daysAgo <= 2 ? C.amber : C.red;
-                      return <span style={{ color, fontWeight: 600 }}>{shortDateTime(a.last_called_phone2)}</span>;
-                    })()}
+                  {/* Mobile + called stacked */}
+                  <Td style={{ fontSize: 9, lineHeight: 1.3, color: a.mobile_phone && a.mobile_phone !== a.main_phone && a.mobile_phone !== a.work_phone ? C.text : C.muted }}>
+                    {a.mobile_phone && a.mobile_phone !== a.main_phone && a.mobile_phone !== a.work_phone ? (
+                      <>
+                        <div>{a.mobile_phone}</div>
+                        {a.last_called_mobile && a.last_called_mobile.slice(0, 10) === todayStr() ? (
+                          <div style={{ fontSize: 8, color: C.green, fontWeight: 600 }}>{shortDateTime(a.last_called_mobile)}</div>
+                        ) : null}
+                      </>
+                    ) : null}
                   </Td>
-                  <Td style={{ fontSize: 11, color: a.mobile_phone && a.mobile_phone !== a.main_phone && a.mobile_phone !== a.work_phone ? C.text : C.muted }}>
-                    {a.mobile_phone && a.mobile_phone !== a.main_phone && a.mobile_phone !== a.work_phone ? a.mobile_phone : ""}
-                  </Td>
-                  <Td style={{ fontSize: 10, textAlign: "center" }}>
-                    {(() => {
-                      if (!a.mobile_phone || a.mobile_phone === a.main_phone || a.mobile_phone === a.work_phone || !a.last_called_mobile) return <span style={{ color: C.muted }}>--</span>;
-                      const today = todayStr();
-                      const d = a.last_called_mobile.slice(0, 10);
-                      const daysAgo = Math.floor((new Date(today).getTime() - new Date(d).getTime()) / 86400000);
-                      const color = daysAgo === 0 ? C.green : daysAgo <= 2 ? C.amber : C.red;
-                      return <span style={{ color, fontWeight: 600 }}>{shortDateTime(a.last_called_mobile)}</span>;
-                    })()}
-                  </Td>
-                  <Td style={{ fontSize: 10 }}>{a.billing_method}</Td>
-                  <Td style={{ textAlign: "center", fontSize: 10 }}>{a.state}</Td>
+                  <Td style={{ textAlign: "center", fontSize: 9 }}>{a.state}</Td>
                   <Td>
                     <select
                       value={a.dispo_1 || ""}
@@ -1075,7 +1059,7 @@ function WorkListTab({
                         border: `1px solid ${C.border}`,
                         borderRadius: 3,
                         padding: "2px 4px",
-                        fontSize: 11,
+                        fontSize: 10,
                         fontFamily: FONT,
                         width: "100%",
                       }}
@@ -1099,8 +1083,8 @@ function WorkListTab({
                         color: C.text,
                         border: `1px solid ${C.border}`,
                         borderRadius: 3,
-                        padding: "2px 4px",
-                        fontSize: 11,
+                        padding: "1px 3px",
+                        fontSize: 10,
                         fontFamily: FONT,
                         width: "100%",
                       }}
@@ -1116,10 +1100,10 @@ function WorkListTab({
                         color: C.text,
                         border: `1px solid ${C.border}`,
                         borderRadius: 3,
-                        padding: "2px 4px",
-                        fontSize: 10,
+                        padding: "1px 2px",
+                        fontSize: 9,
                         fontFamily: FONT,
-                        width: 90,
+                        width: "100%",
                       }}
                     />
                   </Td>

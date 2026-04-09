@@ -51,7 +51,7 @@ interface DayMetrics {
   records: { total: number; zero: number; non_zero: number; followups: number; followups_zero: number; followups_non_zero: number };
   calls: { zero_pay_calls: number; non_zero_calls: number; inbound_answered: number; abandoned: number; unanswered_phones: number };
   percentages: { list_complete: number; zero_pay_pct: number; non_zero_pct: number; available_to_collect: number; unanswered_pct: number };
-  amounts: { total_collected: number; zero_pay_collected: number; non_zero_collected: number; amt_due_workable: number };
+  amounts: { total_collected: number; zero_pay_collected: number; non_zero_collected: number; amt_due_workable: number; scheduled_amt: number };
   _sums: {
     amt_due_workable: number;
     unique_phones_touched_any: number;
@@ -214,6 +214,7 @@ async function computeDay(date: string): Promise<DayMetrics> {
   const totalCollected = workable.filter((a) => a.is_collected).reduce((s, a) => s + a.amount_due, 0);
   const zeroCollected = workable.filter((a) => a.is_collected && a.is_zero).reduce((s, a) => s + a.amount_due, 0);
   const nonZeroCollected = totalCollected - zeroCollected;
+  const scheduledAmt = accts.filter((a) => /^scheduled\s+pdp$/i.test(a.dispo_1)).reduce((s, a) => s + a.amount_due, 0);
 
   // Unique phones across inbound + outbound (per spec: "unique outbound and inbound phones")
   const uniqueAny = new Set<string>([...outboundPhonesHit, ...inboundPhonesHit]);
@@ -258,6 +259,7 @@ async function computeDay(date: string): Promise<DayMetrics> {
       zero_pay_collected: zeroCollected,
       non_zero_collected: nonZeroCollected,
       amt_due_workable: amtDueWorkable,
+      scheduled_amt: scheduledAmt,
     },
     _sums: {
       amt_due_workable: amtDueWorkable,
@@ -285,7 +287,7 @@ export async function GET(request: Request) {
       records: { total: 0, zero: 0, non_zero: 0, followups: 0, followups_zero: 0, followups_non_zero: 0 },
       calls: { zero_pay_calls: 0, non_zero_calls: 0, inbound_answered: 0, abandoned: 0, unanswered_phones: 0 },
       percentages: { list_complete: 0, zero_pay_pct: 0, non_zero_pct: 0, available_to_collect: 0, unanswered_pct: 0 },
-      amounts: { total_collected: 0, zero_pay_collected: 0, non_zero_collected: 0, amt_due_workable: 0 },
+      amounts: { total_collected: 0, zero_pay_collected: 0, non_zero_collected: 0, amt_due_workable: 0, scheduled_amt: 0 },
       _sums: { amt_due_workable: 0, unique_phones_touched_any: 0, unique_phones_touched_zero: 0, unique_phones_touched_non_zero: 0 },
     };
 
@@ -305,6 +307,7 @@ export async function GET(request: Request) {
       agg.amounts.zero_pay_collected += d.amounts.zero_pay_collected;
       agg.amounts.non_zero_collected += d.amounts.non_zero_collected;
       agg.amounts.amt_due_workable += d.amounts.amt_due_workable;
+      agg.amounts.scheduled_amt += d.amounts.scheduled_amt;
 
       agg._sums.amt_due_workable += d._sums.amt_due_workable;
       agg._sums.unique_phones_touched_any += d._sums.unique_phones_touched_any;
