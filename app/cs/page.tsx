@@ -1439,15 +1439,15 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps, csRep
   // Date range for stats view
   const [statsStart, setStatsStart] = useState(todayStr());
   const [statsEnd, setStatsEnd] = useState(todayStr());
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [statsData, setStatsData] = useState<any>(null);
   const [statsLoading, setStatsLoading] = useState(false);
 
-  // Calls Made date range state (separate from stats)
-  const [callsStart, setCallsStart] = useState(todayStr());
-  const [callsEnd, setCallsEnd] = useState(todayStr());
+  // Calls Made (synced with stats date range)
   const [callsData, setCallsData] = useState<Record<string, number> | null>(null);
   const [callsLoading, setCallsLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [expandedReps, setExpandedReps] = useState<Set<string>>(new Set());
 
   // Fetch daily stats when date range changes
   useEffect(() => {
@@ -1460,46 +1460,40 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps, csRep
       .finally(() => setStatsLoading(false));
   }, [statsStart, statsEnd]);
 
-  // Fetch calls made when dates change
+  // Fetch calls made (synced with stats range)
   useEffect(() => {
-    if (!callsStart || !callsEnd) return;
+    if (!statsStart || !statsEnd) return;
     setCallsLoading(true);
-    fetch(`/api/cs/calls-made?start=${callsStart}&end=${callsEnd}`)
+    fetch(`/api/cs/calls-made?start=${statsStart}&end=${statsEnd}`)
       .then(r => r.json())
       .then(d => { if (d.ok) setCallsData(d.callsByRep); })
       .catch(() => {})
       .finally(() => setCallsLoading(false));
-  }, [callsStart, callsEnd]);
+  }, [statsStart, statsEnd]);
 
-  // Quick-set today only — drives both stats and calls
-  const setToday = () => {
-    const t = todayStr();
-    setStatsStart(t); setStatsEnd(t);
-    setCallsStart(t); setCallsEnd(t);
-  };
+  // Quick-set today
+  const setToday = () => { const t = todayStr(); setStatsStart(t); setStatsEnd(t); };
+  // Quick-set MTD
+  const setMTD = () => { const t = todayStr(); setStatsStart(t.slice(0, 8) + "01"); setStatsEnd(t); };
 
-  // Quick-set MTD (1st of month through today)
-  const setMTD = () => {
-    const t = todayStr();
-    const first = t.slice(0, 8) + "01";
-    setStatsStart(first); setStatsEnd(t);
-    setCallsStart(first); setCallsEnd(t);
+  const toggleRep = (rep: string) => {
+    setExpandedReps(prev => {
+      const next = new Set(prev);
+      if (next.has(rep)) next.delete(rep); else next.add(rep);
+      return next;
+    });
   };
-  const isToday = statsStart === todayStr() && statsEnd === todayStr();
+  const expandAll = () => setExpandedReps(new Set(statsReps));
+  const collapseAll = () => setExpandedReps(new Set());
 
   // Weekly report data for export
   const { weeks, collections, callVolume, conversion, reps, dispoByRep, accountsByRepWeek } = perfData || {};
   const weekCount = weeks?.length || 0;
 
-  // Calls Made data
-  const allCallReps = callsData ? Object.keys(callsData).filter(isCsRep).sort() : [];
-  const totalCalls = allCallReps.reduce((s, r) => s + (callsData?.[r] || 0), 0);
-
   const dateInputStyle: React.CSSProperties = {
     background: C.input, color: C.text, border: `1px solid ${C.border}`,
     borderRadius: 4, padding: "4px 8px", fontSize: 12, fontFamily: FONT,
   };
-
   const quickBtnStyle: React.CSSProperties = {
     background: "transparent", color: C.teal, border: `1px solid ${C.teal}`,
     borderRadius: 4, padding: "4px 10px", fontSize: 11, fontWeight: 700,
@@ -1509,17 +1503,19 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps, csRep
   // Stats from daily-stats API
   const byRep = statsData?.byRep || {};
   const totals = statsData?.totals || {};
-  const statsReps = (statsData?.reps || []).filter((r: string) => isCsRep(r));
+  const statsReps: string[] = (statsData?.reps || []).filter((r: string) => isCsRep(r));
 
-  // ── Export Weekly Report CSV ──
+  // Merge call data: union of statsReps and callsData keys
+  const allReps = [...new Set([...statsReps, ...(callsData ? Object.keys(callsData).filter(isCsRep) : [])])].sort();
+  const totalCalls = allReps.reduce((s, r) => s + (callsData?.[r] || 0), 0);
+
+  // ── Export Weekly Report CSV ── (unchanged logic)
   const exportCSV = () => {
     if (!perfData) return;
     setExporting(true);
     try {
       const csvRows: string[][] = [];
       const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
-
-      // Section 1: Collections WoW
       csvRows.push(["COLLECTIONS — WEEK OVER WEEK"]);
       csvRows.push(["Rep", ...(weeks || []).flatMap((w: string) => [`${w} Coll`, `${w} 0-Pay`, `${w} Amt`])]);
       for (const rep of reps || []) {
@@ -1535,8 +1531,6 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps, csRep
       for (const t of collections?.totals || []) { totVals.push(t.collections, t.zeroPays, t.amtCollected.toFixed(2)); }
       csvRows.push(totVals.map(v => String(v)));
       csvRows.push([]);
-
-      // Section 2: Outbound Calls by Rep
       csvRows.push(["OUTBOUND CALLS BY REP — WEEK OVER WEEK"]);
       csvRows.push(["Rep", ...(weeks || []), "Total"]);
       const mtdOutbound = (callVolume?.outboundTotals || []).reduce((s: number, n: number) => s + n, 0);
@@ -1547,8 +1541,6 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps, csRep
       }
       csvRows.push(["TOTAL", ...(callVolume?.outboundTotals || []).map(String), String(mtdOutbound)]);
       csvRows.push([]);
-
-      // Section 3: Inbound Calls
       csvRows.push(["INBOUND CALLS — WEEK OVER WEEK"]);
       csvRows.push(["Metric", ...(weeks || [])]);
       csvRows.push(["Total Calls", ...(callVolume?.inboundTotals || []).map((d: { total: number }) => String(d.total))]);
@@ -1557,8 +1549,6 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps, csRep
         d.total > 0 ? ((d.dropped / d.total) * 100).toFixed(1) + "%" : "0%"
       )]);
       csvRows.push([]);
-
-      // Section 4: Conversion %
       csvRows.push(["CONVERSION % — WEEK OVER WEEK"]);
       csvRows.push(["Rep", ...(weeks || [])]);
       for (const rep of reps || []) {
@@ -1569,8 +1559,6 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps, csRep
         })]);
       }
       csvRows.push([]);
-
-      // Section 5: Full Disposition Breakdown
       csvRows.push(["DISPOSITION BREAKDOWN — MTD"]);
       const allDispos = new Set<string>();
       for (const rep of reps || []) { for (const k of Object.keys(dispoByRep?.[rep] || {})) allDispos.add(k); }
@@ -1582,8 +1570,6 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps, csRep
         csvRows.push([rep, ...dispoList.map(k => String((d as Record<string, number>)[k] || 0)), String(total)]);
       }
       csvRows.push([]);
-
-      // Section 6: Account Totals
       if (accountsByRepWeek) {
         csvRows.push(["ACCOUNTS ASSIGNED — WEEK OVER WEEK"]);
         csvRows.push(["Rep", ...(weeks || [])]);
@@ -1592,19 +1578,25 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps, csRep
           csvRows.push([rep, ...Array.from({ length: weekCount }).map((_, wi) => String(wk[wi] || 0))]);
         }
       }
-
       const csv = csvRows.map(r => r.map(esc).join(",")).join("\n");
       const blob = new Blob([csv], { type: "text/csv" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = url;
-      a.download = `CS_Weekly_Report_${perfMonth}.csv`;
-      a.click();
+      a.href = url; a.download = `CS_Weekly_Report_${perfMonth}.csv`; a.click();
       URL.revokeObjectURL(url);
-    } finally {
-      setExporting(false);
-    }
+    } finally { setExporting(false); }
   };
+
+  // Mini stat box for expanded accordion
+  const MiniStat = ({ label, value, color }: { label: string; value: string | number; color?: string }) => (
+    <div style={{
+      background: C.card, border: `1px solid ${C.border}`, borderRadius: 8,
+      padding: "10px 12px", textAlign: "center", minWidth: 100, flex: "1 1 0",
+    }}>
+      <div style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 800, color: color || C.text }}>{value}</div>
+    </div>
+  );
 
   return (
     <div>
@@ -1613,34 +1605,18 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps, csRep
         <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>Collections Performance</h2>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
           <input type="month" value={perfMonth} onChange={(e) => setPerfMonth(e.target.value)} style={dateInputStyle} />
-          <button
-            onClick={exportCSV}
-            disabled={exporting || !perfData}
-            style={{
-              background: C.teal, color: "#000", border: "none", borderRadius: 8,
-              padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
-              opacity: exporting || !perfData ? 0.6 : 1,
-            }}
-          >
+          <button onClick={exportCSV} disabled={exporting || !perfData} style={{
+            background: C.teal, color: "#000", border: "none", borderRadius: 8,
+            padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
+            opacity: exporting || !perfData ? 0.6 : 1,
+          }}>
             {exporting ? "Exporting..." : "Export Weekly Report"}
           </button>
-          <button
-            onClick={onManageReps}
-            style={{
-              background: C.card,
-              color: C.secondary,
-              border: `1px solid ${C.border}`,
-              borderRadius: 8,
-              padding: "8px 14px",
-              fontSize: 12,
-              fontWeight: 600,
-              fontFamily: FONT,
-              cursor: "pointer",
-              transition: "all 0.2s",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-            }}
+          <button onClick={onManageReps} style={{
+            background: C.card, color: C.secondary, border: `1px solid ${C.border}`, borderRadius: 8,
+            padding: "8px 14px", fontSize: 12, fontWeight: 600, fontFamily: FONT, cursor: "pointer",
+            display: "flex", alignItems: "center", gap: 6,
+          }}
             onMouseEnter={(e) => { e.currentTarget.style.borderColor = C.teal; e.currentTarget.style.color = C.text; }}
             onMouseLeave={(e) => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.secondary; }}
           >
@@ -1649,49 +1625,117 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps, csRep
         </div>
       </div>
 
-      {/* ═══ COLLECTIONS STATS — DATE RANGE ═══ */}
-      <SectionHeader>COLLECTIONS STATS</SectionHeader>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+      {/* ═══ CONTROLS ═══ */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         <button onClick={setToday} style={quickBtnStyle}>Today</button>
         <button onClick={setMTD} style={quickBtnStyle}>MTD</button>
-        {statsLoading && <span style={{ fontSize: 11, color: C.muted }}>Loading...</span>}
+        <span style={{ fontSize: 10, color: C.muted, margin: "0 4px" }}>|</span>
+        <button onClick={expandAll} style={{ ...quickBtnStyle, color: C.secondary, borderColor: C.border }}>Expand All</button>
+        <button onClick={collapseAll} style={{ ...quickBtnStyle, color: C.secondary, borderColor: C.border }}>Collapse All</button>
+        {(statsLoading || callsLoading) && <span style={{ fontSize: 11, color: C.muted }}>Loading...</span>}
       </div>
 
+      {/* ═══ ACCORDION TABLE ═══ */}
       <div style={{ overflowX: "auto", borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 20 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#1a365d" }}>
+              <WTh style={{ textAlign: "left", minWidth: 160, color: "#fff", width: 30 }}></WTh>
               <WTh style={{ textAlign: "left", minWidth: 140, color: "#fff" }}>Rep</WTh>
               <WTh style={{ color: "#fff" }}>Collection</WTh>
-              <WTh style={{ color: "#fff" }}>0Pay</WTh>
-              <WTh style={{ color: "#fff" }}>PIF (2 pmts+)</WTh>
+              <WTh style={{ color: "#fff" }}>{"\u00D8"} Pay</WTh>
+              <WTh style={{ color: "#fff" }}>PIF</WTh>
               <WTh style={{ color: "#fff" }}>Chargeback</WTh>
               <WTh style={{ color: "#fff" }}>Amt Collected</WTh>
               <WTh style={{ color: "#fff" }}>Sold</WTh>
-              <WTh style={{ color: "#fff" }}>DP Amount Collected</WTh>
+              <WTh style={{ color: "#fff" }}>DP Amt</WTh>
               <WTh style={{ color: "#fff" }}>Total</WTh>
+              <WTh style={{ color: "#fff", borderLeft: `2px solid rgba(255,255,255,0.15)` }}>Calls</WTh>
             </tr>
           </thead>
           <tbody>
-            {statsReps.map((rep: string) => {
+            {allReps.map((rep) => {
               const d = byRep[rep] || {};
+              const calls = callsData?.[rep] || 0;
+              const isOpen = expandedReps.has(rep);
               return (
-                <tr key={rep}>
-                  <WTd style={{ textAlign: "left", fontWeight: 600 }}>{rep}</WTd>
-                  <WTd style={{ color: d.collections > 0 ? C.green : C.muted }}>{d.collections || 0}</WTd>
-                  <WTd style={{ color: d.zero_pays > 0 ? C.amber : C.muted }}>{d.zero_pays || 0}</WTd>
-                  <WTd style={{ color: d.pif > 0 ? C.text : C.muted }}>{d.pif || 0}</WTd>
-                  <WTd style={{ color: d.chargebacks > 0 ? C.red : C.muted }}>{d.chargebacks || 0}</WTd>
-                  <WTd>{d.amt_collected > 0 ? fmtMoney(d.amt_collected) : "$0.00"}</WTd>
-                  <WTd style={{ color: d.sold > 0 ? C.green : C.muted }}>{d.sold || 0}</WTd>
-                  <WTd>{d.dp_amt_collected > 0 ? fmtMoney(d.dp_amt_collected) : "$0.00"}</WTd>
-                  <WTd style={{ fontWeight: 700, color: d.total > 0 ? C.text : C.muted }}>{d.total || 0}</WTd>
-                </tr>
+                <React.Fragment key={rep}>
+                  {/* Collapsed row */}
+                  <tr
+                    onClick={() => toggleRep(rep)}
+                    style={{ cursor: "pointer", background: isOpen ? "rgba(20,184,166,0.04)" : "transparent" }}
+                    onMouseEnter={(e) => { if (!isOpen) e.currentTarget.style.background = C.cardHover; }}
+                    onMouseLeave={(e) => { if (!isOpen) e.currentTarget.style.background = "transparent"; }}
+                  >
+                    <WTd style={{ textAlign: "center", color: C.muted, fontSize: 10, padding: "5px 4px" }}>
+                      {isOpen ? "▼" : "▶"}
+                    </WTd>
+                    <WTd style={{ textAlign: "left", fontWeight: 700 }}>{rep}</WTd>
+                    <WTd style={{ color: d.collections > 0 ? C.green : C.muted }}>{d.collections || 0}</WTd>
+                    <WTd style={{ color: d.zero_pays > 0 ? C.amber : C.muted }}>{d.zero_pays || 0}</WTd>
+                    <WTd style={{ color: d.pif > 0 ? C.text : C.muted }}>{d.pif || 0}</WTd>
+                    <WTd style={{ color: d.chargebacks > 0 ? C.red : C.muted }}>{d.chargebacks || 0}</WTd>
+                    <WTd>{d.amt_collected > 0 ? fmtMoney(d.amt_collected) : "$0.00"}</WTd>
+                    <WTd style={{ color: d.sold > 0 ? C.green : C.muted }}>{d.sold || 0}</WTd>
+                    <WTd>{d.dp_amt_collected > 0 ? fmtMoney(d.dp_amt_collected) : "$0.00"}</WTd>
+                    <WTd style={{ fontWeight: 700, color: d.total > 0 ? C.text : C.muted }}>{d.total || 0}</WTd>
+                    <WTd style={{ fontWeight: 600, color: calls > 0 ? C.teal : C.muted, borderLeft: `2px solid ${C.border}` }}>
+                      {fmt(calls)}
+                    </WTd>
+                  </tr>
+                  {/* Expanded detail */}
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={11} style={{ padding: 0 }}>
+                        <div style={{
+                          background: "rgba(20,184,166,0.03)", borderTop: `1px solid ${C.border}`,
+                          borderBottom: `1px solid ${C.border}`, padding: "16px 20px",
+                        }}>
+                          {/* 2-row grid: Stats + Activity */}
+                          <div style={{ fontSize: 9, color: C.muted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+                            {rep} — Detailed Breakdown
+                          </div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                            <MiniStat label="Collections" value={d.collections || 0} color={C.green} />
+                            <MiniStat label={`\u00D8 Pay`} value={d.zero_pays || 0} color={C.amber} />
+                            <MiniStat label="PIF" value={d.pif || 0} />
+                            <MiniStat label="Chargeback" value={d.chargebacks || 0} color={d.chargebacks > 0 ? C.red : C.muted} />
+                          </div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                            <MiniStat label="Amt Collected" value={d.amt_collected > 0 ? fmtMoney(d.amt_collected) : "$0"} color={C.green} />
+                            <MiniStat label="Sold" value={d.sold || 0} color={d.sold > 0 ? C.green : C.muted} />
+                            <MiniStat label="DP Amount" value={d.dp_amt_collected > 0 ? fmtMoney(d.dp_amt_collected) : "$0"} />
+                            <MiniStat label="Total" value={d.total || 0} color={C.teal} />
+                          </div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <MiniStat label="Calls Made" value={fmt(calls)} color={calls > 0 ? C.teal : C.muted} />
+                            <MiniStat
+                              label="Conversion %"
+                              value={calls > 0 && d.collections > 0 ? ((d.collections / calls) * 100).toFixed(1) + "%" : "0%"}
+                              color={calls > 0 && d.collections > 0 ? C.green : C.muted}
+                            />
+                            <MiniStat
+                              label={`\u00D8 Pay Rate`}
+                              value={d.total > 0 ? ((d.zero_pays / d.total) * 100).toFixed(0) + "%" : "—"}
+                              color={C.amber}
+                            />
+                            <MiniStat
+                              label="Avg per Day"
+                              value={d.days_worked > 0 ? (d.collections / d.days_worked).toFixed(1) : "—"}
+                              color={C.secondary}
+                            />
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               );
             })}
             {/* Totals row */}
-            {statsReps.length > 0 && (
+            {allReps.length > 0 && (
               <tr style={{ background: "rgba(16,185,129,0.08)" }}>
+                <WTd></WTd>
                 <WTd style={{ textAlign: "left", fontWeight: 800, color: C.teal }}>Total</WTd>
                 <WTd style={{ fontWeight: 700, color: C.green }}>{totals.collections || 0}</WTd>
                 <WTd style={{ fontWeight: 700, color: C.amber }}>{totals.zero_pays || 0}</WTd>
@@ -1701,46 +1745,13 @@ function PerformanceTab({ perfData, perfMonth, setPerfMonth, onManageReps, csRep
                 <WTd style={{ fontWeight: 700 }}>{totals.sold || 0}</WTd>
                 <WTd style={{ fontWeight: 700 }}>{fmtMoney(totals.dp_amt_collected || 0)}</WTd>
                 <WTd style={{ fontWeight: 800, color: C.teal }}>{totals.total || 0}</WTd>
+                <WTd style={{ fontWeight: 700, color: C.teal, borderLeft: `2px solid ${C.border}` }}>{fmt(totalCalls)}</WTd>
               </tr>
             )}
-            {statsReps.length === 0 && !statsLoading && (
-              <tr><WTd colSpan={9} style={{ textAlign: "center", color: C.muted, padding: 20 }}>
+            {allReps.length === 0 && !statsLoading && (
+              <tr><WTd colSpan={11} style={{ textAlign: "center", color: C.muted, padding: 20 }}>
                 No stats data for this date range. Run a sync first.
               </WTd></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* ═══ CALLS MADE — CUSTOM DATE RANGE ═══ */}
-      <SectionHeader>CALLS MADE BY REP</SectionHeader>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 11, color: C.muted }}>{isToday ? "Today" : "MTD"}</span>
-        {callsLoading && <span style={{ fontSize: 11, color: C.muted }}>Loading...</span>}
-      </div>
-      <div style={{ overflowX: "auto", borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 16 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: C.card }}>
-              <WTh style={{ textAlign: "left", minWidth: 140 }}>Rep</WTh>
-              <WTh>Calls Made</WTh>
-            </tr>
-          </thead>
-          <tbody>
-            {callsData && allCallReps.map((rep) => (
-              <tr key={rep}>
-                <WTd style={{ textAlign: "left", fontWeight: 600 }}>{rep}</WTd>
-                <WTd style={{ color: callsData[rep] > 0 ? C.text : C.muted }}>{fmt(callsData[rep])}</WTd>
-              </tr>
-            ))}
-            {callsData && (
-              <tr style={{ background: "rgba(20,184,166,0.06)" }}>
-                <WTd style={{ textAlign: "left", fontWeight: 800, color: C.teal }}>TOTAL</WTd>
-                <WTd style={{ fontWeight: 700, color: C.teal }}>{fmt(totalCalls)}</WTd>
-              </tr>
-            )}
-            {!callsData && !callsLoading && (
-              <tr><WTd colSpan={2} style={{ textAlign: "center", color: C.muted }}>No data</WTd></tr>
             )}
           </tbody>
         </table>
