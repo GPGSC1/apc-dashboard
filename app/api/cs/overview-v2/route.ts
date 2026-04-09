@@ -62,6 +62,9 @@ interface DayMetrics {
 
 async function computeDay(date: string): Promise<DayMetrics> {
   // ── 1. Pull today's accounts + dispos ─────────────────────────────────────
+  // Only count accounts that are on the working sheet (have a rep assigned).
+  // Lenovo captures ALL PBS accounts; not-yet-due ones have assigned_rep=NULL.
+  // Fall back to cs_account_daily if cs_past_due_accounts has no assigned reps yet.
   const acctRes = await query(
     `SELECT ad.account_number,
             ad.installments_made,
@@ -69,6 +72,9 @@ async function computeDay(date: string): Promise<DayMetrics> {
             ad.main_phone, ad.home_phone, ad.work_phone,
             dh.dispo_1, dh.dispo_2, dh.dispo_date AS followup_raw
      FROM cs_account_daily ad
+     INNER JOIN cs_past_due_accounts pa
+       ON pa.scrub_date = ad.scrub_date AND pa.account_number = ad.account_number
+       AND pa.assigned_rep IS NOT NULL AND pa.assigned_rep != ''
      LEFT JOIN cs_dispo_history dh
        ON dh.scrub_date = ad.scrub_date AND dh.account_number = ad.account_number
      WHERE ad.scrub_date = $1`,

@@ -8,11 +8,19 @@ export async function GET(request: Request) {
     const date = url.searchParams.get("date") || todayLocal();
     const rep = url.searchParams.get("rep");
 
+    const showAll = url.searchParams.get("showAll") === "true";
+
     let sql = `SELECT * FROM cs_past_due_accounts WHERE scrub_date = $1`;
     const params: (string | null)[] = [date];
 
+    // By default, only show accounts with a rep assigned (= on the Google Sheet = past due & workable).
+    // Lenovo captures ALL PBS accounts including not-yet-due; those have assigned_rep=NULL.
+    if (!showAll) {
+      sql += ` AND assigned_rep IS NOT NULL AND assigned_rep != ''`;
+    }
+
     if (rep) {
-      sql += ` AND assigned_rep = $2`;
+      sql += ` AND assigned_rep = $${params.length + 1}`;
       params.push(rep);
     }
 
