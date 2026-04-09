@@ -404,6 +404,19 @@ export async function GET(req: Request) {
       }
     }
 
+    // ── 3b3. Build agent → primary queue lookup (most calls = primary) ──
+    // Used as last-resort fallback when a deal has no phones AND no campaign match.
+    const agentPrimaryQueue = new Map<string, { auto: string | null; home: string | null }>();
+    for (const [agent, qMap] of agentQueueCalls) {
+      let bestAuto: string | null = null, bestAutoCount = 0;
+      let bestHome: string | null = null, bestHomeCount = 0;
+      for (const [q, cnt] of Object.entries(qMap)) {
+        if (isAutoQueue(q) && cnt > bestAutoCount) { bestAuto = q; bestAutoCount = cnt; }
+        if (isHomeQueue(q) && cnt > bestHomeCount) { bestHome = q; bestHomeCount = cnt; }
+      }
+      agentPrimaryQueue.set(agent.toLowerCase(), { auto: bestAuto, home: bestHome });
+    }
+
     // ── 3c. LOAD deal overrides for manual T.O. reassignment ────────
     let overrideByContract = new Map<string, string>();
     let overrideByCid = new Map<string, string>();
@@ -603,6 +616,17 @@ export async function GET(req: Request) {
         );
       }
 
+      // Last-resort fallback: if no phone history and no campaign match, use
+      // the sales rep's primary queue (the queue they take the most calls in).
+      // This handles deals with blank phones AND blank campaigns (e.g., T.O.
+      // deals where the original rep is known but the customer phones are missing).
+      if (!dealQueue && salesRep) {
+        const primaryQueues = agentPrimaryQueue.get(salesRep.toLowerCase());
+        if (primaryQueues) {
+          dealQueue = product === "auto" ? primaryQueues.auto : primaryQueues.home;
+        }
+      }
+
       // CS/AI/SP already handled above via continue — remaining deals need a queue
       if (!dealQueue) {
         if (debugMode) droppedDeals.push({ reason: "no_queue", product, contract_no: deal.contract_no, customer_id: deal.customer_id, owner: deal.owner, salesperson: deal.salesperson, campaign: deal.campaign, promo_code: deal.promo_code, deal_status: deal.deal_status, home_phone: deal.home_phone, mobile_phone: deal.mobile_phone, sold_date: soldDate, phones_checked: phones });
@@ -758,7 +782,39 @@ export async function GET(req: Request) {
     }
 
     return NextResponse.json({
-      ...(debugMode ? { _debug: { rawAutoRows: autoDealsResult.rows.length, rawHomeRows: homeDealsResult.rows.length, droppedCount: droppedDeals.length, droppedDeals } } : {}),
+      ...(debugMode ? await (async () => {
+        // Raw DB count without dedup (to check if deals are missing from DB vs just filtered)
+        const rawDbCount = await query(
+          `SELECT COUNT(*) as cnt FROM moxy_deals WHERE sold_date BETWEEN $1 AND $2 AND deal_status = 'Sold'`,
+          [fromDate, toDate]
+        );
+        // Also get deals with blank contract_no that might be deduped away
+        const blankContractDeals = await query(
+          `SELECT customer_id, contract_no, deal_status, salesperson, owner, campaign
+           FROM moxy_deals
+           WHERE sold_date BETWEEN $1 AND $2
+             AND deal_status = 'Sold'
+             AND (contract_no IS NULL OR contract_no = '')`,
+          [fromDate, toDate]
+        );
+        // Get all contract_nos from DB for diff
+        const dbContracts = await query(
+          `SELECT contract_no, customer_id FROM moxy_deals WHERE sold_date BETWEEN $1 AND $2 AND deal_status = 'Sold' AND contract_no IS NOT NULL AND contract_no != '' ORDER BY contract_no`,
+          [fromDate, toDate]
+        );
+        return {
+          _debug: {
+            rawDbAutoSold: parseInt(rawDbCount.rows[0].cnt),
+            dedupedAutoRows: autoDealsResult.rows.length,
+            rawHomeRows: homeDealsResult.rows.length,
+            droppedCount: droppedDeals.length,
+            droppedDeals,
+            blankContractDeals: blankContractDeals.rows,
+            dbContractCount: dbContracts.rows.length,
+            dbContracts: dbContracts.rows.map((r: any) => r.contract_no),
+          }
+        };
+      })() : {}),
       companyTotal: {
         deals: companyDeals,
         calls: totalCalls,
