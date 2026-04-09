@@ -12,6 +12,7 @@ export const STATS_SHEETS: Record<string, string> = {
   "2026-01": "1K1Gy3LiTlfs6tsD3xA8UnG_KRvSSlH4grIGA37KyYYg",
   "2026-02": "1u7U_4MBprTXzzVynYjVBV-35NGaEs6wzKdtUvHMtB64",
   "2026-03": "1geV7lmU0IYQ-qAt7rst9ajHpldkbPiofmZigoGPKZ2Y",
+  "2026-04": "1i2Xkkh3C0S06VktRAr_VuHe8J2FjvECbrsWNDbENEWQ",
 };
 
 // Column layout in each day tab (0-indexed from values array)
