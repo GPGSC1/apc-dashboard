@@ -29,6 +29,7 @@ export async function GET(request: Request) {
     // Build maps: normalized phone -> account IDs, and which phone field it came from
     const phone1Map = new Map<string, number[]>(); // normalized main_phone -> account ids
     const phone2Map = new Map<string, number[]>(); // normalized work_phone -> account ids
+    const phone3Map = new Map<string, number[]>(); // normalized mobile_phone -> account ids
     const allPhones = new Set<string>();
 
     for (const row of result.rows) {
@@ -48,11 +49,20 @@ export async function GET(request: Request) {
           allPhones.add(n);
         }
       }
+      if (row.mobile_phone) {
+        const n = normPhone(row.mobile_phone);
+        if (n.length === 10) {
+          if (!phone3Map.has(n)) phone3Map.set(n, []);
+          phone3Map.get(n)!.push(row.id);
+          allPhones.add(n);
+        }
+      }
     }
 
     // Query last outbound call timestamp for all phones in one shot
     const lastCalledPhone1 = new Map<number, string>(); // accountId -> timestamp
     const lastCalledPhone2 = new Map<number, string>(); // accountId -> timestamp
+    const lastCalledPhone3 = new Map<number, string>(); // accountId -> timestamp (mobile)
     if (allPhones.size > 0) {
       const phoneArr = [...allPhones];
       const obResult = await query(
@@ -60,7 +70,7 @@ export async function GET(request: Request) {
         [phoneArr]
       );
       for (const row of obResult.rows) {
-        // Map to phone 1 accounts
+        // Map to phone 1 accounts (main_phone)
         const p1Ids = phone1Map.get(row.phone) || [];
         for (const id of p1Ids) {
           const existing = lastCalledPhone1.get(id);
@@ -68,12 +78,20 @@ export async function GET(request: Request) {
             lastCalledPhone1.set(id, row.last_called);
           }
         }
-        // Map to phone 2 accounts
+        // Map to phone 2 accounts (work_phone)
         const p2Ids = phone2Map.get(row.phone) || [];
         for (const id of p2Ids) {
           const existing = lastCalledPhone2.get(id);
           if (!existing || row.last_called > existing) {
             lastCalledPhone2.set(id, row.last_called);
+          }
+        }
+        // Map to phone 3 accounts (mobile_phone)
+        const p3Ids = phone3Map.get(row.phone) || [];
+        for (const id of p3Ids) {
+          const existing = lastCalledPhone3.get(id);
+          if (!existing || row.last_called > existing) {
+            lastCalledPhone3.set(id, row.last_called);
           }
         }
       }
@@ -84,6 +102,7 @@ export async function GET(request: Request) {
       ...row,
       last_called_phone1: lastCalledPhone1.get(row.id as number) || null,
       last_called_phone2: lastCalledPhone2.get(row.id as number) || null,
+      last_called_mobile: lastCalledPhone3.get(row.id as number) || null,
     }));
 
     // Get upload metadata for this date

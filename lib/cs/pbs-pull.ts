@@ -152,10 +152,8 @@ export async function pullPBSReport(): Promise<PBSPullResult> {
       }
     }
 
-    // Ensure format is set to PDF (value "1") — Excel is cosmetically listed
-    // but PBS serves Pending Cancellation Report as PDF; we parse the PDF
-    // server-side into structured data.
-    formFields["ctl13$cboReportFormat"] = "1";
+    // Format: 1=PDF, 5=Excel. Use Excel for clean columnar data.
+    formFields["ctl13$cboReportFormat"] = "5";
 
     // Fire the Run button
     formFields["__EVENTTARGET"] = "";

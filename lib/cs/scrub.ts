@@ -23,6 +23,7 @@ export interface CleanAccount {
   amount_due: number;
   main_phone: string;
   home_phone: string;
+  mobile_phone: string;
   work_phone: string;
   customer_email: string;
   state: string;
@@ -60,6 +61,7 @@ const PBS = {
   AMOUNT_DUE: 11,
   MAIN_PHONE: 12,
   HOME_PHONE: 13,
+  MOBILE_PHONE: 17,
   WORK_PHONE: 19,
   CUSTOMER_EMAIL: 21,
   STATE: 26,
@@ -124,6 +126,7 @@ export function mapPBSRow(raw: unknown[]): CleanAccount | null {
     amount_due: Math.round(amount * 100) / 100,
     main_phone: cleanStr(raw[PBS.MAIN_PHONE]),
     home_phone: cleanStr(raw[PBS.HOME_PHONE]),
+    mobile_phone: cleanStr(raw[PBS.MOBILE_PHONE]),
     work_phone: cleanStr(raw[PBS.WORK_PHONE]),
     customer_email: cleanStr(raw[PBS.CUSTOMER_EMAIL]),
     state: cleanStr(raw[PBS.STATE]),

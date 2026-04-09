@@ -299,6 +299,7 @@ async function executePull(today: string): Promise<{ ok: boolean; accountCount?:
           amount_due: parseFloat(row.amount_due) || 0,
           main_phone: row.main_phone || "",
           home_phone: row.home_phone || "",
+          mobile_phone: row.mobile_phone || "",
           work_phone: row.work_phone || "",
           customer_email: row.customer_email || "",
           state: row.state || "",
@@ -366,9 +367,9 @@ async function executePull(today: string): Promise<{ ok: boolean; accountCount?:
           `INSERT INTO cs_past_due_accounts
            (scrub_date, account_number, insured_name, policy_number, agent_entity,
             installments_made, next_due_date, sched_cxl_date, bill_hold, billing_method,
-            amount_due, main_phone, home_phone, work_phone, customer_email, state,
+            amount_due, main_phone, home_phone, mobile_phone, work_phone, customer_email, state,
             assigned_rep, dispo_1, dispo_2, dispo_date, email_sent, is_carryover)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
            ON CONFLICT (scrub_date, account_number) DO UPDATE SET
              assigned_rep = EXCLUDED.assigned_rep,
              dispo_1 = EXCLUDED.dispo_1,
@@ -379,7 +380,7 @@ async function executePull(today: string): Promise<{ ok: boolean; accountCount?:
           [
             today, acct.account_number, acct.insured_name, acct.policy_number, acct.agent_entity,
             acct.installments_made, acct.next_due_date, acct.sched_cxl_date, acct.bill_hold, acct.billing_method,
-            acct.amount_due, acct.main_phone, acct.home_phone, acct.work_phone, acct.customer_email, acct.state,
+            acct.amount_due, acct.main_phone, acct.home_phone, acct.mobile_phone, acct.work_phone, acct.customer_email, acct.state,
             acct.assigned_rep, acct.dispo_1, acct.dispo_2, acct.dispo_date, acct.email_sent, acct.is_carryover,
           ]
         );

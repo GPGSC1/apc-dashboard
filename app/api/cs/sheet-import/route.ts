@@ -183,6 +183,7 @@ export async function GET(request: Request) {
         amountDue,       // amount_due
         mainPhone,       // main_phone
         homePhone,       // home_phone
+        "",              // mobile_phone (not in sheet)
         workPhone,       // work_phone
         customerEmail,   // customer_email
         state,           // state
@@ -224,7 +225,7 @@ export async function GET(request: Request) {
         `INSERT INTO cs_past_due_accounts
          (scrub_date, account_number, insured_name, policy_number, agent_entity,
           installments_made, next_due_date, sched_cxl_date, bill_hold, billing_method,
-          amount_due, main_phone, home_phone, work_phone, customer_email, state,
+          amount_due, main_phone, home_phone, mobile_phone, work_phone, customer_email, state,
           assigned_rep, dispo_1, dispo_2, dispo_date, email_sent, is_carryover)
          VALUES ${placeholders.join(",")}`,
         values
