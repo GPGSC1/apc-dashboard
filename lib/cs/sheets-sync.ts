@@ -10,6 +10,7 @@ const TAB_NAME = "Past Due";
 
 // Column positions in the Google Sheet (0-indexed from the values array)
 const COL = {
+  REP: 0,          // A — assigned rep
   ACCOUNT_NUM: 1,  // B
   DISPO_1: 14,     // O
   DISPO_2: 15,     // P
@@ -52,13 +53,14 @@ export async function syncDisposFromSheet(): Promise<{
 
   // Get all current accounts for today from DB
   const dbResult = await query(
-    "SELECT id, account_number, dispo_1, dispo_2, dispo_date, email_sent FROM cs_past_due_accounts WHERE scrub_date = $1",
+    "SELECT id, account_number, assigned_rep, dispo_1, dispo_2, dispo_date, email_sent FROM cs_past_due_accounts WHERE scrub_date = $1",
     [today]
   );
-  const dbMap = new Map<string, { id: number; dispo_1: string; dispo_2: string; dispo_date: string | null; email_sent: boolean }>();
+  const dbMap = new Map<string, { id: number; assigned_rep: string; dispo_1: string; dispo_2: string; dispo_date: string | null; email_sent: boolean }>();
   for (const row of dbResult.rows) {
     dbMap.set(row.account_number, {
       id: row.id,
+      assigned_rep: row.assigned_rep || "",
       dispo_1: row.dispo_1 || "",
       dispo_2: row.dispo_2 || "",
       dispo_date: row.dispo_date || null,
@@ -76,14 +78,15 @@ export async function syncDisposFromSheet(): Promise<{
     const accountNum = (row[COL.ACCOUNT_NUM] || "").trim();
     if (!accountNum) continue;
 
+    const sheetRep = (row[COL.REP] || "").trim();
     const sheetDispo1 = (row[COL.DISPO_1] || "").trim();
     const sheetDispo2 = (row[COL.DISPO_2] || "").trim();
     const sheetDate = (row[COL.DATE] || "").trim();
     const sheetEmailRaw = (row[COL.EMAIL_SENT] || "").trim().toLowerCase();
     const sheetEmailSent = sheetEmailRaw === "yes" || sheetEmailRaw === "true" || sheetEmailRaw === "y";
 
-    // Skip rows with no dispositions entered
-    if (!sheetDispo1 && !sheetDispo2 && !sheetDate && !sheetEmailRaw) {
+    // Skip rows with no rep and no dispositions entered
+    if (!sheetRep && !sheetDispo1 && !sheetDispo2 && !sheetDate && !sheetEmailRaw) {
       skipped++;
       continue;
     }
@@ -97,6 +100,7 @@ export async function syncDisposFromSheet(): Promise<{
     // Check if anything changed
     const dbEmailSent = dbRow.email_sent || false;
     if (
+      sheetRep === dbRow.assigned_rep &&
       sheetDispo1 === dbRow.dispo_1 &&
       sheetDispo2 === dbRow.dispo_2 &&
       sheetEmailSent === dbEmailSent
@@ -117,9 +121,9 @@ export async function syncDisposFromSheet(): Promise<{
     // Update DB with sheet values (sheet wins during transition period)
     await query(
       `UPDATE cs_past_due_accounts
-       SET dispo_1 = $1, dispo_2 = $2, dispo_date = $3, email_sent = $4, updated_at = NOW()
-       WHERE id = $5`,
-      [sheetDispo1, sheetDispo2, parsedDate, sheetEmailSent, dbRow.id]
+       SET assigned_rep = $1, dispo_1 = $2, dispo_2 = $3, dispo_date = $4, email_sent = $5, updated_at = NOW()
+       WHERE id = $6`,
+      [sheetRep, sheetDispo1, sheetDispo2, parsedDate, sheetEmailSent, dbRow.id]
     );
     synced++;
   }
