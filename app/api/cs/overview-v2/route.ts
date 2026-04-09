@@ -49,9 +49,9 @@ function eachDate(start: string, end: string): string[] {
 
 interface DayMetrics {
   records: { total: number; zero: number; non_zero: number; followups: number; followups_zero: number; followups_non_zero: number };
-  calls: { zero_pay_calls: number; non_zero_calls: number; inbound_answered: number; abandoned: number };
-  percentages: { list_complete: number; zero_pay_pct: number; non_zero_pct: number; available_to_collect: number };
-  amounts: { total_collected: number; zero_pay_collected: number; non_zero_collected: number };
+  calls: { zero_pay_calls: number; non_zero_calls: number; inbound_answered: number; abandoned: number; unanswered_phones: number };
+  percentages: { list_complete: number; zero_pay_pct: number; non_zero_pct: number; available_to_collect: number; unanswered_pct: number };
+  amounts: { total_collected: number; zero_pay_collected: number; non_zero_collected: number; amt_due_workable: number };
   _sums: {
     amt_due_workable: number;
     unique_phones_touched_any: number;
@@ -143,6 +143,8 @@ async function computeDay(date: string): Promise<DayMetrics> {
   const inboundPhonesHit = new Set<string>();
   const inboundPhonesHitZero = new Set<string>();
   const inboundPhonesHitNon = new Set<string>();
+  const unansweredPhones = new Set<string>(); // phone-level dedup for unanswered
+  const answeredPhones = new Set<string>();   // phones that got answered at least once
 
   for (const c of callsRes.rows) {
     const phone = (c.phone || "").trim();
@@ -178,8 +180,13 @@ async function computeDay(date: string): Promise<DayMetrics> {
       // Inbound only counts if it hit the collections queue in business hours
       const isCollections = /collections/i.test(queue);
       if (!isCollections || !inBH) continue;
-      if (status === "answered") inboundAnswered += 1;
-      else if (status === "unanswered") abandoned += 1;
+      if (status === "answered") {
+        inboundAnswered += 1;
+        if (phone) answeredPhones.add(phone);
+      } else if (status === "unanswered") {
+        abandoned += 1;
+        if (phone) unansweredPhones.add(phone);
+      }
 
       // For percentage calculations, inbound phones matching workable count too
       if (phone && phoneToZero.has(phone)) {
@@ -214,6 +221,11 @@ async function computeDay(date: string): Promise<DayMetrics> {
   const nonZeroPct = nonZeroWorkable > 0 ? (uniqueNon.size / nonZeroWorkable) * 100 : 0;
   const availableToCollect = amtDueWorkable > 0 ? (totalCollected / amtDueWorkable) * 100 : 0;
 
+  // Unanswered = phones that got unanswered calls but were NEVER answered (phone-level dedup)
+  const trulyUnansweredPhones = new Set([...unansweredPhones].filter(p => !answeredPhones.has(p)));
+  const allInboundPhones = new Set([...answeredPhones, ...unansweredPhones]);
+  const unansweredPct = allInboundPhones.size > 0 ? (trulyUnansweredPhones.size / allInboundPhones.size) * 100 : 0;
+
   return {
     records: {
       total: totalWorkable,
@@ -228,17 +240,20 @@ async function computeDay(date: string): Promise<DayMetrics> {
       non_zero_calls: nonZeroCalls,
       inbound_answered: inboundAnswered,
       abandoned,
+      unanswered_phones: trulyUnansweredPhones.size,
     },
     percentages: {
       list_complete: listComplete,
       zero_pay_pct: zeroPct,
       non_zero_pct: nonZeroPct,
       available_to_collect: availableToCollect,
+      unanswered_pct: unansweredPct,
     },
     amounts: {
       total_collected: totalCollected,
       zero_pay_collected: zeroCollected,
       non_zero_collected: nonZeroCollected,
+      amt_due_workable: amtDueWorkable,
     },
     _sums: {
       amt_due_workable: amtDueWorkable,
@@ -264,9 +279,9 @@ export async function GET(request: Request) {
     // ── Roll up across days ────────────────────────────────────────────────
     const agg: DayMetrics = {
       records: { total: 0, zero: 0, non_zero: 0, followups: 0, followups_zero: 0, followups_non_zero: 0 },
-      calls: { zero_pay_calls: 0, non_zero_calls: 0, inbound_answered: 0, abandoned: 0 },
-      percentages: { list_complete: 0, zero_pay_pct: 0, non_zero_pct: 0, available_to_collect: 0 },
-      amounts: { total_collected: 0, zero_pay_collected: 0, non_zero_collected: 0 },
+      calls: { zero_pay_calls: 0, non_zero_calls: 0, inbound_answered: 0, abandoned: 0, unanswered_phones: 0 },
+      percentages: { list_complete: 0, zero_pay_pct: 0, non_zero_pct: 0, available_to_collect: 0, unanswered_pct: 0 },
+      amounts: { total_collected: 0, zero_pay_collected: 0, non_zero_collected: 0, amt_due_workable: 0 },
       _sums: { amt_due_workable: 0, unique_phones_touched_any: 0, unique_phones_touched_zero: 0, unique_phones_touched_non_zero: 0 },
     };
 
@@ -280,10 +295,12 @@ export async function GET(request: Request) {
       agg.calls.non_zero_calls += d.calls.non_zero_calls;
       agg.calls.inbound_answered += d.calls.inbound_answered;
       agg.calls.abandoned += d.calls.abandoned;
+      agg.calls.unanswered_phones += d.calls.unanswered_phones;
 
       agg.amounts.total_collected += d.amounts.total_collected;
       agg.amounts.zero_pay_collected += d.amounts.zero_pay_collected;
       agg.amounts.non_zero_collected += d.amounts.non_zero_collected;
+      agg.amounts.amt_due_workable += d.amounts.amt_due_workable;
 
       agg._sums.amt_due_workable += d._sums.amt_due_workable;
       agg._sums.unique_phones_touched_any += d._sums.unique_phones_touched_any;
@@ -304,6 +321,9 @@ export async function GET(request: Request) {
     agg.percentages.non_zero_pct = sumNon > 0 ? (agg._sums.unique_phones_touched_non_zero / sumNon) * 100 : 0;
     agg.percentages.available_to_collect =
       agg._sums.amt_due_workable > 0 ? (agg.amounts.total_collected / agg._sums.amt_due_workable) * 100 : 0;
+    // Unanswered pct across rolled-up range: sum of daily unanswered phones / sum of daily inbound calls
+    const totalInbound = agg.calls.inbound_answered + agg.calls.abandoned;
+    agg.percentages.unanswered_pct = totalInbound > 0 ? (agg.calls.unanswered_phones / totalInbound) * 100 : 0;
 
     return NextResponse.json({ ok: true, start, end, days: dates.length, metrics: agg });
   } catch (e) {

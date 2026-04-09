@@ -38,6 +38,7 @@ interface Account {
   amount_due: number;
   main_phone: string;
   home_phone: string;
+  mobile_phone: string;
   work_phone: string;
   customer_email: string;
   state: string;
@@ -49,6 +50,7 @@ interface Account {
   is_carryover: boolean;
   last_called_phone1: string | null;
   last_called_phone2: string | null;
+  last_called_mobile: string | null;
 }
 
 interface DispoOption {
@@ -676,6 +678,7 @@ function WorkListTab({
 }) {
   const [sortCol, setSortCol] = useState<string>("assigned_rep");
   const [sortAsc, setSortAsc] = useState(true);
+  const [showFollowUps, setShowFollowUps] = useState(false);
 
   const handleSort = (col: string) => {
     if (sortCol === col) {
@@ -686,7 +689,12 @@ function WorkListTab({
     }
   };
 
-  const sorted = [...accounts].sort((a, b) => {
+  const FOLLOW_UP_DISPOS = ["follow up", "scheduled pdp", "mailed check", "mailed c."];
+  const filtered = showFollowUps
+    ? accounts.filter((a) => a.dispo_1 && FOLLOW_UP_DISPOS.includes(a.dispo_1.trim().toLowerCase()))
+    : accounts;
+
+  const sorted = [...filtered].sort((a, b) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const av = (a as any)[sortCol];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -798,13 +806,13 @@ function WorkListTab({
       </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
         <StatBox label="Total Count" value={records ? fmt(records.total) : "—"} />
-        <StatBox label="0 Pay Count" value={records ? fmt(records.zero) : "—"} color={C.amber} />
-        <StatBox label="Non 0 Pay Count" value={records ? fmt(records.non_zero) : "—"} />
+        <StatBox label={"\u00D8 Pay Count"} value={records ? fmt(records.zero) : "—"} color={C.amber} />
+        <StatBox label={`Non \u00D8 Pay Count`} value={records ? fmt(records.non_zero) : "—"} />
         <StatBox
           label="Follow Ups"
           value={records ? fmt(records.followups) : "—"}
           color={C.teal}
-          sub={records ? `${fmt(records.followups_zero)} 0P · ${fmt(records.followups_non_zero)} N0P` : undefined}
+          sub={records ? `${fmt(records.followups_zero)} \u00D8P \u00B7 ${fmt(records.followups_non_zero)} N\u00D8P` : undefined}
         />
       </div>
 
@@ -813,10 +821,10 @@ function WorkListTab({
         Calls
       </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
-        <StatBox label="0 Pay" value={calls ? fmt(calls.zero_pay_calls) : "—"} color={C.amber} />
-        <StatBox label="N0P" value={calls ? fmt(calls.non_zero_calls) : "—"} />
+        <StatBox label={`Outbound to \u00D8 Pay`} value={calls ? fmt(calls.zero_pay_calls) : "—"} color={C.amber} />
+        <StatBox label={`Outbound to N\u00D8P`} value={calls ? fmt(calls.non_zero_calls) : "—"} />
         <StatBox label="Inbound" value={calls ? fmt(calls.inbound_answered) : "—"} color={C.green} />
-        <StatBox label="Abandoned" value={calls ? fmt(calls.abandoned) : "—"} color={C.red} />
+        <StatBox label="Unanswered" value={calls ? fmt(calls.unanswered_phones ?? calls.abandoned) : "—"} color={C.red} />
       </div>
 
       {/* ═══ ROW 3 — PERCENTAGES ═══ */}
@@ -830,18 +838,18 @@ function WorkListTab({
           color={pct && pct.list_complete >= 80 ? C.green : C.amber}
         />
         <StatBox
-          label="0 Pay %"
+          label={`\u00D8 Pay %`}
           value={pct ? `${pct.zero_pay_pct.toFixed(1)}%` : "—"}
           color={C.amber}
         />
         <StatBox
-          label="N0P %"
+          label={`N\u00D8P %`}
           value={pct ? `${pct.non_zero_pct.toFixed(1)}%` : "—"}
         />
         <StatBox
-          label="Available to Collect"
-          value={pct ? `${pct.available_to_collect.toFixed(1)}%` : "—"}
-          color={C.green}
+          label="Unanswered %"
+          value={pct ? `${(pct.unanswered_pct ?? 0).toFixed(1)}%` : "—"}
+          color={C.red}
         />
       </div>
 
@@ -854,20 +862,21 @@ function WorkListTab({
           label="Total Amount Collected"
           value={amts ? fmtMoney(amts.total_collected) : "—"}
           color={C.green}
+          sub={amts && amts.amt_due_workable ? `${((amts.total_collected / amts.amt_due_workable) * 100).toFixed(1)}% of list collected` : undefined}
         />
         <StatBox
-          label="0 Pay"
+          label={`\u00D8 Pay`}
           value={amts ? fmtMoney(amts.zero_pay_collected) : "—"}
           color={C.amber}
         />
         <StatBox
-          label="N0P"
+          label={`N\u00D8P`}
           value={amts ? fmtMoney(amts.non_zero_collected) : "—"}
         />
         <StatBox
-          label="Down Payments"
-          value="Coming Soon"
-          color={C.muted}
+          label="Total Amount on List"
+          value={amts ? fmtMoney(amts.amt_due_workable ?? 0) : "—"}
+          sub="100% collectible universe"
         />
       </div>
 
@@ -900,11 +909,27 @@ function WorkListTab({
           </select>
         </div>
         <div style={{ fontSize: 12, color: C.secondary }}>
-          {fmt(accounts.length)} accounts
+          {fmt(showFollowUps ? filtered.length : accounts.length)} accounts
           {carryoverCount > 0 && (
             <span style={{ color: C.teal, marginLeft: 8 }}>({carryoverCount} carry-overs)</span>
           )}
         </div>
+        <label
+          style={{
+            display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: showFollowUps ? C.teal : C.muted, cursor: "pointer",
+            background: showFollowUps ? `${C.teal}18` : "transparent",
+            border: `1px solid ${showFollowUps ? C.teal : C.border}`,
+            borderRadius: 4, padding: "3px 8px",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={showFollowUps}
+            onChange={(e) => setShowFollowUps(e.target.checked)}
+            style={{ cursor: "pointer" }}
+          />
+          Follow-ups Only
+        </label>
         {/* Rep breakdown pills */}
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginLeft: "auto" }}>
           {Object.entries(repCounts)
@@ -953,6 +978,8 @@ function WorkListTab({
                 <Th onClick={() => handleSort("last_called_phone1")}>Called{arrow("last_called_phone1")}</Th>
                 <Th>Phone 2</Th>
                 <Th onClick={() => handleSort("last_called_phone2")}>Called{arrow("last_called_phone2")}</Th>
+                <Th>Mobile</Th>
+                <Th onClick={() => handleSort("last_called_mobile")}>Called{arrow("last_called_mobile")}</Th>
                 <Th onClick={() => handleSort("billing_method")}>Billing{arrow("billing_method")}</Th>
                 <Th onClick={() => handleSort("state")}>State{arrow("state")}</Th>
                 <Th style={{ minWidth: 120 }}>Dispo 1</Th>
@@ -974,7 +1001,16 @@ function WorkListTab({
                   }}
                 >
                   <Td style={{ fontWeight: 600, fontSize: 11 }}>{a.assigned_rep}</Td>
-                  <Td style={{ fontSize: 11, fontFamily: "monospace" }}>{a.account_number}</Td>
+                  <Td style={{ fontSize: 11, fontFamily: "monospace" }}>
+                    {a.account_number}
+                    {a.is_carryover && (
+                      <span style={{
+                        marginLeft: 4, fontSize: 8, fontWeight: 700, fontFamily: FONT,
+                        color: C.teal, border: `1px solid ${C.teal}`, borderRadius: 3,
+                        padding: "0 3px", verticalAlign: "middle",
+                      }}>CO</span>
+                    )}
+                  </Td>
                   <Td style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" }}>
                     {a.insured_name}
                   </Td>
@@ -1012,6 +1048,19 @@ function WorkListTab({
                       const daysAgo = Math.floor((new Date(today).getTime() - new Date(d).getTime()) / 86400000);
                       const color = daysAgo === 0 ? C.green : daysAgo <= 2 ? C.amber : C.red;
                       return <span style={{ color, fontWeight: 600 }}>{shortDateTime(a.last_called_phone2)}</span>;
+                    })()}
+                  </Td>
+                  <Td style={{ fontSize: 11, color: a.mobile_phone && a.mobile_phone !== a.main_phone && a.mobile_phone !== a.work_phone ? C.text : C.muted }}>
+                    {a.mobile_phone && a.mobile_phone !== a.main_phone && a.mobile_phone !== a.work_phone ? a.mobile_phone : ""}
+                  </Td>
+                  <Td style={{ fontSize: 10, textAlign: "center" }}>
+                    {(() => {
+                      if (!a.mobile_phone || a.mobile_phone === a.main_phone || a.mobile_phone === a.work_phone || !a.last_called_mobile) return <span style={{ color: C.muted }}>--</span>;
+                      const today = todayStr();
+                      const d = a.last_called_mobile.slice(0, 10);
+                      const daysAgo = Math.floor((new Date(today).getTime() - new Date(d).getTime()) / 86400000);
+                      const color = daysAgo === 0 ? C.green : daysAgo <= 2 ? C.amber : C.red;
+                      return <span style={{ color, fontWeight: 600 }}>{shortDateTime(a.last_called_mobile)}</span>;
                     })()}
                   </Td>
                   <Td style={{ fontSize: 10 }}>{a.billing_method}</Td>
