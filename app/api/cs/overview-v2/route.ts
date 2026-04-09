@@ -65,19 +65,17 @@ async function computeDay(date: string): Promise<DayMetrics> {
   // Only count accounts that are on the working sheet (have a rep assigned).
   // Lenovo captures ALL PBS accounts; not-yet-due ones have assigned_rep=NULL.
   // Fall back to cs_account_daily if cs_past_due_accounts has no assigned reps yet.
+  // Read dispos from cs_past_due_accounts (populated by sheets-sync from Google Sheet).
+  // cs_dispo_history is unused in Phase 1 — dispos flow: Google Sheet → sheets-sync → cs_past_due_accounts.
   const acctRes = await query(
-    `SELECT ad.account_number,
-            ad.installments_made,
-            ad.amount_due,
-            ad.main_phone, ad.home_phone, ad.work_phone,
-            dh.dispo_1, dh.dispo_2, dh.dispo_date AS followup_raw
-     FROM cs_account_daily ad
-     INNER JOIN cs_past_due_accounts pa
-       ON pa.scrub_date = ad.scrub_date AND pa.account_number = ad.account_number
-       AND pa.assigned_rep IS NOT NULL AND pa.assigned_rep != ''
-     LEFT JOIN cs_dispo_history dh
-       ON dh.scrub_date = ad.scrub_date AND dh.account_number = ad.account_number
-     WHERE ad.scrub_date = $1`,
+    `SELECT pa.account_number,
+            pa.installments_made,
+            pa.amount_due,
+            pa.main_phone, pa.home_phone, pa.work_phone,
+            pa.dispo_1, pa.dispo_2, pa.dispo_date AS followup_raw
+     FROM cs_past_due_accounts pa
+     WHERE pa.scrub_date = $1
+       AND pa.assigned_rep IS NOT NULL AND pa.assigned_rep != ''`,
     [date]
   );
 
