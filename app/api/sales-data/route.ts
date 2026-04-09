@@ -86,6 +86,8 @@ export async function GET(req: Request) {
   const fromDate = url.searchParams.get("start") ?? todayLocal();
   const toDate = url.searchParams.get("end") ?? todayLocal();
   const soldOnly = url.searchParams.get("soldOnly") === "true";
+  const debugMode = url.searchParams.get("debug") === "true";
+  const droppedDeals: Array<Record<string, unknown>> = [];
   const statusFilter = soldOnly
     ? "AND deal_status = 'Sold'"
     : "AND deal_status != ''";
@@ -574,7 +576,10 @@ export async function GET(req: Request) {
         continue; // skip queue breakdown
       }
 
-      if (isExcludedSalesperson(salesRep) && isExcludedSalesperson(closer)) continue;
+      if (isExcludedSalesperson(salesRep) && isExcludedSalesperson(closer)) {
+        if (debugMode) droppedDeals.push({ reason: "excluded_salesperson", product, contract_no: deal.contract_no, customer_id: deal.customer_id, owner: deal.owner, salesperson: deal.salesperson, campaign: deal.campaign, promo_code: deal.promo_code, deal_status: deal.deal_status });
+        continue;
+      }
 
       const soldDate = deal.sold_date instanceof Date ? deal.sold_date.toISOString().slice(0, 10) : String(deal.sold_date).slice(0, 10);
       const phones = [deal.home_phone, deal.mobile_phone]
@@ -599,7 +604,10 @@ export async function GET(req: Request) {
       }
 
       // CS/AI/SP already handled above via continue — remaining deals need a queue
-      if (!dealQueue) continue;
+      if (!dealQueue) {
+        if (debugMode) droppedDeals.push({ reason: "no_queue", product, contract_no: deal.contract_no, customer_id: deal.customer_id, owner: deal.owner, salesperson: deal.salesperson, campaign: deal.campaign, promo_code: deal.promo_code, deal_status: deal.deal_status, home_phone: deal.home_phone, mobile_phone: deal.mobile_phone, sold_date: soldDate, phones_checked: phones });
+        continue;
+      }
 
       // Determine category: Auto, Home, or F/B (Flip/Bundle)
       const queueIsAuto = isAutoQueue(dealQueue);
@@ -750,6 +758,7 @@ export async function GET(req: Request) {
     }
 
     return NextResponse.json({
+      ...(debugMode ? { _debug: { rawAutoRows: autoDealsResult.rows.length, rawHomeRows: homeDealsResult.rows.length, droppedCount: droppedDeals.length, droppedDeals } } : {}),
       companyTotal: {
         deals: companyDeals,
         calls: totalCalls,
