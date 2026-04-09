@@ -122,12 +122,6 @@ async function computeDay(date: string): Promise<DayMetrics> {
   // When cs_raw_calls has data, we use it as primary (has direction, queue, status).
   // Until then, fall back to the tables that seed-refresh populates.
 
-  const rawCallsRes = await query(
-    `SELECT COUNT(*) AS cnt FROM cs_raw_calls WHERE call_date = $1`,
-    [date]
-  );
-  const hasRawCalls = parseInt(rawCallsRes.rows[0]?.cnt || "0", 10) > 0;
-
   // Build phone → account(s) lookup, only for workable
   const phoneToZero = new Map<string, boolean>(); // phone -> is_zero (if phone belongs to workable)
   for (const a of workable) {
@@ -154,19 +148,43 @@ async function computeDay(date: string): Promise<DayMetrics> {
   const unansweredPhones = new Set<string>();
   const answeredPhones = new Set<string>();
 
-  if (hasRawCalls) {
-    // ── Primary path: cs_raw_calls has data (Lenovo poller online) ──────
-    const callsRes = await query(
-      `SELECT phone, direction, queue_name, status, started_at
-       FROM cs_raw_calls WHERE call_date = $1`,
+  // ── OUTBOUND: always read from cs_outbound_calls (most complete source) ──
+  // seed-refresh populates this every 15 min with ALL 3CX outbound calls.
+  // Lenovo's poller also writes here. This is the single source of truth for outbound.
+  const outRes = await query(
+    `SELECT phone, call_time FROM cs_outbound_calls
+     WHERE call_time >= $1::date
+       AND call_time < ($1::date + INTERVAL '1 day')`,
+    [date]
+  );
+  for (const c of outRes.rows) {
+    const phone = (c.phone || "").trim();
+    if (phone && phoneToZero.has(phone)) {
+      const isZero = phoneToZero.get(phone)!;
+      if (isZero) { zeroPayCalls += 1; outboundPhonesHitZero.add(phone); }
+      else { nonZeroCalls += 1; outboundPhonesHitNon.add(phone); }
+      outboundPhonesHit.add(phone);
+    }
+  }
+  console.log(`[overview-v2] date=${date}, outbound rows=${outRes.rows.length}, phoneToZero=${phoneToZero.size}, matched phones=${outboundPhonesHit.size}, zeroCalls=${zeroPayCalls}, nonZeroCalls=${nonZeroCalls}`);
+
+  // ── INBOUND: read from cs_raw_calls if available (has direction, queue, status) ──
+  // cs_raw_calls is populated by Lenovo's poller. queue_calls only tracks sales queues.
+  {
+    const rawInRes = await query(
+      `SELECT phone, queue_name, status, started_at
+       FROM cs_raw_calls
+       WHERE call_date = $1 AND direction = 'Inbound'`,
       [date]
     );
-    for (const c of callsRes.rows) {
+    for (const c of rawInRes.rows) {
       const phone = (c.phone || "").trim();
-      const dir = (c.direction || "").trim();
       const queue = (c.queue_name || "").trim();
       const status = (c.status || "").trim().toLowerCase();
       const startedAt: Date | null = c.started_at ? new Date(c.started_at) : null;
+
+      const isCollections = /collections/i.test(queue);
+      if (!isCollections) continue;
 
       let inBH = false;
       if (startedAt) {
@@ -176,55 +194,16 @@ async function computeDay(date: string): Promise<DayMetrics> {
         const hour = parseInt(hourStr, 10);
         inBH = hour >= 8 && hour < 19;
       }
+      if (!inBH) continue;
 
-      if (dir === "Outbound") {
-        if (phone && phoneToZero.has(phone)) {
-          const isZero = phoneToZero.get(phone)!;
-          if (isZero) { zeroPayCalls += 1; outboundPhonesHitZero.add(phone); }
-          else { nonZeroCalls += 1; outboundPhonesHitNon.add(phone); }
-          outboundPhonesHit.add(phone);
-        }
-      } else if (dir === "Inbound") {
-        const isCollections = /collections/i.test(queue);
-        if (!isCollections || !inBH) continue;
-        if (status === "answered") { inboundAnswered += 1; if (phone) answeredPhones.add(phone); }
-        else if (status === "unanswered") { abandoned += 1; if (phone) unansweredPhones.add(phone); }
-        if (phone && phoneToZero.has(phone)) {
-          const isZero = phoneToZero.get(phone)!;
-          if (isZero) inboundPhonesHitZero.add(phone); else inboundPhonesHitNon.add(phone);
-          inboundPhonesHit.add(phone);
-        }
-      }
-    }
-  } else {
-    // ── Fallback path: use cs_outbound_calls + queue_calls from seed-refresh ──
-    // Outbound calls from cs_outbound_calls (phone, call_time, agent_name)
-    // call_time is TIMESTAMP (no tz) — stored as CT by seed-refresh.
-    // Use simple date range to avoid timezone cast issues.
-    const outRes = await query(
-      `SELECT phone, call_time FROM cs_outbound_calls
-       WHERE call_time >= $1::date
-         AND call_time < ($1::date + INTERVAL '1 day')`,
-      [date]
-    );
-    console.log(`[overview-v2] fallback: date=${date}, hasRawCalls=${hasRawCalls}, outbound rows=${outRes.rows.length}, phoneToZero size=${phoneToZero.size}`);
-    let matchCount = 0;
-    for (const c of outRes.rows) {
-      const phone = (c.phone || "").trim();
+      if (status === "answered") { inboundAnswered += 1; if (phone) answeredPhones.add(phone); }
+      else if (status === "unanswered") { abandoned += 1; if (phone) unansweredPhones.add(phone); }
       if (phone && phoneToZero.has(phone)) {
-        matchCount++;
         const isZero = phoneToZero.get(phone)!;
-        if (isZero) { zeroPayCalls += 1; outboundPhonesHitZero.add(phone); }
-        else { nonZeroCalls += 1; outboundPhonesHitNon.add(phone); }
-        outboundPhonesHit.add(phone);
+        if (isZero) inboundPhonesHitZero.add(phone); else inboundPhonesHitNon.add(phone);
+        inboundPhonesHit.add(phone);
       }
     }
-    console.log(`[overview-v2] fallback: outbound matched=${matchCount}, zeroPayCalls=${zeroPayCalls}, nonZeroCalls=${nonZeroCalls}, uniquePhones=${outboundPhonesHit.size}`);
-
-    // Inbound collections calls: queue_calls only tracks sales queues (mail/home),
-    // NOT collections. Inbound data will come from cs_raw_calls once Lenovo's
-    // poller is online. Until then, inbound metrics stay at 0.
-    // No-op for now — inboundAnswered, abandoned stay 0.
   }
 
   // ── 3. Aggregates ────────────────────────────────────────────────────────
