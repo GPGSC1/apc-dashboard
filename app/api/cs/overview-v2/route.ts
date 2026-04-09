@@ -199,20 +199,27 @@ async function computeDay(date: string): Promise<DayMetrics> {
   } else {
     // ── Fallback path: use cs_outbound_calls + queue_calls from seed-refresh ──
     // Outbound calls from cs_outbound_calls (phone, call_time, agent_name)
+    // call_time is TIMESTAMP (no tz) — stored as CT by seed-refresh.
+    // Use simple date range to avoid timezone cast issues.
     const outRes = await query(
       `SELECT phone, call_time FROM cs_outbound_calls
-       WHERE call_time::date = $1::date`,
+       WHERE call_time >= $1::date
+         AND call_time < ($1::date + INTERVAL '1 day')`,
       [date]
     );
+    console.log(`[overview-v2] fallback: date=${date}, hasRawCalls=${hasRawCalls}, outbound rows=${outRes.rows.length}, phoneToZero size=${phoneToZero.size}`);
+    let matchCount = 0;
     for (const c of outRes.rows) {
       const phone = (c.phone || "").trim();
       if (phone && phoneToZero.has(phone)) {
+        matchCount++;
         const isZero = phoneToZero.get(phone)!;
         if (isZero) { zeroPayCalls += 1; outboundPhonesHitZero.add(phone); }
         else { nonZeroCalls += 1; outboundPhonesHitNon.add(phone); }
         outboundPhonesHit.add(phone);
       }
     }
+    console.log(`[overview-v2] fallback: outbound matched=${matchCount}, zeroPayCalls=${zeroPayCalls}, nonZeroCalls=${nonZeroCalls}, uniquePhones=${outboundPhonesHit.size}`);
 
     // Inbound collections calls: queue_calls only tracks sales queues (mail/home),
     // NOT collections. Inbound data will come from cs_raw_calls once Lenovo's
