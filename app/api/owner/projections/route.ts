@@ -2,27 +2,39 @@ import { NextResponse } from "next/server";
 import { query } from "../../../../lib/db/connection";
 import { todayLocal } from "../../../../lib/date-utils";
 
-// ── Fee & Reserve Schedule (static, tiered by term in months) ──
+// ── Fee & Reserve Schedule (from Inspiron's measurement map — qKeyUnified) ──
+// Tiered by finance term. Same rates for WALCO (auto) and WALCO-HW (home).
 const FEE_SCHEDULE = [
-  { minTerm: 1, maxTerm: 24, feeRate: 0.0975, reserveRate: 0.55 },
-  { minTerm: 25, maxTerm: 36, feeRate: 0.1075, reserveRate: 0.50 },
-  { minTerm: 37, maxTerm: 48, feeRate: 0.1175, reserveRate: 0.45 },
-  { minTerm: 49, maxTerm: 60, feeRate: 0.1275, reserveRate: 0.40 },
-  { minTerm: 61, maxTerm: 999, feeRate: 0.1475, reserveRate: 0.35 },
+  { minTerm: 1, maxTerm: 12, feeRate: 0.0975, reserveRate: 0.35 },
+  { minTerm: 13, maxTerm: 15, feeRate: 0.1075, reserveRate: 0.40 },
+  { minTerm: 16, maxTerm: 18, feeRate: 0.1275, reserveRate: 0.45 },
+  { minTerm: 19, maxTerm: 24, feeRate: 0.1475, reserveRate: 0.55 },
 ];
 
 function getFeeReserve(termMonths: number) {
   const tier = FEE_SCHEDULE.find(
     (t) => termMonths >= t.minTerm && termMonths <= t.maxTerm
   );
-  return tier || { feeRate: 0.1275, reserveRate: 0.40 }; // default to 49-60 tier
+  return tier || { feeRate: 0.1275, reserveRate: 0.45 }; // default to 16-18 tier
+}
+
+// ── Funding formula (verified by Inspiron against 99/99 deals, <$0.01 tolerance) ──
+// FundingAmount = ((CustomerPay - DownPayment) × (1 - FeePct) - AdminCost) × (1 - ReservePct)
+// AdminCost = dealerCost (the dealer/admin cost field from Moxy)
+function calcFunding(custCost: number, downPayment: number, dealerCost: number, term: number): number {
+  if (!custCost || custCost <= 0) return 0;
+  const { feeRate, reserveRate } = getFeeReserve(term);
+  const financed = custCost - downPayment;
+  const afterFee = financed * (1 - feeRate);
+  const afterAdmin = afterFee - dealerCost;
+  const fundingAmount = afterAdmin * (1 - reserveRate);
+  return Math.max(0, fundingAmount); // don't go negative
 }
 
 // ── Date helpers ──
 function getWeekRange(refDate: string): { start: string; end: string } {
-  // Returns Mon–Fri range for the week containing refDate
   const d = new Date(refDate + "T12:00:00Z");
-  const dow = d.getUTCDay(); // 0=Sun, 1=Mon, ...
+  const dow = d.getUTCDay();
   const diffToMon = dow === 0 ? -6 : 1 - dow;
   const mon = new Date(d);
   mon.setUTCDate(d.getUTCDate() + diffToMon);
@@ -43,11 +55,40 @@ function addDays(dateStr: string, n: number): string {
 function getNextFriday(refDate: string): string {
   const d = new Date(refDate + "T12:00:00Z");
   const dow = d.getUTCDay();
-  const daysToFri = dow <= 5 ? 5 - dow : 6; // if sat, next fri is 6 days
-  if (daysToFri === 0) return refDate; // already friday
+  const daysToFri = dow <= 5 ? 5 - dow : 6;
+  if (daysToFri === 0) return refDate;
   const fri = new Date(d);
   fri.setUTCDate(d.getUTCDate() + daysToFri);
   return fri.toISOString().slice(0, 10);
+}
+
+// ── Build funding aggregates from deal rows ──
+interface DealRow {
+  cust_cost: number;
+  dealer_cost: number;
+  down_payment: number;
+  finance_term: number;
+}
+
+function aggregateDeals(rows: DealRow[]) {
+  let totalFunding = 0;
+  let count = 0;
+  for (const r of rows) {
+    const f = calcFunding(
+      Number(r.cust_cost) || 0,
+      Number(r.down_payment) || 0,
+      Number(r.dealer_cost) || 0,
+      Number(r.finance_term) || 0
+    );
+    totalFunding += f;
+    count++;
+  }
+  return {
+    deals: count,
+    funding: Math.round(totalFunding * 100) / 100,
+    avgFunding: count > 0 ? Math.round(totalFunding / count) : 0,
+    admin: Math.round(totalFunding * 100) / 100, // keep for backward compat
+  };
 }
 
 export async function GET(request: Request) {
@@ -55,40 +96,72 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const today = todayLocal();
 
-    // ── This week & next week ranges ──
+    // ── Friday windows (WALCO funds every Friday) ──
+    // "This Friday" window = prior Monday–Friday payment window
+    // "Next Friday" window = current partial week through today
     const thisWeek = getWeekRange(today);
-    const nextWeekStart = addDays(thisWeek.end, 3); // Monday after this Friday
+    const nextWeekStart = addDays(thisWeek.end, 3);
     const nextWeek = getWeekRange(nextWeekStart);
     const thisFriday = getNextFriday(today);
     const nextFriday = addDays(thisFriday, 7);
 
-    // ── 1. Deal counts & admin totals for this week ──
-    const thisWeekAutoRes = await query(
-      `SELECT COUNT(*) as count, COALESCE(SUM(admin), 0) as total_admin
+    // ── 1. This week deals (with financial fields) ──
+    const thisWeekAutoRows = await query(
+      `SELECT cust_cost, dealer_cost, down_payment, finance_term
        FROM moxy_deals
+       WHERE sold_date BETWEEN $1 AND $2
+         AND deal_status NOT IN ('Back Out', 'VOID', '')
+         AND cust_cost > 0`,
+      [thisWeek.start, thisWeek.end]
+    );
+    const thisWeekHomeRows = await query(
+      `SELECT cust_cost, dealer_cost, down_payment, finance_term
+       FROM moxy_home_deals
+       WHERE sold_date BETWEEN $1 AND $2
+         AND deal_status NOT IN ('Back Out', 'VOID', '')
+         AND cust_cost > 0`,
+      [thisWeek.start, thisWeek.end]
+    );
+
+    // Also get total deal count (including deals without financial data yet)
+    const thisWeekAutoCount = await query(
+      `SELECT COUNT(*) as count FROM moxy_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')`,
       [thisWeek.start, thisWeek.end]
     );
-    const thisWeekHomeRes = await query(
-      `SELECT COUNT(*) as count, COALESCE(SUM(admin::numeric), 0) as total_admin
-       FROM moxy_home_deals
+    const thisWeekHomeCount = await query(
+      `SELECT COUNT(*) as count FROM moxy_home_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')`,
       [thisWeek.start, thisWeek.end]
     );
 
-    // ── 2. Deal counts & admin totals for next week ──
-    const nextWeekAutoRes = await query(
-      `SELECT COUNT(*) as count, COALESCE(SUM(admin), 0) as total_admin
+    // ── 2. Next week deals ──
+    const nextWeekAutoRows = await query(
+      `SELECT cust_cost, dealer_cost, down_payment, finance_term
        FROM moxy_deals
+       WHERE sold_date BETWEEN $1 AND $2
+         AND deal_status NOT IN ('Back Out', 'VOID', '')
+         AND cust_cost > 0`,
+      [nextWeek.start, nextWeek.end]
+    );
+    const nextWeekHomeRows = await query(
+      `SELECT cust_cost, dealer_cost, down_payment, finance_term
+       FROM moxy_home_deals
+       WHERE sold_date BETWEEN $1 AND $2
+         AND deal_status NOT IN ('Back Out', 'VOID', '')
+         AND cust_cost > 0`,
+      [nextWeek.start, nextWeek.end]
+    );
+    const nextWeekAutoCount = await query(
+      `SELECT COUNT(*) as count FROM moxy_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')`,
       [nextWeek.start, nextWeek.end]
     );
-    const nextWeekHomeRes = await query(
-      `SELECT COUNT(*) as count, COALESCE(SUM(admin::numeric), 0) as total_admin
-       FROM moxy_home_deals
+    const nextWeekHomeCount = await query(
+      `SELECT COUNT(*) as count FROM moxy_home_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')`,
       [nextWeek.start, nextWeek.end]
@@ -96,7 +169,7 @@ export async function GET(request: Request) {
 
     // ── 3. Pipeline: deals by status ──
     const pipelineAutoRes = await query(
-      `SELECT deal_status, COUNT(*) as count, COALESCE(SUM(admin), 0) as total_admin
+      `SELECT deal_status, COUNT(*) as count, COALESCE(SUM(cust_cost), 0) as total_admin
        FROM moxy_deals
        WHERE sold_date >= $1
        GROUP BY deal_status
@@ -104,7 +177,7 @@ export async function GET(request: Request) {
       [thisWeek.start]
     );
     const pipelineHomeRes = await query(
-      `SELECT deal_status, COUNT(*) as count, COALESCE(SUM(admin::numeric), 0) as total_admin
+      `SELECT deal_status, COUNT(*) as count, COALESCE(SUM(cust_cost), 0) as total_admin
        FROM moxy_home_deals
        WHERE sold_date >= $1
        GROUP BY deal_status
@@ -115,46 +188,65 @@ export async function GET(request: Request) {
     // ── 4. MTD totals ──
     const monthStart = today.slice(0, 7) + "-01";
     const mtdAutoRes = await query(
-      `SELECT COUNT(*) as count, COALESCE(SUM(admin), 0) as total_admin
+      `SELECT COUNT(*) as count, COALESCE(SUM(cust_cost), 0) as total_admin
        FROM moxy_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')`,
       [monthStart, today]
     );
     const mtdHomeRes = await query(
-      `SELECT COUNT(*) as count, COALESCE(SUM(admin::numeric), 0) as total_admin
+      `SELECT COUNT(*) as count, COALESCE(SUM(cust_cost), 0) as total_admin
        FROM moxy_home_deals
        WHERE sold_date BETWEEN $1 AND $2
          AND deal_status NOT IN ('Back Out', 'VOID', '')`,
       [monthStart, today]
     );
 
-    // ── 5. Weekly history (last 8 weeks) ──
-    const historyWeeks: { weekStart: string; weekEnd: string; autoDeals: number; homeDeals: number; autoAdmin: number; homeAdmin: number }[] = [];
+    // ── 5. Weekly history (last 8 weeks) — compute funding per week ──
+    const historyWeeks: {
+      weekStart: string; weekEnd: string;
+      autoDeals: number; homeDeals: number;
+      autoAdmin: number; homeAdmin: number;
+    }[] = [];
+
     for (let w = 0; w < 8; w++) {
       const wStart = addDays(thisWeek.start, -7 * w);
       const wk = getWeekRange(wStart);
-      const ha = await query(
-        `SELECT COUNT(*) as count, COALESCE(SUM(admin), 0) as total_admin
+      const haRows = await query(
+        `SELECT cust_cost, dealer_cost, down_payment, finance_term
          FROM moxy_deals
          WHERE sold_date BETWEEN $1 AND $2
-           AND deal_status NOT IN ('Back Out', 'VOID', '')`,
+           AND deal_status NOT IN ('Back Out', 'VOID', '')
+           AND cust_cost > 0`,
         [wk.start, wk.end]
       );
-      const hh = await query(
-        `SELECT COUNT(*) as count, COALESCE(SUM(admin::numeric), 0) as total_admin
+      const hhRows = await query(
+        `SELECT cust_cost, dealer_cost, down_payment, finance_term
          FROM moxy_home_deals
          WHERE sold_date BETWEEN $1 AND $2
-           AND deal_status NOT IN ('Back Out', 'VOID', '')`,
+           AND deal_status NOT IN ('Back Out', 'VOID', '')
+           AND cust_cost > 0`,
         [wk.start, wk.end]
       );
+      const haCount = await query(
+        `SELECT COUNT(*) as count FROM moxy_deals
+         WHERE sold_date BETWEEN $1 AND $2 AND deal_status NOT IN ('Back Out', 'VOID', '')`,
+        [wk.start, wk.end]
+      );
+      const hhCount = await query(
+        `SELECT COUNT(*) as count FROM moxy_home_deals
+         WHERE sold_date BETWEEN $1 AND $2 AND deal_status NOT IN ('Back Out', 'VOID', '')`,
+        [wk.start, wk.end]
+      );
+      const autoAgg = aggregateDeals(haRows.rows);
+      const homeAgg = aggregateDeals(hhRows.rows);
       historyWeeks.push({
         weekStart: wk.start,
         weekEnd: wk.end,
-        autoDeals: Number(ha.rows[0].count),
-        homeDeals: Number(hh.rows[0].count),
-        autoAdmin: Number(ha.rows[0].total_admin),
-        homeAdmin: Number(hh.rows[0].total_admin),
+        autoDeals: Number(haCount.rows[0].count),
+        homeDeals: Number(hhCount.rows[0].count),
+        autoAdmin: autoAgg.funding,
+        homeAdmin: homeAgg.funding,
       });
     }
 
@@ -163,7 +255,7 @@ export async function GET(request: Request) {
     let walcoCount = 0;
     try {
       const walcoRes = await query(
-        `SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total
+        `SELECT COUNT(*) as count, COALESCE(SUM(payment_amount), 0) as total
          FROM walco_payments
          WHERE payment_date BETWEEN $1 AND $2`,
         [thisWeek.start, thisWeek.end]
@@ -171,30 +263,30 @@ export async function GET(request: Request) {
       walcoTotal = Number(walcoRes.rows[0].total);
       walcoCount = Number(walcoRes.rows[0].count);
     } catch {
-      // walco_payments table doesn't exist yet — that's expected
+      // walco_payments table doesn't exist yet
     }
 
-    // ── Build response ──
-    // funding = admin for now. Will be replaced with real funding calc
-    // once we have custCost/dealerCost from Moxy + WALCO payments from Lenovo.
-    function buildLine(count: number, admin: number) {
-      const deals = count;
-      const funding = admin; // placeholder: will become real funding amount
-      const avgFunding = deals > 0 ? Math.round(funding / deals) : 0;
-      return { deals, admin, funding, avgFunding };
-    }
+    // ── Build funding aggregates ──
+    const thisWeekAutoAgg = aggregateDeals(thisWeekAutoRows.rows);
+    const thisWeekHomeAgg = aggregateDeals(thisWeekHomeRows.rows);
+    const nextWeekAutoAgg = aggregateDeals(nextWeekAutoRows.rows);
+    const nextWeekHomeAgg = aggregateDeals(nextWeekHomeRows.rows);
 
-    const thisWeekAuto = buildLine(Number(thisWeekAutoRes.rows[0].count), Number(thisWeekAutoRes.rows[0].total_admin));
-    const thisWeekHome = buildLine(Number(thisWeekHomeRes.rows[0].count), Number(thisWeekHomeRes.rows[0].total_admin));
-    const nextWeekAuto = buildLine(Number(nextWeekAutoRes.rows[0].count), Number(nextWeekAutoRes.rows[0].total_admin));
-    const nextWeekHome = buildLine(Number(nextWeekHomeRes.rows[0].count), Number(nextWeekHomeRes.rows[0].total_admin));
+    // Use total count (including deals without financial data) for deal counts
+    thisWeekAutoAgg.deals = Number(thisWeekAutoCount.rows[0].count);
+    thisWeekHomeAgg.deals = Number(thisWeekHomeCount.rows[0].count);
+    nextWeekAutoAgg.deals = Number(nextWeekAutoCount.rows[0].count);
+    nextWeekHomeAgg.deals = Number(nextWeekHomeCount.rows[0].count);
 
-    function buildTotal(a: ReturnType<typeof buildLine>, h: ReturnType<typeof buildLine>) {
+    function buildTotal(a: typeof thisWeekAutoAgg, h: typeof thisWeekHomeAgg) {
       const deals = a.deals + h.deals;
-      const admin = a.admin + h.admin;
       const funding = a.funding + h.funding;
-      const avgFunding = deals > 0 ? Math.round(funding / deals) : 0;
-      return { deals, admin, funding, avgFunding };
+      return {
+        deals,
+        funding,
+        avgFunding: deals > 0 ? Math.round(funding / deals) : 0,
+        admin: funding,
+      };
     }
 
     return NextResponse.json({
@@ -204,15 +296,15 @@ export async function GET(request: Request) {
       nextFriday,
       thisWeek: {
         range: thisWeek,
-        auto: thisWeekAuto,
-        home: thisWeekHome,
-        total: buildTotal(thisWeekAuto, thisWeekHome),
+        auto: thisWeekAutoAgg,
+        home: thisWeekHomeAgg,
+        total: buildTotal(thisWeekAutoAgg, thisWeekHomeAgg),
       },
       nextWeek: {
         range: nextWeek,
-        auto: nextWeekAuto,
-        home: nextWeekHome,
-        total: buildTotal(nextWeekAuto, nextWeekHome),
+        auto: nextWeekAutoAgg,
+        home: nextWeekHomeAgg,
+        total: buildTotal(nextWeekAutoAgg, nextWeekHomeAgg),
       },
       mtd: {
         monthStart,

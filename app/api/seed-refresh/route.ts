@@ -855,10 +855,28 @@ async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number; backe
       String(da.make ?? ""),
       String(da.model ?? ""),
       String(da.state ?? ""),
-      parseFloat(String(da.admin ?? "0")) || 0,
+      String(da.admin ?? ""),  // admin company name (text, not $)
       String(da.owner ?? da.closer ?? da.salesRep ?? ""),
+      // Financial fields for Owner Dash funding projections
+      parseFloat(String(da.custCost ?? "0")) || 0,
+      parseFloat(String(da.dealerCost ?? "0")) || 0,
+      parseFloat(String(da.downPmt ?? "0")) || 0,
+      parseInt(String(da.term ?? "0")) || 0,
+      String(da.finSentName ?? ""),
     ]);
   }
+
+  // One-time migration: add financial columns if they don't exist
+  await query(`
+    DO $$ BEGIN
+      ALTER TABLE moxy_deals ADD COLUMN IF NOT EXISTS cust_cost NUMERIC DEFAULT 0;
+      ALTER TABLE moxy_deals ADD COLUMN IF NOT EXISTS dealer_cost NUMERIC DEFAULT 0;
+      ALTER TABLE moxy_deals ADD COLUMN IF NOT EXISTS down_payment NUMERIC DEFAULT 0;
+      ALTER TABLE moxy_deals ADD COLUMN IF NOT EXISTS finance_term INTEGER DEFAULT 0;
+      ALTER TABLE moxy_deals ADD COLUMN IF NOT EXISTS finance_company TEXT DEFAULT '';
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
+  `);
 
   let addedDeals = 0;
   // Split into deals with contract_no and deals without
@@ -867,18 +885,18 @@ async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number; backe
 
   if (withContract.length > 0) {
     addedDeals += await batchInsert(
-      `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin,owner)
+      `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin,owner,cust_cost,dealer_cost,down_payment,finance_term,finance_company)
        VALUES __VALUES__
-       ON CONFLICT (contract_no) WHERE contract_no IS NOT NULL AND contract_no != '' DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason, customer_id = EXCLUDED.customer_id, owner = EXCLUDED.owner`,
-      18, withContract, 100
+       ON CONFLICT (contract_no) WHERE contract_no IS NOT NULL AND contract_no != '' DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason, customer_id = EXCLUDED.customer_id, owner = EXCLUDED.owner, cust_cost = EXCLUDED.cust_cost, dealer_cost = EXCLUDED.dealer_cost, down_payment = EXCLUDED.down_payment, finance_term = EXCLUDED.finance_term, finance_company = EXCLUDED.finance_company`,
+      23, withContract, 100
     );
   }
   if (withoutContract.length > 0) {
     addedDeals += await batchInsert(
-      `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin,owner)
+      `INSERT INTO moxy_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,make,model,state,admin,owner,cust_cost,dealer_cost,down_payment,finance_term,finance_company)
        VALUES __VALUES__
-       ON CONFLICT (customer_id) WHERE (contract_no IS NULL OR contract_no = '') AND customer_id IS NOT NULL AND customer_id != '' DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason, owner = EXCLUDED.owner`,
-      18, withoutContract, 100
+       ON CONFLICT (customer_id) WHERE (contract_no IS NULL OR contract_no = '') AND customer_id IS NOT NULL AND customer_id != '' DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason, owner = EXCLUDED.owner, cust_cost = EXCLUDED.cust_cost, dealer_cost = EXCLUDED.dealer_cost, down_payment = EXCLUDED.down_payment, finance_term = EXCLUDED.finance_term, finance_company = EXCLUDED.finance_company`,
+      23, withoutContract, 100
     );
   }
 
@@ -984,18 +1002,36 @@ async function refreshMoxyHome(dates: string[]): Promise<{ addedDeals: number; b
       String(da.source ?? ""),
       String(da.cancelReason ?? ""),
       String(da.state ?? ""),
-      parseFloat(String(da.admin ?? "0")) || 0,
+      String(da.admin ?? ""),  // admin company name (text, not $)
       String(da.owner ?? da.closer ?? da.salesRep ?? ""),
+      // Financial fields for Owner Dash funding projections
+      parseFloat(String(da.custCost ?? "0")) || 0,
+      parseFloat(String(da.dealerCost ?? "0")) || 0,
+      parseFloat(String(da.downPmt ?? "0")) || 0,
+      parseInt(String(da.term ?? "0")) || 0,
+      String(da.finSentName ?? ""),
     ]);
   }
+
+  // One-time migration: add financial columns if they don't exist
+  await query(`
+    DO $$ BEGIN
+      ALTER TABLE moxy_home_deals ADD COLUMN IF NOT EXISTS cust_cost NUMERIC DEFAULT 0;
+      ALTER TABLE moxy_home_deals ADD COLUMN IF NOT EXISTS dealer_cost NUMERIC DEFAULT 0;
+      ALTER TABLE moxy_home_deals ADD COLUMN IF NOT EXISTS down_payment NUMERIC DEFAULT 0;
+      ALTER TABLE moxy_home_deals ADD COLUMN IF NOT EXISTS finance_term INTEGER DEFAULT 0;
+      ALTER TABLE moxy_home_deals ADD COLUMN IF NOT EXISTS finance_company TEXT DEFAULT '';
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
+  `);
 
   let addedDeals = 0;
   if (dealRows.length > 0) {
     addedDeals = await batchInsert(
-      `INSERT INTO moxy_home_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,state,admin,owner)
+      `INSERT INTO moxy_home_deals (customer_id,contract_no,sold_date,first_name,last_name,home_phone,mobile_phone,salesperson,deal_status,promo_code,campaign,source,cancel_reason,state,admin,owner,cust_cost,dealer_cost,down_payment,finance_term,finance_company)
        VALUES __VALUES__
-       ON CONFLICT (customer_id, contract_no) DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason, owner = EXCLUDED.owner`,
-      16, dealRows, 100
+       ON CONFLICT (customer_id, contract_no) DO UPDATE SET deal_status = EXCLUDED.deal_status, salesperson = EXCLUDED.salesperson, cancel_reason = EXCLUDED.cancel_reason, owner = EXCLUDED.owner, cust_cost = EXCLUDED.cust_cost, dealer_cost = EXCLUDED.dealer_cost, down_payment = EXCLUDED.down_payment, finance_term = EXCLUDED.finance_term, finance_company = EXCLUDED.finance_company`,
+      21, dealRows, 100
     );
   }
 
