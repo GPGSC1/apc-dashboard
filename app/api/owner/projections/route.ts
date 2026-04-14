@@ -32,19 +32,6 @@ function calcFunding(custCost: number, downPayment: number, dealerCost: number, 
 }
 
 // ── Date helpers ──
-function getWeekRange(refDate: string): { start: string; end: string } {
-  const d = new Date(refDate + "T12:00:00Z");
-  const dow = d.getUTCDay();
-  const diffToMon = dow === 0 ? -6 : 1 - dow;
-  const mon = new Date(d);
-  mon.setUTCDate(d.getUTCDate() + diffToMon);
-  const fri = new Date(mon);
-  fri.setUTCDate(mon.getUTCDate() + 4);
-  return {
-    start: mon.toISOString().slice(0, 10),
-    end: fri.toISOString().slice(0, 10),
-  };
-}
 
 function addDays(dateStr: string, n: number): string {
   const d = new Date(dateStr + "T12:00:00Z");
@@ -52,6 +39,18 @@ function addDays(dateStr: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// Get the most recent Friday on or before refDate
+function getPreviousFriday(refDate: string): string {
+  const d = new Date(refDate + "T12:00:00Z");
+  const dow = d.getUTCDay(); // 0=Sun, 5=Fri
+  const diff = dow >= 5 ? dow - 5 : dow + 2; // days back to Friday
+  if (diff === 0) return refDate; // already Friday
+  const fri = new Date(d);
+  fri.setUTCDate(d.getUTCDate() - diff);
+  return fri.toISOString().slice(0, 10);
+}
+
+// Get the next Friday on or after refDate
 function getNextFriday(refDate: string): string {
   const d = new Date(refDate + "T12:00:00Z");
   const dow = d.getUTCDay();
@@ -60,6 +59,36 @@ function getNextFriday(refDate: string): string {
   const fri = new Date(d);
   fri.setUTCDate(d.getUTCDate() + daysToFri);
   return fri.toISOString().slice(0, 10);
+}
+
+// ── Payment-date window logic (from workbook qControls) ──
+// WALCO funds every Friday based on payments received in a prior window.
+//
+// ThisFriday = next Friday from AsOfDate
+// ThisWindowStart = Friday 2 weeks ago (from AsOfDate)
+// ThisWindowEnd = Friday 1 week ago (from AsOfDate)
+// NextWindowStart = day after ThisWindowEnd
+// NextWindowEnd = AsOfDate
+//
+// "This Friday" projection = deals that received a WALCO payment
+//   between ThisWindowStart and ThisWindowEnd
+// "Next Friday" projection = deals that received a WALCO payment
+//   between NextWindowStart and NextWindowEnd (partial week so far)
+function getPaymentWindows(asOfDate: string) {
+  const thisFriday = getNextFriday(asOfDate);
+  // Friday 1 week ago = the Friday before thisFriday
+  const lastFriday = addDays(thisFriday, -7);
+  // Friday 2 weeks ago
+  const twoFridaysAgo = addDays(thisFriday, -14);
+
+  return {
+    thisFriday,
+    nextFriday: addDays(thisFriday, 7),
+    // Window for "This Friday" funding: 2 Fridays ago through last Friday
+    thisWindow: { start: twoFridaysAgo, end: lastFriday },
+    // Window for "Next Friday" funding: day after last Friday through today
+    nextWindow: { start: addDays(lastFriday, 1), end: asOfDate },
+  };
 }
 
 // ── Build funding aggregates from deal rows ──
@@ -91,118 +120,109 @@ function aggregateDeals(rows: DealRow[]) {
   };
 }
 
+// ── Query deals with payment-date windowing via walco_payments JOIN ──
+// Uses DISTINCT ON contract_no to avoid double-counting deals with multiple payments
+async function getWindowDeals(
+  table: "moxy_deals" | "moxy_home_deals",
+  windowStart: string,
+  windowEnd: string
+): Promise<{ rows: DealRow[]; totalCount: number }> {
+  // Get deal financial data for funding calculation (DISTINCT by contract_no)
+  const financialRows = await query(
+    `SELECT DISTINCT ON (md.contract_no)
+       md.cust_cost, md.dealer_cost, md.down_payment, md.finance_term
+     FROM walco_payments wp
+     JOIN ${table} md ON md.contract_no = wp.policy_number
+     WHERE wp.payment_date BETWEEN $1 AND $2
+       AND md.deal_status NOT IN ('Back Out', 'VOID', '')
+       AND md.cust_cost > 0`,
+    [windowStart, windowEnd]
+  );
+
+  // Get total unique deal count (including deals without financial data)
+  const countRes = await query(
+    `SELECT COUNT(DISTINCT wp.policy_number) as count
+     FROM walco_payments wp
+     JOIN ${table} md ON md.contract_no = wp.policy_number
+     WHERE wp.payment_date BETWEEN $1 AND $2
+       AND md.deal_status NOT IN ('Back Out', 'VOID', '')`,
+    [windowStart, windowEnd]
+  );
+
+  return {
+    rows: financialRows.rows,
+    totalCount: Number(countRes.rows[0].count),
+  };
+}
+
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const today = todayLocal();
 
-    // ── Friday windows (WALCO funds every Friday) ──
-    // "This Friday" window = prior Monday–Friday payment window
-    // "Next Friday" window = current partial week through today
-    const thisWeek = getWeekRange(today);
-    const nextWeekStart = addDays(thisWeek.end, 3);
-    const nextWeek = getWeekRange(nextWeekStart);
-    const thisFriday = getNextFriday(today);
-    const nextFriday = addDays(thisFriday, 7);
+    // ── Payment-date windows (from workbook qControls) ──
+    const windows = getPaymentWindows(today);
 
-    // ── 1. This week deals (with financial fields) ──
-    const thisWeekAutoRows = await query(
-      `SELECT cust_cost, dealer_cost, down_payment, finance_term
-       FROM moxy_deals
-       WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '')
-         AND cust_cost > 0`,
-      [thisWeek.start, thisWeek.end]
-    );
-    const thisWeekHomeRows = await query(
-      `SELECT cust_cost, dealer_cost, down_payment, finance_term
-       FROM moxy_home_deals
-       WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '')
-         AND cust_cost > 0`,
-      [thisWeek.start, thisWeek.end]
-    );
+    // ── 1. This Friday deals (payment window: 2 Fridays ago → last Friday) ──
+    const [thisAutoData, thisHomeData] = await Promise.all([
+      getWindowDeals("moxy_deals", windows.thisWindow.start, windows.thisWindow.end),
+      getWindowDeals("moxy_home_deals", windows.thisWindow.start, windows.thisWindow.end),
+    ]);
 
-    // Also get total deal count (including deals without financial data yet)
-    const thisWeekAutoCount = await query(
-      `SELECT COUNT(*) as count FROM moxy_deals
-       WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '')`,
-      [thisWeek.start, thisWeek.end]
-    );
-    const thisWeekHomeCount = await query(
-      `SELECT COUNT(*) as count FROM moxy_home_deals
-       WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '')`,
-      [thisWeek.start, thisWeek.end]
-    );
+    // ── 2. Next Friday deals (payment window: day after last Friday → today) ──
+    const [nextAutoData, nextHomeData] = await Promise.all([
+      getWindowDeals("moxy_deals", windows.nextWindow.start, windows.nextWindow.end),
+      getWindowDeals("moxy_home_deals", windows.nextWindow.start, windows.nextWindow.end),
+    ]);
 
-    // ── 2. Next week deals ──
-    const nextWeekAutoRows = await query(
-      `SELECT cust_cost, dealer_cost, down_payment, finance_term
-       FROM moxy_deals
-       WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '')
-         AND cust_cost > 0`,
-      [nextWeek.start, nextWeek.end]
-    );
-    const nextWeekHomeRows = await query(
-      `SELECT cust_cost, dealer_cost, down_payment, finance_term
-       FROM moxy_home_deals
-       WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '')
-         AND cust_cost > 0`,
-      [nextWeek.start, nextWeek.end]
-    );
-    const nextWeekAutoCount = await query(
-      `SELECT COUNT(*) as count FROM moxy_deals
-       WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '')`,
-      [nextWeek.start, nextWeek.end]
-    );
-    const nextWeekHomeCount = await query(
-      `SELECT COUNT(*) as count FROM moxy_home_deals
-       WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '')`,
-      [nextWeek.start, nextWeek.end]
-    );
+    // ── 3. Pipeline: deals by status (all deals with payments since thisWindow start) ──
+    const [pipelineAutoRes, pipelineHomeRes] = await Promise.all([
+      query(
+        `SELECT md.deal_status, COUNT(DISTINCT wp.policy_number) as count,
+                COALESCE(SUM(DISTINCT md.cust_cost), 0) as total_admin
+         FROM walco_payments wp
+         JOIN moxy_deals md ON md.contract_no = wp.policy_number
+         WHERE wp.payment_date >= $1
+         GROUP BY md.deal_status
+         ORDER BY count DESC`,
+        [windows.thisWindow.start]
+      ),
+      query(
+        `SELECT md.deal_status, COUNT(DISTINCT wp.policy_number) as count,
+                COALESCE(SUM(DISTINCT md.cust_cost), 0) as total_admin
+         FROM walco_payments wp
+         JOIN moxy_home_deals md ON md.contract_no = wp.policy_number
+         WHERE wp.payment_date >= $1
+         GROUP BY md.deal_status
+         ORDER BY count DESC`,
+        [windows.thisWindow.start]
+      ),
+    ]);
 
-    // ── 3. Pipeline: deals by status ──
-    const pipelineAutoRes = await query(
-      `SELECT deal_status, COUNT(*) as count, COALESCE(SUM(cust_cost), 0) as total_admin
-       FROM moxy_deals
-       WHERE sold_date >= $1
-       GROUP BY deal_status
-       ORDER BY count DESC`,
-      [thisWeek.start]
-    );
-    const pipelineHomeRes = await query(
-      `SELECT deal_status, COUNT(*) as count, COALESCE(SUM(cust_cost), 0) as total_admin
-       FROM moxy_home_deals
-       WHERE sold_date >= $1
-       GROUP BY deal_status
-       ORDER BY count DESC`,
-      [thisWeek.start]
-    );
-
-    // ── 4. MTD totals ──
+    // ── 4. MTD totals (all payments this month, joined to deals) ──
     const monthStart = today.slice(0, 7) + "-01";
-    const mtdAutoRes = await query(
-      `SELECT COUNT(*) as count, COALESCE(SUM(cust_cost), 0) as total_admin
-       FROM moxy_deals
-       WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '')`,
-      [monthStart, today]
-    );
-    const mtdHomeRes = await query(
-      `SELECT COUNT(*) as count, COALESCE(SUM(cust_cost), 0) as total_admin
-       FROM moxy_home_deals
-       WHERE sold_date BETWEEN $1 AND $2
-         AND deal_status NOT IN ('Back Out', 'VOID', '')`,
-      [monthStart, today]
-    );
+    const [mtdAutoRes, mtdHomeRes] = await Promise.all([
+      query(
+        `SELECT COUNT(DISTINCT wp.policy_number) as count,
+                COALESCE(SUM(DISTINCT md.cust_cost), 0) as total_admin
+         FROM walco_payments wp
+         JOIN moxy_deals md ON md.contract_no = wp.policy_number
+         WHERE wp.payment_date BETWEEN $1 AND $2
+           AND md.deal_status NOT IN ('Back Out', 'VOID', '')`,
+        [monthStart, today]
+      ),
+      query(
+        `SELECT COUNT(DISTINCT wp.policy_number) as count,
+                COALESCE(SUM(DISTINCT md.cust_cost), 0) as total_admin
+         FROM walco_payments wp
+         JOIN moxy_home_deals md ON md.contract_no = wp.policy_number
+         WHERE wp.payment_date BETWEEN $1 AND $2
+           AND md.deal_status NOT IN ('Back Out', 'VOID', '')`,
+        [monthStart, today]
+      ),
+    ]);
 
-    // ── 5. Weekly history (last 8 weeks) — compute funding per week ──
+    // ── 5. Weekly history (last 8 weeks) — using payment-date windows ──
     const historyWeeks: {
       weekStart: string; weekEnd: string;
       autoDeals: number; homeDeals: number;
@@ -210,47 +230,25 @@ export async function GET(request: Request) {
     }[] = [];
 
     for (let w = 0; w < 8; w++) {
-      const wStart = addDays(thisWeek.start, -7 * w);
-      const wk = getWeekRange(wStart);
-      const haRows = await query(
-        `SELECT cust_cost, dealer_cost, down_payment, finance_term
-         FROM moxy_deals
-         WHERE sold_date BETWEEN $1 AND $2
-           AND deal_status NOT IN ('Back Out', 'VOID', '')
-           AND cust_cost > 0`,
-        [wk.start, wk.end]
-      );
-      const hhRows = await query(
-        `SELECT cust_cost, dealer_cost, down_payment, finance_term
-         FROM moxy_home_deals
-         WHERE sold_date BETWEEN $1 AND $2
-           AND deal_status NOT IN ('Back Out', 'VOID', '')
-           AND cust_cost > 0`,
-        [wk.start, wk.end]
-      );
-      const haCount = await query(
-        `SELECT COUNT(*) as count FROM moxy_deals
-         WHERE sold_date BETWEEN $1 AND $2 AND deal_status NOT IN ('Back Out', 'VOID', '')`,
-        [wk.start, wk.end]
-      );
-      const hhCount = await query(
-        `SELECT COUNT(*) as count FROM moxy_home_deals
-         WHERE sold_date BETWEEN $1 AND $2 AND deal_status NOT IN ('Back Out', 'VOID', '')`,
-        [wk.start, wk.end]
-      );
-      const autoAgg = aggregateDeals(haRows.rows);
-      const homeAgg = aggregateDeals(hhRows.rows);
+      const wkEnd = addDays(windows.thisWindow.end, -7 * w); // Friday
+      const wkStart = addDays(wkEnd, -6); // Saturday before
+      const [haData, hhData] = await Promise.all([
+        getWindowDeals("moxy_deals", wkStart, wkEnd),
+        getWindowDeals("moxy_home_deals", wkStart, wkEnd),
+      ]);
+      const autoAgg = aggregateDeals(haData.rows);
+      const homeAgg = aggregateDeals(hhData.rows);
       historyWeeks.push({
-        weekStart: wk.start,
-        weekEnd: wk.end,
-        autoDeals: Number(haCount.rows[0].count),
-        homeDeals: Number(hhCount.rows[0].count),
+        weekStart: wkStart,
+        weekEnd: wkEnd,
+        autoDeals: haData.totalCount,
+        homeDeals: hhData.totalCount,
         autoAdmin: autoAgg.funding,
         homeAdmin: homeAgg.funding,
       });
     }
 
-    // ── 6. WALCO payments (when available) ──
+    // ── 6. WALCO payment totals for this window ──
     let walcoTotal = 0;
     let walcoCount = 0;
     try {
@@ -258,7 +256,7 @@ export async function GET(request: Request) {
         `SELECT COUNT(*) as count, COALESCE(SUM(payment_amount), 0) as total
          FROM walco_payments
          WHERE payment_date BETWEEN $1 AND $2`,
-        [thisWeek.start, thisWeek.end]
+        [windows.thisWindow.start, windows.thisWindow.end]
       );
       walcoTotal = Number(walcoRes.rows[0].total);
       walcoCount = Number(walcoRes.rows[0].count);
@@ -267,16 +265,16 @@ export async function GET(request: Request) {
     }
 
     // ── Build funding aggregates ──
-    const thisWeekAutoAgg = aggregateDeals(thisWeekAutoRows.rows);
-    const thisWeekHomeAgg = aggregateDeals(thisWeekHomeRows.rows);
-    const nextWeekAutoAgg = aggregateDeals(nextWeekAutoRows.rows);
-    const nextWeekHomeAgg = aggregateDeals(nextWeekHomeRows.rows);
+    const thisWeekAutoAgg = aggregateDeals(thisAutoData.rows);
+    const thisWeekHomeAgg = aggregateDeals(thisHomeData.rows);
+    const nextWeekAutoAgg = aggregateDeals(nextAutoData.rows);
+    const nextWeekHomeAgg = aggregateDeals(nextHomeData.rows);
 
     // Use total count (including deals without financial data) for deal counts
-    thisWeekAutoAgg.deals = Number(thisWeekAutoCount.rows[0].count);
-    thisWeekHomeAgg.deals = Number(thisWeekHomeCount.rows[0].count);
-    nextWeekAutoAgg.deals = Number(nextWeekAutoCount.rows[0].count);
-    nextWeekHomeAgg.deals = Number(nextWeekHomeCount.rows[0].count);
+    thisWeekAutoAgg.deals = thisAutoData.totalCount;
+    thisWeekHomeAgg.deals = thisHomeData.totalCount;
+    nextWeekAutoAgg.deals = nextAutoData.totalCount;
+    nextWeekHomeAgg.deals = nextHomeData.totalCount;
 
     function buildTotal(a: typeof thisWeekAutoAgg, h: typeof thisWeekHomeAgg) {
       const deals = a.deals + h.deals;
@@ -292,16 +290,16 @@ export async function GET(request: Request) {
     return NextResponse.json({
       ok: true,
       today,
-      thisFriday,
-      nextFriday,
+      thisFriday: windows.thisFriday,
+      nextFriday: windows.nextFriday,
       thisWeek: {
-        range: thisWeek,
+        range: windows.thisWindow,
         auto: thisWeekAutoAgg,
         home: thisWeekHomeAgg,
         total: buildTotal(thisWeekAutoAgg, thisWeekHomeAgg),
       },
       nextWeek: {
-        range: nextWeek,
+        range: windows.nextWindow,
         auto: nextWeekAutoAgg,
         home: nextWeekHomeAgg,
         total: buildTotal(nextWeekAutoAgg, nextWeekHomeAgg),
