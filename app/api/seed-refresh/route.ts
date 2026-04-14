@@ -855,7 +855,7 @@ async function refreshMoxy(dates: string[]): Promise<{ addedDeals: number; backe
       String(da.make ?? ""),
       String(da.model ?? ""),
       String(da.state ?? ""),
-      String(da.admin ?? ""),  // admin company name (text, not $)
+      0,  // admin column (legacy REAL type — kept as 0, admin name is not useful)
       String(da.owner ?? da.closer ?? da.salesRep ?? ""),
       // Financial fields for Owner Dash funding projections
       parseFloat(String(da.custCost ?? "0")) || 0,
@@ -1002,7 +1002,7 @@ async function refreshMoxyHome(dates: string[]): Promise<{ addedDeals: number; b
       String(da.source ?? ""),
       String(da.cancelReason ?? ""),
       String(da.state ?? ""),
-      String(da.admin ?? ""),  // admin company name (text, not $)
+      0,  // admin column (legacy TEXT type — kept as 0, admin name not useful)
       String(da.owner ?? da.closer ?? da.salesRep ?? ""),
       // Financial fields for Owner Dash funding projections
       parseFloat(String(da.custCost ?? "0")) || 0,
