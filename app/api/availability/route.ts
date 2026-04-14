@@ -258,7 +258,9 @@ function parseAgentDetailCsv(csv: string): AgentAvailability[] {
 }
 
 function parseRonaCsv(csv: string): { byExt: Record<string, number>; byName: Record<string, number> } {
-  // Returns RONA counts keyed by both extension number and extension name
+  // Returns RONA counts keyed by both extension number and extension name.
+  // Deduped on CallID + Start Time — 3CX reports can duplicate the same RONA
+  // event dozens of times (e.g., 81 identical rows for one missed call).
   const lines = csv.split(/\r?\n/);
   // Find the REAL header row — must contain BOTH "callid" and "extension"
   // (the CSV has a fake header row with just "CallID,,,,,,,," before the real one)
@@ -275,14 +277,29 @@ function parseRonaCsv(csv: string): { byExt: Record<string, number>; byName: Rec
   const headers = parseCsvLine(lines[headerIdx]).map((h) => h.trim().toLowerCase());
   const extNumCol = headers.indexOf("extension number");
   const extNameCol = headers.indexOf("extension name");
+  const callIdCol = headers.indexOf("callid") >= 0 ? headers.indexOf("callid") : 0; // col A fallback
+  // Start Time is column C (index 2) in the RONA CSV. Try header name first, fall back to position.
+  let startCol = headers.indexOf("start time");
+  if (startCol < 0) startCol = headers.indexOf("start");
+  if (startCol < 0) startCol = 2; // positional fallback — column C
 
   const byExt: Record<string, number> = {};
   const byName: Record<string, number> = {};
+  const seen = new Set<string>(); // dedup key: callid|starttime
 
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
     const cols = parseCsvLine(line);
+
+    // Build dedup key from CallID + Start Time
+    const callId = callIdCol >= 0 ? (cols[callIdCol] ?? "").trim() : "";
+    const startTime = startCol >= 0 ? (cols[startCol] ?? "").trim() : "";
+    if (callId || startTime) {
+      const dedupKey = `${callId}|${startTime}`;
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
+    }
 
     if (extNumCol >= 0) {
       const ext = (cols[extNumCol] ?? "").trim();
