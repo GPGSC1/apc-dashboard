@@ -41,6 +41,13 @@ const pages = [
     color: "#14B8A6",
     icon: "📞",
   },
+  {
+    title: "Owner Dashboard",
+    subtitle: "Funding projections, deal pipeline, payment history",
+    href: "/owner",
+    color: "#D4A017",
+    icon: "👑",
+  },
 ];
 
 export default function HomePage() {
