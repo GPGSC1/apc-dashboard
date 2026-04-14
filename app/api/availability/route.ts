@@ -279,11 +279,9 @@ function parseRonaCsv(csv: string): { byExt: Record<string, number>; byName: Rec
   const extNameCol = headers.indexOf("extension name");
   const callIdCol = headers.indexOf("callid") >= 0 ? headers.indexOf("callid") : 0; // col A fallback
   // Start Time is column C (index 2) in the RONA CSV. Header is "Call Start Time" in row 4.
-  // Try exact matches first, fall back to substring search, then positional.
+  // NOTE: There's also a "Segment Start Time" column — must match exactly on "call start time"
+  // to avoid picking up the wrong column.
   let startCol = headers.indexOf("call start time");
-  if (startCol < 0) startCol = headers.indexOf("start time");
-  if (startCol < 0) startCol = headers.indexOf("start");
-  if (startCol < 0) startCol = headers.findIndex(h => h.includes("start time"));
   if (startCol < 0) startCol = 2; // positional fallback — column C
 
   const byExt: Record<string, number> = {};
