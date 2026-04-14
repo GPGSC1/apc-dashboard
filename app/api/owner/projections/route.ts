@@ -61,32 +61,33 @@ function getNextFriday(refDate: string): string {
   return fri.toISOString().slice(0, 10);
 }
 
-// ── Payment-date window logic (from workbook qControls) ──
-// WALCO funds every Friday based on payments received in a prior window.
+// ── Payment-date window logic (from Jeremy's workbook — source of truth) ──
+// WALCO funds every Friday based on 1st monthly payments received in a prior window.
 //
 // ThisFriday = next Friday from AsOfDate
-// ThisWindowStart = Friday 2 weeks ago (from AsOfDate)
-// ThisWindowEnd = Friday 1 week ago (from AsOfDate)
-// NextWindowStart = day after ThisWindowEnd
-// NextWindowEnd = AsOfDate
+// ThisWindowStart = Saturday after the Friday 2 weeks ago (Sat-Fri window)
+// ThisWindowEnd = Friday 1 week ago
+// NextWindowStart = Monday after ThisWindowEnd (Mon-Fri window)
+// NextWindowEnd = Friday of current week (partial if today < Friday)
 //
-// "This Friday" projection = deals that received a WALCO payment
-//   between ThisWindowStart and ThisWindowEnd
-// "Next Friday" projection = deals that received a WALCO payment
-//   between NextWindowStart and NextWindowEnd (partial week so far)
+// CRITICAL: Only deals whose FIRST-EVER walco payment falls within the
+// window are counted. This is the "1st monthly payment" rule that drops
+// ~30% of deals (repeat payments for existing customers).
 function getPaymentWindows(asOfDate: string) {
   const thisFriday = getNextFriday(asOfDate);
   // Friday 1 week ago = the Friday before thisFriday
   const lastFriday = addDays(thisFriday, -7);
-  // Friday 2 weeks ago
+  // Saturday 2 weeks ago = day AFTER the Friday 2 weeks ago (Sat-Fri window per Jeremy)
   const twoFridaysAgo = addDays(thisFriday, -14);
+  const satAfterTwoFriAgo = addDays(twoFridaysAgo, 1); // Saturday start
 
   return {
     thisFriday,
     nextFriday: addDays(thisFriday, 7),
-    // Window for "This Friday" funding: 2 Fridays ago through last Friday
-    thisWindow: { start: twoFridaysAgo, end: lastFriday },
-    // Window for "Next Friday" funding: day after last Friday through today
+    // Window for "This Friday" funding: Saturday 2wks ago through last Friday (Sat-Fri)
+    thisWindow: { start: satAfterTwoFriAgo, end: lastFriday },
+    // Window for "Next Friday" funding: Saturday after last Friday through today (partial)
+    // Full window is Sat-Fri but we can only see through today
     nextWindow: { start: addDays(lastFriday, 1), end: asOfDate },
   };
 }
@@ -120,31 +121,50 @@ function aggregateDeals(rows: DealRow[]) {
   };
 }
 
-// ── Query deals with payment-date windowing via walco_payments JOIN ──
-// Uses DISTINCT ON contract_no to avoid double-counting deals with multiple payments
+// ── Query deals with payment-date windowing + 1st monthly payment filter ──
+// A deal only counts if its FIRST-EVER positive payment in walco_payments
+// falls within the window. This is the "pymts-made" eligibility rule from
+// the workbook — it drops ~30% of deals (repeat payments).
+// Uses DISTINCT ON contract_no to avoid double-counting deals with multiple payments.
 async function getWindowDeals(
   table: "moxy_deals" | "moxy_home_deals",
   windowStart: string,
   windowEnd: string
 ): Promise<{ rows: DealRow[]; totalCount: number }> {
+  // CTE: compute each policy's first-ever positive payment date
+  const firstPaymentCTE = `
+    WITH first_payments AS (
+      SELECT policy_number, MIN(payment_date) as first_date
+      FROM walco_payments
+      WHERE payment_amount > 0
+      GROUP BY policy_number
+    )`;
+
   // Get deal financial data for funding calculation (DISTINCT by contract_no)
+  // Only include deals whose first payment is within this window
   const financialRows = await query(
-    `SELECT DISTINCT ON (md.contract_no)
+    `${firstPaymentCTE}
+     SELECT DISTINCT ON (md.contract_no)
        md.cust_cost, md.dealer_cost, md.down_payment, md.finance_term
      FROM walco_payments wp
      JOIN ${table} md ON md.contract_no = wp.policy_number
+     JOIN first_payments fp ON fp.policy_number = wp.policy_number
      WHERE wp.payment_date BETWEEN $1 AND $2
+       AND fp.first_date BETWEEN $1 AND $2
        AND md.deal_status NOT IN ('Back Out', 'VOID', '')
        AND md.cust_cost > 0`,
     [windowStart, windowEnd]
   );
 
-  // Get total unique deal count (all matched deals, including those missing financial data)
+  // Get total unique deal count (same 1st-payment filter)
   const countRes = await query(
-    `SELECT COUNT(DISTINCT wp.policy_number) as count
+    `${firstPaymentCTE}
+     SELECT COUNT(DISTINCT wp.policy_number) as count
      FROM walco_payments wp
      JOIN ${table} md ON md.contract_no = wp.policy_number
+     JOIN first_payments fp ON fp.policy_number = wp.policy_number
      WHERE wp.payment_date BETWEEN $1 AND $2
+       AND fp.first_date BETWEEN $1 AND $2
        AND md.deal_status NOT IN ('Back Out', 'VOID', '')
        AND md.cust_cost > 0`,
     [windowStart, windowEnd]
