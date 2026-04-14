@@ -175,22 +175,27 @@ export async function GET(request: Request) {
     }
 
     // ── Build response ──
-    const thisWeekAuto = {
-      deals: Number(thisWeekAutoRes.rows[0].count),
-      admin: Number(thisWeekAutoRes.rows[0].total_admin),
-    };
-    const thisWeekHome = {
-      deals: Number(thisWeekHomeRes.rows[0].count),
-      admin: Number(thisWeekHomeRes.rows[0].total_admin),
-    };
-    const nextWeekAuto = {
-      deals: Number(nextWeekAutoRes.rows[0].count),
-      admin: Number(nextWeekAutoRes.rows[0].total_admin),
-    };
-    const nextWeekHome = {
-      deals: Number(nextWeekHomeRes.rows[0].count),
-      admin: Number(nextWeekHomeRes.rows[0].total_admin),
-    };
+    // funding = admin for now. Will be replaced with real funding calc
+    // once we have custCost/dealerCost from Moxy + WALCO payments from Lenovo.
+    function buildLine(count: number, admin: number) {
+      const deals = count;
+      const funding = admin; // placeholder: will become real funding amount
+      const avgFunding = deals > 0 ? Math.round(funding / deals) : 0;
+      return { deals, admin, funding, avgFunding };
+    }
+
+    const thisWeekAuto = buildLine(Number(thisWeekAutoRes.rows[0].count), Number(thisWeekAutoRes.rows[0].total_admin));
+    const thisWeekHome = buildLine(Number(thisWeekHomeRes.rows[0].count), Number(thisWeekHomeRes.rows[0].total_admin));
+    const nextWeekAuto = buildLine(Number(nextWeekAutoRes.rows[0].count), Number(nextWeekAutoRes.rows[0].total_admin));
+    const nextWeekHome = buildLine(Number(nextWeekHomeRes.rows[0].count), Number(nextWeekHomeRes.rows[0].total_admin));
+
+    function buildTotal(a: ReturnType<typeof buildLine>, h: ReturnType<typeof buildLine>) {
+      const deals = a.deals + h.deals;
+      const admin = a.admin + h.admin;
+      const funding = a.funding + h.funding;
+      const avgFunding = deals > 0 ? Math.round(funding / deals) : 0;
+      return { deals, admin, funding, avgFunding };
+    }
 
     return NextResponse.json({
       ok: true,
@@ -201,19 +206,13 @@ export async function GET(request: Request) {
         range: thisWeek,
         auto: thisWeekAuto,
         home: thisWeekHome,
-        total: {
-          deals: thisWeekAuto.deals + thisWeekHome.deals,
-          admin: thisWeekAuto.admin + thisWeekHome.admin,
-        },
+        total: buildTotal(thisWeekAuto, thisWeekHome),
       },
       nextWeek: {
         range: nextWeek,
         auto: nextWeekAuto,
         home: nextWeekHome,
-        total: {
-          deals: nextWeekAuto.deals + nextWeekHome.deals,
-          admin: nextWeekAuto.admin + nextWeekHome.admin,
-        },
+        total: buildTotal(nextWeekAuto, nextWeekHome),
       },
       mtd: {
         monthStart,

@@ -12,6 +12,8 @@ const C = {
   goldLight: "#F5D060",
   goldDim: "#8B6914",
   green: "#22C55E",
+  greenDark: "#16A34A",
+  teal: "#14B8A6",
   red: "#EF4444",
   amber: "#F59E0B",
   text: "#E8E8F0",
@@ -26,9 +28,9 @@ type TabName = (typeof TABS)[number];
 // ── Types ──
 interface WeekData {
   range: { start: string; end: string };
-  auto: { deals: number; admin: number };
-  home: { deals: number; admin: number };
-  total: { deals: number; admin: number };
+  auto: { deals: number; admin: number; funding: number; avgFunding: number };
+  home: { deals: number; admin: number; funding: number; avgFunding: number };
+  total: { deals: number; admin: number; funding: number; avgFunding: number };
 }
 
 interface PipelineItem {
@@ -67,8 +69,6 @@ interface ProjectionData {
 
 // ── Formatting helpers ──
 function fmt$(n: number): string {
-  if (n >= 1_000_000) return "$" + (n / 1_000_000).toFixed(2) + "M";
-  if (n >= 1_000) return "$" + (n / 1_000).toFixed(1) + "K";
   return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
@@ -76,6 +76,12 @@ function fmtDate(d: string): string {
   if (!d) return "";
   const parts = d.split("-");
   return `${parseInt(parts[1])}/${parseInt(parts[2])}`;
+}
+
+function fmtFullDate(d: string): string {
+  if (!d) return "";
+  const dt = new Date(d + "T12:00:00Z");
+  return dt.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 }
 
 function fmtWeek(start: string, end: string): string {
@@ -86,58 +92,10 @@ function fmtPct(n: number): string {
   return (n * 100).toFixed(2) + "%";
 }
 
-// ── Metric Card ──
-function MetricCard({
-  label,
-  value,
-  sub,
-  accent = C.gold,
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-  accent?: string;
-}) {
-  return (
-    <div
-      style={{
-        background: C.card,
-        border: `1px solid ${C.border}`,
-        borderTop: `3px solid ${accent}`,
-        borderRadius: 10,
-        padding: "18px 20px",
-        minWidth: 160,
-        flex: "1 1 160px",
-      }}
-    >
-      <div style={{ color: C.muted, fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>
-        {label}
-      </div>
-      <div style={{ color: C.text, fontSize: 26, fontWeight: 800, lineHeight: 1.1 }}>{value}</div>
-      {sub && <div style={{ color: C.mutedLight, fontSize: 12, marginTop: 4 }}>{sub}</div>}
-    </div>
-  );
-}
-
-// ── Section Header ──
-function SectionHeader({ children }: { children: React.ReactNode }) {
-  return (
-    <h3
-      style={{
-        color: C.gold,
-        fontSize: 15,
-        fontWeight: 700,
-        marginBottom: 12,
-        marginTop: 28,
-        textTransform: "uppercase",
-        letterSpacing: "1px",
-        borderBottom: `1px solid ${C.goldDim}33`,
-        paddingBottom: 8,
-      }}
-    >
-      {children}
-    </h3>
-  );
+function fmtInputDate(d: string): string {
+  if (!d) return "";
+  const p = d.split("-");
+  return `${p[1]}/${p[2]}/${p[0]}`;
 }
 
 // ── Th/Td primitives ──
@@ -190,61 +148,184 @@ function Td({
   );
 }
 
-// ── Projections Tab ──
+// ── Friday Funding Card (matches Inspiron mockup) ──
+function FridayCard({
+  title,
+  date,
+  windowStart,
+  windowEnd,
+  auto,
+  home,
+  total,
+  partial,
+}: {
+  title: string;
+  date: string;
+  windowStart: string;
+  windowEnd: string;
+  auto: { deals: number; funding: number; avgFunding: number };
+  home: { deals: number; funding: number; avgFunding: number };
+  total: { deals: number; funding: number; avgFunding: number };
+  partial?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        flex: "1 1 400px",
+        background: C.card,
+        border: `1px solid ${C.border}`,
+        borderRadius: 12,
+        padding: "24px 28px",
+        minWidth: 340,
+      }}
+    >
+      {/* Title Row */}
+      <div style={{ marginBottom: 4 }}>
+        <span style={{ fontSize: 18, fontWeight: 800, color: C.text }}>{title}</span>
+      </div>
+      <div style={{ color: C.mutedLight, fontSize: 12, marginBottom: 20 }}>
+        {fmtFullDate(date)} &bull; Window: {fmtDate(windowStart)} – {fmtDate(windowEnd)}
+        {partial && " (partial)"}
+      </div>
+
+      {/* Hero funding amount */}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 24 }}>
+        <span style={{ fontSize: 42, fontWeight: 800, color: C.green, lineHeight: 1 }}>
+          {fmt$(total.funding)}
+        </span>
+        <span style={{ fontSize: 16, color: C.mutedLight, fontWeight: 500 }}>
+          {total.deals} deals
+        </span>
+      </div>
+
+      {/* Line breakdown table */}
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr style={{ borderBottom: `1px solid ${C.tableBorder}` }}>
+            <th style={{ textAlign: "left", padding: "8px 0", fontSize: 12, fontWeight: 600, color: C.mutedLight }}>Line</th>
+            <th style={{ textAlign: "right", padding: "8px 0", fontSize: 12, fontWeight: 600, color: C.mutedLight }}>Count</th>
+            <th style={{ textAlign: "right", padding: "8px 0", fontSize: 12, fontWeight: 600, color: C.mutedLight }}>Total Funding</th>
+            <th style={{ textAlign: "right", padding: "8px 0", fontSize: 12, fontWeight: 600, color: C.mutedLight }}>Avg Funding</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style={{ borderBottom: `1px solid ${C.tableBorder}` }}>
+            <td style={{ padding: "10px 0", fontSize: 14, fontWeight: 500, color: C.text }}>Auto</td>
+            <td style={{ padding: "10px 0", fontSize: 14, textAlign: "right", color: C.text }}>{auto.deals}</td>
+            <td style={{ padding: "10px 0", fontSize: 14, textAlign: "right", color: C.green, fontWeight: 600 }}>{fmt$(auto.funding)}</td>
+            <td style={{ padding: "10px 0", fontSize: 14, textAlign: "right", color: C.text }}>{fmt$(auto.avgFunding)}</td>
+          </tr>
+          <tr style={{ borderBottom: `1px solid ${C.tableBorder}` }}>
+            <td style={{ padding: "10px 0", fontSize: 14, fontWeight: 500, color: C.text }}>Home</td>
+            <td style={{ padding: "10px 0", fontSize: 14, textAlign: "right", color: C.text }}>{home.deals}</td>
+            <td style={{ padding: "10px 0", fontSize: 14, textAlign: "right", color: C.green, fontWeight: 600 }}>{fmt$(home.funding)}</td>
+            <td style={{ padding: "10px 0", fontSize: 14, textAlign: "right", color: C.text }}>{fmt$(home.avgFunding)}</td>
+          </tr>
+          <tr>
+            <td style={{ padding: "10px 0", fontSize: 14, fontWeight: 700, color: C.gold }}>Total</td>
+            <td style={{ padding: "10px 0", fontSize: 14, textAlign: "right", fontWeight: 700, color: C.gold }}>{total.deals}</td>
+            <td style={{ padding: "10px 0", fontSize: 14, textAlign: "right", fontWeight: 700, color: C.green }}>{fmt$(total.funding)}</td>
+            <td style={{ padding: "10px 0", fontSize: 14, textAlign: "right", fontWeight: 700, color: C.gold }}>{fmt$(total.avgFunding)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Summary Stat Card (bottom row) ──
+function SummaryCard({ label, value, color = C.text }: { label: string; value: string; color?: string }) {
+  return (
+    <div
+      style={{
+        flex: "1 1 180px",
+        background: C.card,
+        border: `1px solid ${C.border}`,
+        borderRadius: 10,
+        padding: "20px 20px 16px",
+        textAlign: "center",
+      }}
+    >
+      <div style={{ fontSize: 28, fontWeight: 800, color, lineHeight: 1.2, marginBottom: 6 }}>
+        {value}
+      </div>
+      <div style={{ fontSize: 10, fontWeight: 700, color: C.mutedLight, textTransform: "uppercase", letterSpacing: "1px" }}>
+        {label}
+      </div>
+    </div>
+  );
+}
+
+// ── Section Header ──
+function SectionHeader({ children }: { children: React.ReactNode }) {
+  return (
+    <h3
+      style={{
+        color: C.text,
+        fontSize: 15,
+        fontWeight: 700,
+        marginBottom: 16,
+        marginTop: 32,
+        textTransform: "uppercase",
+        letterSpacing: "1.5px",
+      }}
+    >
+      {children}
+    </h3>
+  );
+}
+
+// ── Projections Tab (matches Inspiron mockup) ──
 function ProjectionsTab({ data }: { data: ProjectionData }) {
+  const twoWeekFunding = data.thisWeek.total.funding + data.nextWeek.total.funding;
+  const twoWeekDeals = data.thisWeek.total.deals + data.nextWeek.total.deals;
+  const avgFunding = twoWeekDeals > 0 ? twoWeekFunding / twoWeekDeals : 0;
+  // Eligibility rate placeholder — needs WALCO payment matching to be real
+  const eligibilityRate = data.mtd.total.deals > 0 ? ((twoWeekDeals / data.mtd.total.deals) * 100) : 0;
+
   return (
     <div>
-      {/* ── This Friday Funding ── */}
-      <SectionHeader>This Friday — {fmtDate(data.thisFriday)} Funding</SectionHeader>
-      <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-        <MetricCard label="Auto Deals" value={String(data.thisWeek.auto.deals)} sub={fmt$(data.thisWeek.auto.admin) + " admin"} />
-        <MetricCard label="Home Deals" value={String(data.thisWeek.home.deals)} sub={fmt$(data.thisWeek.home.admin) + " admin"} />
-        <MetricCard label="Total Deals" value={String(data.thisWeek.total.deals)} sub={fmt$(data.thisWeek.total.admin) + " total admin"} accent={C.goldLight} />
+      <SectionHeader>Projected Funding</SectionHeader>
+
+      {/* ── Side-by-side Friday cards ── */}
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+        <FridayCard
+          title="This Friday"
+          date={data.thisFriday}
+          windowStart={data.thisWeek.range.start}
+          windowEnd={data.thisWeek.range.end}
+          auto={data.thisWeek.auto}
+          home={data.thisWeek.home}
+          total={data.thisWeek.total}
+        />
+        <FridayCard
+          title="Next Friday"
+          date={data.nextFriday}
+          windowStart={data.nextWeek.range.start}
+          windowEnd={data.nextWeek.range.end}
+          auto={data.nextWeek.auto}
+          home={data.nextWeek.home}
+          total={data.nextWeek.total}
+          partial
+        />
       </div>
 
-      {/* ── Next Friday Funding ── */}
-      <SectionHeader>Next Friday — {fmtDate(data.nextFriday)} Funding</SectionHeader>
-      <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-        <MetricCard label="Auto Deals" value={String(data.nextWeek.auto.deals)} sub={fmt$(data.nextWeek.auto.admin) + " admin"} />
-        <MetricCard label="Home Deals" value={String(data.nextWeek.home.deals)} sub={fmt$(data.nextWeek.home.admin) + " admin"} />
-        <MetricCard label="Total Deals" value={String(data.nextWeek.total.deals)} sub={fmt$(data.nextWeek.total.admin) + " total admin"} accent={C.goldLight} />
+      {/* ── 4 Summary Cards ── */}
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 24 }}>
+        <SummaryCard label="Total 2-Week Projection" value={fmt$(twoWeekFunding)} color={C.green} />
+        <SummaryCard label="Total Eligible Deals" value={String(twoWeekDeals)} color={C.text} />
+        <SummaryCard label="Avg Funding Per Deal" value={fmt$(avgFunding)} color={C.teal} />
+        <SummaryCard
+          label="Eligibility Rate"
+          value={eligibilityRate > 0 ? eligibilityRate.toFixed(1) + "%" : "—"}
+          color={C.green}
+        />
       </div>
-
-      {/* ── MTD ── */}
-      <SectionHeader>Month to Date</SectionHeader>
-      <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-        <MetricCard label="Auto MTD" value={String(data.mtd.auto.deals)} sub={fmt$(data.mtd.auto.admin) + " admin"} accent={C.amber} />
-        <MetricCard label="Home MTD" value={String(data.mtd.home.deals)} sub={fmt$(data.mtd.home.admin) + " admin"} accent={C.amber} />
-        <MetricCard label="Total MTD" value={String(data.mtd.total.deals)} sub={fmt$(data.mtd.total.admin) + " total"} accent={C.goldLight} />
-      </div>
-
-      {/* ── WALCO Payments ── */}
-      <SectionHeader>WALCO Payments This Week</SectionHeader>
-      {data.walco.count > 0 ? (
-        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-          <MetricCard label="Payments Received" value={String(data.walco.count)} accent={C.green} />
-          <MetricCard label="Total Received" value={fmt$(data.walco.total)} accent={C.green} />
-        </div>
-      ) : (
-        <div
-          style={{
-            background: C.card,
-            border: `1px solid ${C.border}`,
-            borderRadius: 10,
-            padding: "20px 24px",
-            color: C.muted,
-            fontSize: 13,
-            fontStyle: "italic",
-          }}
-        >
-          WALCO payment data not yet available — Lenovo is setting up the PBS portal capture.
-        </div>
-      )}
 
       {/* ── Fee Schedule Reference ── */}
       <SectionHeader>Fee & Reserve Schedule</SectionHeader>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", maxWidth: 500 }}>
           <thead>
             <tr>
               <Th>Term Range</Th>
@@ -255,7 +336,7 @@ function ProjectionsTab({ data }: { data: ProjectionData }) {
           <tbody>
             {data.feeSchedule.map((tier, i) => (
               <tr key={i}>
-                <Td>{tier.minTerm}–{tier.maxTerm > 100 ? "60+" : tier.maxTerm} months</Td>
+                <Td>{tier.minTerm}–{tier.maxTerm > 100 ? "24+" : tier.maxTerm} months</Td>
                 <Td align="right">{fmtPct(tier.feeRate)}</Td>
                 <Td align="right">{fmtPct(tier.reserveRate)}</Td>
               </tr>
@@ -269,7 +350,6 @@ function ProjectionsTab({ data }: { data: ProjectionData }) {
 
 // ── Pipeline Tab ──
 function PipelineTab({ data }: { data: ProjectionData }) {
-  // Merge auto and home pipeline items
   const statusMap = new Map<string, { auto: number; home: number; autoAdmin: number; homeAdmin: number }>();
   for (const item of data.pipeline.auto) {
     const existing = statusMap.get(item.status) || { auto: 0, home: 0, autoAdmin: 0, homeAdmin: 0 };
@@ -294,39 +374,23 @@ function PipelineTab({ data }: { data: ProjectionData }) {
   };
 
   const totalAll = statuses.reduce((sum, [, v]) => sum + v.auto + v.home, 0);
+  const soldActive = statuses
+    .filter(([s]) => s.toLowerCase() === "sold" || s.toLowerCase() === "active")
+    .reduce((sum, [, v]) => sum + v.auto + v.home, 0);
+  const backoutCancelled = statuses
+    .filter(([s]) => s.toLowerCase().includes("back out") || s.toLowerCase().includes("cancel") || s.toLowerCase().includes("void"))
+    .reduce((sum, [, v]) => sum + v.auto + v.home, 0);
 
   return (
     <div>
       <SectionHeader>Deal Pipeline — Since {fmtDate(data.thisWeek.range.start)}</SectionHeader>
 
-      {/* ── Funnel Summary ── */}
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 24 }}>
-        <MetricCard
-          label="Total in Pipeline"
-          value={String(totalAll)}
-          accent={C.gold}
-        />
-        <MetricCard
-          label="Sold / Active"
-          value={String(
-            statuses
-              .filter(([s]) => s.toLowerCase() === "sold" || s.toLowerCase() === "active")
-              .reduce((sum, [, v]) => sum + v.auto + v.home, 0)
-          )}
-          accent={C.green}
-        />
-        <MetricCard
-          label="Back Out / Cancelled"
-          value={String(
-            statuses
-              .filter(([s]) => s.toLowerCase().includes("back out") || s.toLowerCase().includes("cancel") || s.toLowerCase().includes("void"))
-              .reduce((sum, [, v]) => sum + v.auto + v.home, 0)
-          )}
-          accent={C.red}
-        />
+        <SummaryCard label="Total in Pipeline" value={String(totalAll)} color={C.gold} />
+        <SummaryCard label="Sold / Active" value={String(soldActive)} color={C.green} />
+        <SummaryCard label="Back Out / Cancelled" value={String(backoutCancelled)} color={C.red} />
       </div>
 
-      {/* ── Status Breakdown Table ── */}
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
@@ -346,16 +410,7 @@ function PipelineTab({ data }: { data: ProjectionData }) {
               return (
                 <tr key={status}>
                   <Td bold color={statusColor(status)}>
-                    <span
-                      style={{
-                        display: "inline-block",
-                        width: 8,
-                        height: 8,
-                        borderRadius: "50%",
-                        background: statusColor(status),
-                        marginRight: 8,
-                      }}
-                    />
+                    <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: statusColor(status), marginRight: 8 }} />
                     {status || "(empty)"}
                   </Td>
                   <Td align="right">{v.auto}</Td>
@@ -373,9 +428,7 @@ function PipelineTab({ data }: { data: ProjectionData }) {
               <Td align="right" bold>{statuses.reduce((s, [, v]) => s + v.auto, 0)}</Td>
               <Td align="right" bold>{statuses.reduce((s, [, v]) => s + v.home, 0)}</Td>
               <Td align="right" bold color={C.goldLight}>{totalAll}</Td>
-              <Td align="right" bold color={C.goldLight}>
-                {fmt$(statuses.reduce((s, [, v]) => s + v.autoAdmin + v.homeAdmin, 0))}
-              </Td>
+              <Td align="right" bold color={C.goldLight}>{fmt$(statuses.reduce((s, [, v]) => s + v.autoAdmin + v.homeAdmin, 0))}</Td>
               <Td align="right" bold>100%</Td>
             </tr>
           </tfoot>
@@ -389,11 +442,9 @@ function PipelineTab({ data }: { data: ProjectionData }) {
 function HistoryTab({ data }: { data: ProjectionData }) {
   const [mode, setMode] = useState<"wow" | "mom">("wow");
 
-  // Week-over-Week data is already in data.history (last 8 weeks)
-  // Month-over-Month: aggregate by month from history
   const months = new Map<string, { autoDeals: number; homeDeals: number; autoAdmin: number; homeAdmin: number }>();
   for (const w of data.history) {
-    const m = w.weekStart.slice(0, 7); // "YYYY-MM"
+    const m = w.weekStart.slice(0, 7);
     const existing = months.get(m) || { autoDeals: 0, homeDeals: 0, autoAdmin: 0, homeAdmin: 0 };
     existing.autoDeals += w.autoDeals;
     existing.homeDeals += w.homeDeals;
@@ -402,7 +453,6 @@ function HistoryTab({ data }: { data: ProjectionData }) {
     months.set(m, existing);
   }
   const monthList = [...months.entries()].sort((a, b) => b[0].localeCompare(a[0]));
-
   const isCurrentWeek = (ws: string) => ws === data.thisWeek.range.start;
 
   return (
@@ -414,10 +464,10 @@ function HistoryTab({ data }: { data: ProjectionData }) {
             onClick={() => setMode(m)}
             style={{
               padding: "8px 20px",
-              borderRadius: 8,
-              border: `1px solid ${mode === m ? C.gold : C.border}`,
-              background: mode === m ? C.gold + "22" : C.card,
-              color: mode === m ? C.gold : C.muted,
+              borderRadius: 20,
+              border: mode === m ? "none" : `1px solid ${C.border}`,
+              background: mode === m ? C.gold : C.card,
+              color: mode === m ? "#000" : C.muted,
               fontSize: 13,
               fontWeight: 600,
               cursor: "pointer",
@@ -440,7 +490,7 @@ function HistoryTab({ data }: { data: ProjectionData }) {
                   <Th align="right">Auto</Th>
                   <Th align="right">Home</Th>
                   <Th align="right">Total</Th>
-                  <Th align="right">Admin $</Th>
+                  <Th align="right">Total Funding</Th>
                   <Th align="right">vs Prior</Th>
                 </tr>
               </thead>
@@ -454,25 +504,11 @@ function HistoryTab({ data }: { data: ProjectionData }) {
                   const current = isCurrentWeek(w.weekStart);
 
                   return (
-                    <tr
-                      key={w.weekStart}
-                      style={{
-                        background: current ? C.gold + "0A" : "transparent",
-                      }}
-                    >
+                    <tr key={w.weekStart} style={{ background: current ? C.gold + "0A" : "transparent" }}>
                       <Td bold={current} color={current ? C.gold : C.text}>
                         {fmtWeek(w.weekStart, w.weekEnd)}
                         {current && (
-                          <span
-                            style={{
-                              fontSize: 9,
-                              color: C.goldDim,
-                              marginLeft: 8,
-                              fontWeight: 600,
-                              textTransform: "uppercase",
-                              letterSpacing: "0.5px",
-                            }}
-                          >
+                          <span style={{ fontSize: 9, color: C.goldDim, marginLeft: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>
                             current
                           </span>
                         )}
@@ -480,13 +516,9 @@ function HistoryTab({ data }: { data: ProjectionData }) {
                       <Td align="right">{w.autoDeals}</Td>
                       <Td align="right">{w.homeDeals}</Td>
                       <Td align="right" bold>{total}</Td>
-                      <Td align="right" color={C.goldLight}>{fmt$(totalAdmin)}</Td>
-                      <Td
-                        align="right"
-                        color={delta > 0 ? C.green : delta < 0 ? C.red : C.muted}
-                        bold
-                      >
-                        {prior ? (delta > 0 ? "+" : "") + delta : "—"}
+                      <Td align="right" color={C.green}>{fmt$(totalAdmin)}</Td>
+                      <Td align="right" color={delta > 0 ? C.green : delta < 0 ? C.red : C.muted} bold>
+                        {prior ? (delta > 0 ? "+" : "") + delta : "\u2014"}
                       </Td>
                     </tr>
                   );
@@ -506,7 +538,7 @@ function HistoryTab({ data }: { data: ProjectionData }) {
                   <Th align="right">Auto</Th>
                   <Th align="right">Home</Th>
                   <Th align="right">Total</Th>
-                  <Th align="right">Admin $</Th>
+                  <Th align="right">Total Funding</Th>
                 </tr>
               </thead>
               <tbody>
@@ -518,16 +550,12 @@ function HistoryTab({ data }: { data: ProjectionData }) {
                     <tr key={m} style={{ background: current ? C.gold + "0A" : "transparent" }}>
                       <Td bold={current} color={current ? C.gold : C.text}>
                         {m}
-                        {current && (
-                          <span style={{ fontSize: 9, color: C.goldDim, marginLeft: 8, fontWeight: 600, textTransform: "uppercase" }}>
-                            current
-                          </span>
-                        )}
+                        {current && <span style={{ fontSize: 9, color: C.goldDim, marginLeft: 8, fontWeight: 600, textTransform: "uppercase" }}>current</span>}
                       </Td>
                       <Td align="right">{v.autoDeals}</Td>
                       <Td align="right">{v.homeDeals}</Td>
                       <Td align="right" bold>{total}</Td>
-                      <Td align="right" color={C.goldLight}>{fmt$(totalAdmin)}</Td>
+                      <Td align="right" color={C.green}>{fmt$(totalAdmin)}</Td>
                     </tr>
                   );
                 })}
@@ -566,7 +594,6 @@ export default function OwnerDashboard() {
 
   useEffect(() => {
     fetchData();
-    // Auto-refresh every 60 seconds
     const iv = setInterval(fetchData, 60_000);
     return () => clearInterval(iv);
   }, [fetchData]);
@@ -580,45 +607,69 @@ export default function OwnerDashboard() {
         color: C.text,
       }}
     >
-      {/* ── Header ── */}
+      {/* ── Header (matches Inspiron mockup) ── */}
       <div
         style={{
-          padding: "20px 32px",
+          padding: "16px 32px",
           borderBottom: `1px solid ${C.border}`,
           display: "flex",
           alignItems: "center",
-          justifyContent: "space-between",
+          gap: 24,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <a
-            href="/"
-            style={{
-              color: C.muted,
-              textDecoration: "none",
-              fontSize: 13,
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-            }}
-          >
-            &larr; Home
-          </a>
+        {/* Left: Home + Title */}
+        <a href="/" style={{ color: C.muted, textDecoration: "none", fontSize: 13 }}>&larr; Home</a>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 800, color: C.gold, margin: 0, lineHeight: 1.1 }}>
+            Owner Dash
+          </h1>
+          <div style={{ fontSize: 11, color: C.mutedLight, fontWeight: 500 }}>Funding Projections</div>
+        </div>
+
+        {/* Tabs inline in header */}
+        <div style={{ display: "flex", gap: 4, marginLeft: 24 }}>
+          {TABS.map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              style={{
+                padding: "8px 20px",
+                borderRadius: 20,
+                border: tab === t ? "none" : `1px solid ${C.border}`,
+                background: tab === t ? C.gold : "transparent",
+                color: tab === t ? "#000" : C.muted,
+                fontSize: 13,
+                fontWeight: tab === t ? 700 : 500,
+                cursor: "pointer",
+                transition: "all 0.15s ease",
+              }}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+
+        {/* Data as of badge */}
+        {data && (
           <div
             style={{
-              width: 1,
-              height: 20,
-              background: C.border,
+              marginLeft: 16,
+              padding: "4px 12px",
+              borderRadius: 6,
+              background: C.gold + "22",
+              border: `1px solid ${C.goldDim}`,
+              fontSize: 11,
+              color: C.gold,
+              fontWeight: 600,
             }}
-          />
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: C.gold, margin: 0 }}>
-            Owner Dashboard
-          </h1>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          {lastRefresh && (
-            <span style={{ color: C.muted, fontSize: 11 }}>Updated {lastRefresh}</span>
-          )}
+          >
+            Data as of {fmtInputDate(data.today)}
+          </div>
+        )}
+
+        {/* Right: date + refresh */}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+          {lastRefresh && <span style={{ color: C.muted, fontSize: 11 }}>Updated {lastRefresh}</span>}
           <button
             onClick={fetchData}
             disabled={loading}
@@ -634,72 +685,22 @@ export default function OwnerDashboard() {
               opacity: loading ? 0.5 : 1,
             }}
           >
-            {loading ? "Loading..." : "Refresh"}
+            {loading ? "..." : "Refresh"}
           </button>
         </div>
-      </div>
-
-      {/* ── Tabs ── */}
-      <div
-        style={{
-          padding: "0 32px",
-          borderBottom: `1px solid ${C.border}`,
-          display: "flex",
-          gap: 0,
-        }}
-      >
-        {TABS.map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            style={{
-              padding: "14px 24px",
-              border: "none",
-              borderBottom: tab === t ? `2px solid ${C.gold}` : `2px solid transparent`,
-              background: "transparent",
-              color: tab === t ? C.gold : C.muted,
-              fontSize: 14,
-              fontWeight: tab === t ? 700 : 500,
-              cursor: "pointer",
-              transition: "all 0.15s ease",
-            }}
-          >
-            {t}
-          </button>
-        ))}
       </div>
 
       {/* ── Content ── */}
       <div style={{ padding: "24px 32px", maxWidth: 1200 }}>
         {error && (
-          <div
-            style={{
-              background: C.red + "22",
-              border: `1px solid ${C.red}44`,
-              borderRadius: 8,
-              padding: "12px 16px",
-              color: C.red,
-              fontSize: 13,
-              marginBottom: 20,
-            }}
-          >
+          <div style={{ background: C.red + "22", border: `1px solid ${C.red}44`, borderRadius: 8, padding: "12px 16px", color: C.red, fontSize: 13, marginBottom: 20 }}>
             {error}
           </div>
         )}
 
         {loading && !data ? (
           <div style={{ textAlign: "center", padding: 80, color: C.muted }}>
-            <div
-              style={{
-                width: 32,
-                height: 32,
-                border: `3px solid ${C.border}`,
-                borderTop: `3px solid ${C.gold}`,
-                borderRadius: "50%",
-                animation: "spin 0.8s linear infinite",
-                margin: "0 auto 16px",
-              }}
-            />
+            <div style={{ width: 32, height: 32, border: `3px solid ${C.border}`, borderTop: `3px solid ${C.gold}`, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 16px" }} />
             Loading projections...
             <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
           </div>
