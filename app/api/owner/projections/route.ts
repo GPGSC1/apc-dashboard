@@ -139,13 +139,14 @@ async function getWindowDeals(
     [windowStart, windowEnd]
   );
 
-  // Get total unique deal count (including deals without financial data)
+  // Get total unique deal count (all matched deals, including those missing financial data)
   const countRes = await query(
     `SELECT COUNT(DISTINCT wp.policy_number) as count
      FROM walco_payments wp
      JOIN ${table} md ON md.contract_no = wp.policy_number
      WHERE wp.payment_date BETWEEN $1 AND $2
-       AND md.deal_status NOT IN ('Back Out', 'VOID', '')`,
+       AND md.deal_status NOT IN ('Back Out', 'VOID', '')
+       AND md.cust_cost > 0`,
     [windowStart, windowEnd]
   );
 
@@ -176,24 +177,29 @@ export async function GET(request: Request) {
     ]);
 
     // ── 3. Pipeline: deals by status (all deals with payments since thisWindow start) ──
+    // Use a subquery to deduplicate deals before aggregating
     const [pipelineAutoRes, pipelineHomeRes] = await Promise.all([
       query(
-        `SELECT md.deal_status, COUNT(DISTINCT wp.policy_number) as count,
-                COALESCE(SUM(DISTINCT md.cust_cost), 0) as total_admin
-         FROM walco_payments wp
-         JOIN moxy_deals md ON md.contract_no = wp.policy_number
-         WHERE wp.payment_date >= $1
-         GROUP BY md.deal_status
+        `SELECT deal_status, COUNT(*) as count, COALESCE(SUM(cust_cost), 0) as total_admin
+         FROM (
+           SELECT DISTINCT ON (md.contract_no) md.deal_status, md.cust_cost
+           FROM walco_payments wp
+           JOIN moxy_deals md ON md.contract_no = wp.policy_number
+           WHERE wp.payment_date >= $1
+         ) deduped
+         GROUP BY deal_status
          ORDER BY count DESC`,
         [windows.thisWindow.start]
       ),
       query(
-        `SELECT md.deal_status, COUNT(DISTINCT wp.policy_number) as count,
-                COALESCE(SUM(DISTINCT md.cust_cost), 0) as total_admin
-         FROM walco_payments wp
-         JOIN moxy_home_deals md ON md.contract_no = wp.policy_number
-         WHERE wp.payment_date >= $1
-         GROUP BY md.deal_status
+        `SELECT deal_status, COUNT(*) as count, COALESCE(SUM(cust_cost), 0) as total_admin
+         FROM (
+           SELECT DISTINCT ON (md.contract_no) md.deal_status, md.cust_cost
+           FROM walco_payments wp
+           JOIN moxy_home_deals md ON md.contract_no = wp.policy_number
+           WHERE wp.payment_date >= $1
+         ) deduped
+         GROUP BY deal_status
          ORDER BY count DESC`,
         [windows.thisWindow.start]
       ),
@@ -203,21 +209,27 @@ export async function GET(request: Request) {
     const monthStart = today.slice(0, 7) + "-01";
     const [mtdAutoRes, mtdHomeRes] = await Promise.all([
       query(
-        `SELECT COUNT(DISTINCT wp.policy_number) as count,
-                COALESCE(SUM(DISTINCT md.cust_cost), 0) as total_admin
-         FROM walco_payments wp
-         JOIN moxy_deals md ON md.contract_no = wp.policy_number
-         WHERE wp.payment_date BETWEEN $1 AND $2
-           AND md.deal_status NOT IN ('Back Out', 'VOID', '')`,
+        `SELECT COUNT(*) as count, COALESCE(SUM(cust_cost), 0) as total_admin
+         FROM (
+           SELECT DISTINCT ON (md.contract_no) md.cust_cost
+           FROM walco_payments wp
+           JOIN moxy_deals md ON md.contract_no = wp.policy_number
+           WHERE wp.payment_date BETWEEN $1 AND $2
+             AND md.deal_status NOT IN ('Back Out', 'VOID', '')
+             AND md.cust_cost > 0
+         ) deduped`,
         [monthStart, today]
       ),
       query(
-        `SELECT COUNT(DISTINCT wp.policy_number) as count,
-                COALESCE(SUM(DISTINCT md.cust_cost), 0) as total_admin
-         FROM walco_payments wp
-         JOIN moxy_home_deals md ON md.contract_no = wp.policy_number
-         WHERE wp.payment_date BETWEEN $1 AND $2
-           AND md.deal_status NOT IN ('Back Out', 'VOID', '')`,
+        `SELECT COUNT(*) as count, COALESCE(SUM(cust_cost), 0) as total_admin
+         FROM (
+           SELECT DISTINCT ON (md.contract_no) md.cust_cost
+           FROM walco_payments wp
+           JOIN moxy_home_deals md ON md.contract_no = wp.policy_number
+           WHERE wp.payment_date BETWEEN $1 AND $2
+             AND md.deal_status NOT IN ('Back Out', 'VOID', '')
+             AND md.cust_cost > 0
+         ) deduped`,
         [monthStart, today]
       ),
     ]);
