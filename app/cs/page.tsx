@@ -224,8 +224,17 @@ function TextCampaignModal({ onClose }: { onClose: () => void }) {
   const [filter, setFilter] = useState("");
   const [stage, setStage] = useState<"preview" | "confirm" | "sending" | "done">("preview");
   const [confirmText, setConfirmText] = useState("");
-  const [sendResult, setSendResult] = useState<{ sent: number; failed: number; campaignId?: number } | null>(null);
+  const [sendResult, setSendResult] = useState<{ sent: number; failed: number; campaignId?: number; testMode?: boolean } | null>(null);
   const [editingTemplate, setEditingTemplate] = useState(false);
+  // Test mode — send to a small list of explicit numbers with realistic merge data
+  const [testMode, setTestMode] = useState(false);
+  const [testPhones, setTestPhones] = useState("");
+  const [testFirstName, setTestFirstName] = useState("Jeremy");
+  const [testAmount, setTestAmount] = useState("$125.00");
+  const [testDueDate, setTestDueDate] = useState(() => {
+    const t = new Date();
+    return `${t.getMonth() + 1}/${t.getDate()}/${t.getFullYear()}`;
+  });
 
   // Fetch preview on open
   useEffect(() => {
@@ -256,22 +265,53 @@ function TextCampaignModal({ onClose }: { onClose: () => void }) {
 
   const sample = recipients[0];
 
+  // Parse test phones from the textarea (comma, newline, or space separated; strip non-digits)
+  const parsedTestPhones = testPhones
+    .split(/[\s,;]+/)
+    .map((p) => p.replace(/\D/g, ""))
+    .map((p) => (p.length === 11 && p.startsWith("1") ? p.slice(1) : p))
+    .filter((p) => p.length === 10);
+
+  // Build synthetic recipient objects for test mode using realistic merge values
+  const buildTestRecipients = (): TextRecipientUI[] => {
+    const cleanFirst = testFirstName.trim() || "Test";
+    return parsedTestPhones.map((phone, i) => ({
+      id: -1000 - i, // negative so it doesn't collide with real account ids
+      accountNumber: `TEST-${i + 1}`,
+      name: `${cleanFirst} (Test)`,
+      firstName: cleanFirst,
+      phone,
+      phoneE164: "+1" + phone,
+      amountDue: testAmount.trim() || "$0.00",
+      nextDueDate: testDueDate.trim() || "",
+      installmentsMade: 0,
+      message:
+        `From Guardian Protection Group, ${cleanFirst} according to our records, your payment for ${testAmount.trim() || "$0.00"} is past due as of ${testDueDate.trim() || ""} for your coverage. Please call 844-770-8448 to make arrangements to avoid cancellation. Reply STOP to unsubscribe.`,
+    }));
+  };
+
   const handleSend = async () => {
     if (confirmText.trim().toUpperCase() !== "SEND") return;
     setStage("sending");
+    const recipientsToSend = testMode ? buildTestRecipients() : recipients;
     try {
       const res = await fetch("/api/cs/text-send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          recipients,
+          recipients: recipientsToSend,
           template,
-          sentBy: "collections",
+          sentBy: testMode ? "test-mode" : "collections",
         }),
       });
       const d = await res.json();
       if (d.ok) {
-        setSendResult({ sent: d.sent, failed: d.failed, campaignId: d.campaignId });
+        setSendResult({
+          sent: d.sent,
+          failed: d.failed,
+          campaignId: d.campaignId,
+          testMode,
+        });
         setStage("done");
       } else {
         setError(d.error || "Send failed");
@@ -326,15 +366,23 @@ function TextCampaignModal({ onClose }: { onClose: () => void }) {
       <div style={overlayStyle} onClick={onClose}>
         <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
           <div style={headerStyle}>
-            <div style={{ fontSize: 18, fontWeight: 800 }}>Campaign Sent</div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>
+              {sendResult.testMode ? "🧪 Test Sent" : "Campaign Sent"}
+            </div>
             <button onClick={onClose} style={{ background: "none", border: "none", color: C.muted, fontSize: 20, cursor: "pointer" }}>✕</button>
           </div>
           <div style={bodyStyle}>
             <div style={{ fontSize: 48, color: C.green, textAlign: "center", marginBottom: 12 }}>✓</div>
-            <div style={{ fontSize: 20, textAlign: "center", marginBottom: 24 }}>
+            <div style={{ fontSize: 20, textAlign: "center", marginBottom: 12 }}>
               Sent {sendResult.sent} text{sendResult.sent !== 1 ? "s" : ""}
               {sendResult.failed > 0 && <span style={{ color: C.red }}>, {sendResult.failed} failed</span>}
             </div>
+            {sendResult.testMode && (
+              <div style={{ textAlign: "center", color: C.amber, fontSize: 13, marginBottom: 16 }}>
+                Check the test phone(s) to verify the message renders correctly,
+                then uncheck Test Mode and send the real campaign.
+              </div>
+            )}
             {sendResult.campaignId && (
               <div style={{ textAlign: "center", color: C.muted, fontSize: 12 }}>
                 Campaign ID: {sendResult.campaignId}
@@ -372,17 +420,31 @@ function TextCampaignModal({ onClose }: { onClose: () => void }) {
 
   // ─ Confirm state ─
   if (stage === "confirm") {
+    const sendCount = testMode ? parsedTestPhones.length : recipients.length;
     return (
       <div style={overlayStyle}>
         <div style={{ ...modalStyle, maxWidth: 540 }} onClick={(e) => e.stopPropagation()}>
           <div style={{ ...headerStyle, background: `${C.amber}18`, borderBottom: `1px solid ${C.amber}` }}>
-            <div style={{ fontSize: 18, fontWeight: 800, color: C.amber }}>⚠ Confirm Send</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: C.amber }}>
+              {testMode ? "🧪 Confirm Test Send" : "⚠ Confirm Send"}
+            </div>
           </div>
           <div style={bodyStyle}>
-            <div style={{ fontSize: 15, marginBottom: 16, lineHeight: 1.5 }}>
-              You are about to send <strong style={{ color: C.teal }}>{recipients.length}</strong> SMS
-              messages via TextMagic. This action <strong>cannot be undone</strong>.
-            </div>
+            {testMode ? (
+              <div style={{ fontSize: 14, marginBottom: 16, lineHeight: 1.5 }}>
+                <strong style={{ color: C.teal }}>TEST MODE.</strong> Sending to{" "}
+                <strong>{sendCount}</strong> test phone{sendCount !== 1 ? "s" : ""}:{" "}
+                <code style={{ fontSize: 12, color: C.amber }}>{parsedTestPhones.join(", ")}</code>
+                <div style={{ marginTop: 10, padding: 10, background: C.input, borderRadius: 6, fontSize: 12 }}>
+                  Using merge data — <strong>{testFirstName}</strong> · {testAmount} · {testDueDate}
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 15, marginBottom: 16, lineHeight: 1.5 }}>
+                You are about to send <strong style={{ color: C.teal }}>{recipients.length}</strong> SMS
+                messages via TextMagic. This action <strong>cannot be undone</strong>.
+              </div>
+            )}
             <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>
               Type <strong style={{ color: C.text }}>SEND</strong> to confirm:
             </div>
@@ -411,9 +473,11 @@ function TextCampaignModal({ onClose }: { onClose: () => void }) {
               Back
             </button>
             {btn(
-              `Send ${recipients.length} Texts`,
+              testMode
+                ? `Send ${sendCount} Test Text${sendCount !== 1 ? "s" : ""}`
+                : `Send ${recipients.length} Texts`,
               handleSend,
-              C.amber,
+              testMode ? C.teal : C.amber,
               confirmText.trim().toUpperCase() !== "SEND"
             )}
           </div>
@@ -523,6 +587,111 @@ function TextCampaignModal({ onClose }: { onClose: () => void }) {
                 </div>
               )}
 
+              {/* ═══ Test Mode panel ═══ */}
+              <div style={{
+                marginBottom: 16,
+                padding: 12,
+                background: testMode ? `${C.teal}15` : C.card,
+                border: `1px solid ${testMode ? C.teal : C.border}`,
+                borderRadius: 6,
+              }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: testMode ? 10 : 0 }}>
+                  <input
+                    type="checkbox"
+                    checked={testMode}
+                    onChange={(e) => setTestMode(e.target.checked)}
+                    style={{ cursor: "pointer" }}
+                  />
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: testMode ? C.teal : C.text }}>
+                      🧪 Test Mode
+                    </div>
+                    <div style={{ fontSize: 11, color: C.muted }}>
+                      Send to 1-3 test phones with sample merge data before the real blast.
+                      Skips all real recipients.
+                    </div>
+                  </div>
+                </label>
+                {testMode && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <label style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", fontWeight: 700, display: "block", marginBottom: 4 }}>
+                        Test Phone Numbers (comma or space separated — Jeremy, Matt, etc.)
+                      </label>
+                      <input
+                        type="text"
+                        value={testPhones}
+                        onChange={(e) => setTestPhones(e.target.value)}
+                        placeholder="(555) 123-4567, 5559876543"
+                        style={{
+                          width: "100%", padding: "8px 12px", fontSize: 13,
+                          background: C.input, color: C.text,
+                          border: `1px solid ${parsedTestPhones.length > 0 ? C.teal : C.border}`,
+                          borderRadius: 6, fontFamily: FONT, outline: "none",
+                        }}
+                      />
+                      <div style={{ fontSize: 10, color: parsedTestPhones.length > 0 ? C.green : C.muted, marginTop: 3 }}>
+                        {parsedTestPhones.length > 0
+                          ? `✓ ${parsedTestPhones.length} valid number${parsedTestPhones.length !== 1 ? "s" : ""}: ${parsedTestPhones.join(", ")}`
+                          : "No valid 10-digit numbers entered yet"}
+                      </div>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", fontWeight: 700, display: "block", marginBottom: 4 }}>
+                        First Name
+                      </label>
+                      <input
+                        type="text"
+                        value={testFirstName}
+                        onChange={(e) => setTestFirstName(e.target.value)}
+                        style={{
+                          width: "100%", padding: "6px 10px", fontSize: 12,
+                          background: C.input, color: C.text, border: `1px solid ${C.border}`,
+                          borderRadius: 4, fontFamily: FONT, outline: "none",
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", fontWeight: 700, display: "block", marginBottom: 4 }}>
+                        Amount Due
+                      </label>
+                      <input
+                        type="text"
+                        value={testAmount}
+                        onChange={(e) => setTestAmount(e.target.value)}
+                        style={{
+                          width: "100%", padding: "6px 10px", fontSize: 12,
+                          background: C.input, color: C.text, border: `1px solid ${C.border}`,
+                          borderRadius: 4, fontFamily: FONT, outline: "none",
+                        }}
+                      />
+                    </div>
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <label style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", fontWeight: 700, display: "block", marginBottom: 4 }}>
+                        Missed Payment Date
+                      </label>
+                      <input
+                        type="text"
+                        value={testDueDate}
+                        onChange={(e) => setTestDueDate(e.target.value)}
+                        placeholder="M/D/YYYY"
+                        style={{
+                          width: "100%", padding: "6px 10px", fontSize: 12,
+                          background: C.input, color: C.text, border: `1px solid ${C.border}`,
+                          borderRadius: 4, fontFamily: FONT, outline: "none",
+                        }}
+                      />
+                    </div>
+                    <div style={{ gridColumn: "1 / -1", padding: 10, background: C.input, borderRadius: 4, fontSize: 12, lineHeight: 1.5 }}>
+                      <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Test preview:</div>
+                      From Guardian Protection Group, <strong>{testFirstName || "(first name)"}</strong> according
+                      to our records, your payment for <strong>{testAmount}</strong> is past due as of{" "}
+                      <strong>{testDueDate}</strong> for your coverage. Please call 844-770-8448...
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Recipient table */}
               <div style={{ marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase" }}>
@@ -579,10 +748,14 @@ function TextCampaignModal({ onClose }: { onClose: () => void }) {
             Cancel
           </button>
           {btn(
-            `Continue → Send ${recipients.length}`,
+            testMode
+              ? `Continue → Test Send ${parsedTestPhones.length}`
+              : `Continue → Send ${recipients.length}`,
             () => setStage("confirm"),
-            C.teal,
-            !preview || recipients.length === 0
+            testMode ? C.amber : C.teal,
+            testMode
+              ? parsedTestPhones.length === 0
+              : !preview || recipients.length === 0
           )}
         </div>
       </div>
