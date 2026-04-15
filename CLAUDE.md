@@ -25,7 +25,7 @@
 - All dates are handled in Central Time (America/Chicago) -- this is critical because GPG operates in CT
 
 ### Cron Jobs (vercel.json)
-1. **Seed Refresh**: `*/15 * * * 1-6` -- every 15 minutes, Monday through Saturday. Gated to 7:30am-7:00pm CT in code via `isWithinBusinessHours()`. Sunday is entirely skipped; Monday 7:30am catches Saturday night and Sunday gaps.
+1. **Seed Refresh**: `*/15 * * * 1-6` -- every 15 minutes, Monday through Saturday. Gated to 7:05am-9:05pm CT in code via `isWithinBusinessHours()`. Sunday is entirely skipped. Also runs at 4:00am as a "catchup" for the full previous day. Extended evening cutoff to 9:05pm so the boss's 7:20pm accuracy check against Moxy logs is always fresh.
 2. **AIDA Tick**: `* * * * *` -- every minute (Vercel cron minimum). Gated to business hours (8:00-18:00 CT, Mon-Fri) in code via AIDA config.
 
 ### Function Timeouts
@@ -503,9 +503,9 @@ File: `app/api/seed-refresh/route.ts`
 
 ### Timing
 - Vercel cron: `*/15 * * * 1-6` (every 15 min, Mon-Sat)
-- Code gate: 7:30am-7:00pm CT
+- Code gate: 7:05am-9:05pm CT (extended from 7:05pm so boss's 7:20pm accuracy check is always fresh)
 - Sunday: no refreshes at all
-- Monday 7:30am: catches all of Saturday night + Sunday
+- 4:00am catchup run: full sync of yesterday's data
 
 ### What Runs
 All four sources run in parallel via `Promise.allSettled`:
@@ -515,8 +515,9 @@ All four sources run in parallel via `Promise.allSettled`:
 4. `refreshMoxyHome(dates)` -- Moxy home warranty deals
 
 ### Date Selection
-- Always fetches yesterday + today (to catch late-entered deals after business hours)
-- Checks `seed_metadata` for gap detection, but currently always fetches yesterday + today regardless
+- **4:00am catchup**: yesterday only (full previous day sync)
+- **7:15am first-refresh-of-day**: month start through today (catches retroactive entries since last night)
+- **Regular 15-min refresh (7:30am - 9:00pm)**: yesterday + today. Yesterday is included on every refresh so late entries AND status flips on yesterday's deals are caught throughout the day (critical for accurate 7:20pm boss check).
 - Manual override: `?dates=2026-03-24,2026-03-25`
 
 ### Upsert Behavior

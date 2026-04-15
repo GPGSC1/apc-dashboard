@@ -2,10 +2,11 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "dev",
+      "name": "apc-dev",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
-      "port": 3000,
+      "port": 3001,
+      "autoPort": false,
       "cwd": "C:\\Users\\Maf19\\OneDrive\\Desktop\\DashBuild\\apc-dashboard"
     }
   ]

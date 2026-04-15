@@ -73,7 +73,7 @@ function isWithinBusinessHours(): boolean {
   if (p.dow > 6) return false;
   const timeMinutes = p.hour * 60 + p.minute;
   if (timeMinutes < 7 * 60 + 5) return false;   // before 7:05am
-  if (timeMinutes >= 19 * 60 + 5) return false;  // after 7:05pm
+  if (timeMinutes >= 21 * 60 + 5) return false;  // after 9:05pm (extended so boss's 7:20pm check is always fresh)
   return true;
 }
 
@@ -1104,10 +1104,10 @@ export async function GET(req: Request) {
 
     // Determine which dates to fetch based on mode:
     // - catchup (4am): yesterday ONLY (full previous day sync)
-    // - first refresh of day (7:05-7:14am): month start through today
-    // - regular (every 5 min during business hours): today ONLY
+    // - first refresh of day (7:15-7:29am): month start through today (catches retroactive entries)
+    // - regular (every 15 min during business hours): yesterday + today (catches late entries AND status flips on yesterday's deals)
     // - manual: whatever dates are specified
-    const isFirstRefreshOfDay = p.hour === 7 && p.minute < 15;
+    const isFirstRefreshOfDay = p.hour === 7 && p.minute >= 15 && p.minute < 30;
     const monthStart = `${p.year}-${String(p.month).padStart(2, "0")}-01`;
 
     let datesToFetch: string[];
@@ -1120,8 +1120,9 @@ export async function GET(req: Request) {
       // First business hours refresh: month start through today (catches retroactive entries)
       datesToFetch = [monthStart, today];
     } else {
-      // Regular 5-min refresh: today only
-      datesToFetch = [today];
+      // Regular 15-min refresh: yesterday + today
+      // (yesterday is included so late entries and status flips on yesterday's deals are caught throughout the day)
+      datesToFetch = [yesterday, today];
     }
 
     console.log(`[seed-refresh] Fetching: ${datesToFetch.join(", ")}`);
