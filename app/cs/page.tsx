@@ -358,10 +358,10 @@ function TextCampaignModal({ onClose }: { onClose: () => void }) {
           <div style={bodyStyle}>
             <div style={{ textAlign: "center", padding: 40 }}>
               <div style={{ fontSize: 16, color: C.teal, marginBottom: 16 }}>
-                Sending {recipients.length} text{recipients.length !== 1 ? "s" : ""} via TextMagic…
+                Syncing {recipients.length} contact{recipients.length !== 1 ? "s" : ""} to TextMagic and firing bulk send…
               </div>
               <div style={{ fontSize: 12, color: C.muted }}>
-                This may take {Math.ceil(recipients.length / 5)} seconds. Do not close this window.
+                One bulk API call with server-side template merge. Do not close this window.
               </div>
             </div>
           </div>

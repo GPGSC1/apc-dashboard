@@ -226,6 +226,287 @@ export interface SendResult {
   cost?: number;
 }
 
+export interface BulkSendResult {
+  ok: boolean;
+  sessionId?: number;
+  bulkId?: number;
+  contactsSynced: number;
+  contactsFailed: number;
+  totalAttempted: number;
+  error?: string;
+  perRecipient: Array<{
+    recipientId: number;
+    phone: string;
+    contactId?: number;
+    status: "synced" | "failed";
+    error?: string;
+  }>;
+}
+
+const TM_BASE = "https://rest.textmagic.com/api/v2";
+// TextMagic merge syntax in the template body:
+// [First name]  — standard contact field
+// [AmountDue]   — custom contact field (created below)
+// [MissedPaymentDate] — custom contact field
+const BULK_MERGE_TEXT =
+  "From Guardian Protection Group, [First name] according to our records, " +
+  "your payment for [AmountDue] is past due as of [MissedPaymentDate] for your coverage. " +
+  "Please call 844-770-8448 to make arrangements to avoid cancellation. Reply STOP to unsubscribe.";
+
+function tmHeaders(username: string, apiKey: string) {
+  return {
+    "X-TM-Username": username,
+    "X-TM-Key": apiKey,
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+}
+
+// Ensure the two custom fields we reference exist. Returns their IDs.
+async function ensureCustomFields(
+  username: string,
+  apiKey: string
+): Promise<{ amountDueId: number; missedDateId: number }> {
+  const headers = { "X-TM-Username": username, "X-TM-Key": apiKey };
+
+  // TextMagic returns custom fields at /api/v2/customfields
+  const listRes = await fetch(`${TM_BASE}/customfields?limit=100`, { headers });
+  const listData = await listRes.json().catch(() => ({}));
+  const existing = new Map<string, number>();
+  const resources = Array.isArray(listData?.resources) ? listData.resources : [];
+  for (const cf of resources) {
+    if (cf?.name) existing.set(String(cf.name), Number(cf.id));
+  }
+
+  async function ensureOne(name: string): Promise<number> {
+    if (existing.has(name)) return existing.get(name)!;
+    const res = await fetch(`${TM_BASE}/customfields`, {
+      method: "POST",
+      headers: tmHeaders(username, apiKey),
+      body: new URLSearchParams({ name }).toString(),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`Failed to create custom field "${name}": ${d.message || res.status}`);
+    }
+    return Number(d.id);
+  }
+
+  return {
+    amountDueId: await ensureOne("AmountDue"),
+    missedDateId: await ensureOne("MissedPaymentDate"),
+  };
+}
+
+// Find a contact by phone (exact match). Returns contactId or null.
+async function findContactByPhone(
+  phoneE164: string,
+  username: string,
+  apiKey: string
+): Promise<number | null> {
+  const headers = { "X-TM-Username": username, "X-TM-Key": apiKey };
+  const q = encodeURIComponent(phoneE164);
+  const res = await fetch(`${TM_BASE}/contacts/search?query=${q}&limit=5`, { headers });
+  if (!res.ok) return null;
+  const d = await res.json().catch(() => ({}));
+  const resources = Array.isArray(d?.resources) ? d.resources : [];
+  for (const c of resources) {
+    const cPhone = String(c?.phone || "").replace(/\D/g, "");
+    const target = phoneE164.replace(/\D/g, "");
+    if (cPhone === target || cPhone === target.replace(/^1/, "")) {
+      return Number(c.id);
+    }
+  }
+  return null;
+}
+
+// Create a new contact with first name + our two custom fields.
+async function createContact(
+  recipient: TextRecipient,
+  fieldIds: { amountDueId: number; missedDateId: number },
+  username: string,
+  apiKey: string
+): Promise<number> {
+  const body = new URLSearchParams({
+    phone: recipient.phoneE164,
+    firstName: recipient.firstName || "Customer",
+    [`customFields[${fieldIds.amountDueId}]`]: recipient.amountDue,
+    [`customFields[${fieldIds.missedDateId}]`]: recipient.nextDueDate,
+  });
+  const res = await fetch(`${TM_BASE}/contacts`, {
+    method: "POST",
+    headers: tmHeaders(username, apiKey),
+    body: body.toString(),
+  });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`Contact create failed: ${d.message || `HTTP ${res.status}`}`);
+  }
+  return Number(d.id);
+}
+
+// Update existing contact's custom fields so merge pulls fresh data.
+async function updateContactCustomFields(
+  contactId: number,
+  recipient: TextRecipient,
+  fieldIds: { amountDueId: number; missedDateId: number },
+  username: string,
+  apiKey: string
+): Promise<void> {
+  const body = new URLSearchParams({
+    phone: recipient.phoneE164,
+    firstName: recipient.firstName || "Customer",
+    [`customFields[${fieldIds.amountDueId}]`]: recipient.amountDue,
+    [`customFields[${fieldIds.missedDateId}]`]: recipient.nextDueDate,
+  });
+  await fetch(`${TM_BASE}/contacts/${contactId}`, {
+    method: "PUT",
+    headers: tmHeaders(username, apiKey),
+    body: body.toString(),
+  });
+}
+
+// Upsert: find-or-create + always update custom fields with fresh amount/date.
+async function upsertContact(
+  recipient: TextRecipient,
+  fieldIds: { amountDueId: number; missedDateId: number },
+  username: string,
+  apiKey: string
+): Promise<number> {
+  const existingId = await findContactByPhone(recipient.phoneE164, username, apiKey);
+  if (existingId) {
+    await updateContactCustomFields(existingId, recipient, fieldIds, username, apiKey);
+    return existingId;
+  }
+  return await createContact(recipient, fieldIds, username, apiKey);
+}
+
+// Run contact upserts in parallel with a concurrency cap.
+async function parallelUpsert(
+  recipients: TextRecipient[],
+  fieldIds: { amountDueId: number; missedDateId: number },
+  username: string,
+  apiKey: string,
+  concurrency = 10
+): Promise<BulkSendResult["perRecipient"]> {
+  const results: BulkSendResult["perRecipient"] = new Array(recipients.length);
+  let idx = 0;
+
+  async function worker() {
+    while (true) {
+      const i = idx++;
+      if (i >= recipients.length) return;
+      const r = recipients[i];
+      try {
+        const contactId = await upsertContact(r, fieldIds, username, apiKey);
+        results[i] = { recipientId: r.id, phone: r.phone, contactId, status: "synced" };
+      } catch (e) {
+        results[i] = { recipientId: r.id, phone: r.phone, status: "failed", error: String(e) };
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return results;
+}
+
+/**
+ * sendCampaignBulk — the proper TextMagic bulk flow:
+ *   1) Ensure custom fields (AmountDue, MissedPaymentDate) exist
+ *   2) Upsert each recipient as a TextMagic contact (in parallel)
+ *   3) ONE POST /api/v2/messages (or /bulks if >1000) with inline template +
+ *      all contact IDs — TextMagic does per-contact merge substitution server-side.
+ *
+ * Per-recipient message cost is the same as individual sends, but:
+ *   - 1 send-API call instead of N
+ *   - TextMagic may apply bulk/template pricing tiers on their side
+ *   - Dramatically faster end-to-end (few seconds vs minutes)
+ */
+export async function sendCampaignBulk(
+  recipients: TextRecipient[]
+): Promise<BulkSendResult> {
+  const username = process.env.TEXTMAGIC_USERNAME;
+  const apiKey = process.env.TEXTMAGIC_API_KEY;
+  if (!username || !apiKey) {
+    return {
+      ok: false,
+      contactsSynced: 0,
+      contactsFailed: 0,
+      totalAttempted: recipients.length,
+      error: "TEXTMAGIC_USERNAME or TEXTMAGIC_API_KEY not configured",
+      perRecipient: [],
+    };
+  }
+
+  try {
+    // Step 1: custom fields
+    const fieldIds = await ensureCustomFields(username, apiKey);
+
+    // Step 2: contact upserts
+    const perRecipient = await parallelUpsert(recipients, fieldIds, username, apiKey, 10);
+    const contactIds = perRecipient
+      .filter((r) => r.status === "synced" && r.contactId)
+      .map((r) => r.contactId!);
+    const synced = contactIds.length;
+    const failed = perRecipient.length - synced;
+
+    if (synced === 0) {
+      return {
+        ok: false,
+        contactsSynced: 0,
+        contactsFailed: failed,
+        totalAttempted: recipients.length,
+        error: "All contact upserts failed — cannot send",
+        perRecipient,
+      };
+    }
+
+    // Step 3: single bulk send.
+    // /api/v2/messages handles up to 1000 recipients synchronously.
+    // /api/v2/bulks handles larger via queue; identical params.
+    const endpoint = synced > 1000 ? `${TM_BASE}/bulks` : `${TM_BASE}/messages`;
+    const body = new URLSearchParams({
+      text: BULK_MERGE_TEXT,
+      contacts: contactIds.join(","),
+    });
+    const sendRes = await fetch(endpoint, {
+      method: "POST",
+      headers: tmHeaders(username, apiKey),
+      body: body.toString(),
+    });
+    const sendJson = await sendRes.json().catch(() => ({}));
+    if (!sendRes.ok) {
+      return {
+        ok: false,
+        contactsSynced: synced,
+        contactsFailed: failed,
+        totalAttempted: recipients.length,
+        error: sendJson.message || `HTTP ${sendRes.status}`,
+        perRecipient,
+      };
+    }
+
+    return {
+      ok: true,
+      sessionId: sendJson.sessionId || sendJson.id,
+      bulkId: sendJson.bulkId,
+      contactsSynced: synced,
+      contactsFailed: failed,
+      totalAttempted: recipients.length,
+      perRecipient,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      contactsSynced: 0,
+      contactsFailed: recipients.length,
+      totalAttempted: recipients.length,
+      error: String(e),
+      perRecipient: [],
+    };
+  }
+}
+
+// Retained for backward compat / single-send debug, but no longer used by the route.
 export async function sendOneText(
   recipient: TextRecipient
 ): Promise<SendResult> {
@@ -239,19 +520,14 @@ export async function sendOneText(
       error: "TEXTMAGIC_USERNAME or TEXTMAGIC_API_KEY not configured",
     };
   }
-
   try {
     const body = new URLSearchParams({
       text: recipient.message,
       phones: recipient.phoneE164,
     });
-    const res = await fetch("https://rest.textmagic.com/api/v2/messages", {
+    const res = await fetch(`${TM_BASE}/messages`, {
       method: "POST",
-      headers: {
-        "X-TM-Username": username,
-        "X-TM-Key": apiKey,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
+      headers: tmHeaders(username, apiKey),
       body: body.toString(),
     });
     const json = await res.json().catch(() => ({}));
