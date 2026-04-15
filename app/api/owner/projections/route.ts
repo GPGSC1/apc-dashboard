@@ -18,9 +18,9 @@ function getFeeReserve(termMonths: number) {
   return tier || { feeRate: 0.1275, reserveRate: 0.45 }; // default to 16-18 tier
 }
 
-// ── Funding formula (verified by Inspiron against 99/99 deals, <$0.01 tolerance) ──
-// FundingAmount = ((CustomerPay - DownPayment) × (1 - FeePct) - AdminCost) × (1 - ReservePct)
-// AdminCost = dealerCost (the dealer/admin cost field from Moxy)
+// ── Funding formula (verbatim from Apps Script line 419) ──
+// fundingAmount = (1 - reservePct) * (((customerPay - downPayment) * (1 - feePct)) - adminCost)
+// AdminCost = dealerCost (mapping previously verified <$0.01 tolerance)
 function calcFunding(custCost: number, downPayment: number, dealerCost: number, term: number): number {
   if (!custCost || custCost <= 0) return 0;
   const { feeRate, reserveRate } = getFeeReserve(term);
@@ -28,7 +28,7 @@ function calcFunding(custCost: number, downPayment: number, dealerCost: number, 
   const afterFee = financed * (1 - feeRate);
   const afterAdmin = afterFee - dealerCost;
   const fundingAmount = afterAdmin * (1 - reserveRate);
-  return Math.max(0, fundingAmount); // don't go negative
+  return Math.max(0, fundingAmount);
 }
 
 // ── Date helpers ──
@@ -39,18 +39,6 @@ function addDays(dateStr: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-// Get the most recent Friday on or before refDate
-function getPreviousFriday(refDate: string): string {
-  const d = new Date(refDate + "T12:00:00Z");
-  const dow = d.getUTCDay(); // 0=Sun, 5=Fri
-  const diff = dow >= 5 ? dow - 5 : dow + 2; // days back to Friday
-  if (diff === 0) return refDate; // already Friday
-  const fri = new Date(d);
-  fri.setUTCDate(d.getUTCDate() - diff);
-  return fri.toISOString().slice(0, 10);
-}
-
-// Get the next Friday on or after refDate
 function getNextFriday(refDate: string): string {
   const d = new Date(refDate + "T12:00:00Z");
   const dow = d.getUTCDay();
@@ -61,35 +49,57 @@ function getNextFriday(refDate: string): string {
   return fri.toISOString().slice(0, 10);
 }
 
-// ── Payment-date window logic (from Jeremy's workbook — source of truth) ──
-// WALCO funds every Friday based on 1st monthly payments received in a prior window.
-//
-// ThisFriday = next Friday from AsOfDate
-// ThisWindowStart = Saturday after the Friday 2 weeks ago (Sat-Fri window)
-// ThisWindowEnd = Friday 1 week ago
-// NextWindowStart = Monday after ThisWindowEnd (Mon-Fri window)
-// NextWindowEnd = Friday of current week (partial if today < Friday)
-//
-// CRITICAL: Only deals whose FIRST-EVER walco payment falls within the
-// window are counted. This is the "1st monthly payment" rule that drops
-// ~30% of deals (repeat payments for existing customers).
+// ── Payment-date windows (verbatim from Apps Script lines 156-160) ──
+// thisFriday       = next Friday from asOfDate
+// thisWindowStart  = thisFriday - 13 days (prior Saturday, 2 weeks back)
+// thisWindowEnd    = thisFriday - 7 days  (prior Friday)
+// nextWindowStart  = thisFriday - 6 days  (current Saturday)
+// nextWindowEnd    = asOfDate             (partial window, run date)
 function getPaymentWindows(asOfDate: string) {
   const thisFriday = getNextFriday(asOfDate);
-  // Friday 1 week ago = the Friday before thisFriday
-  const lastFriday = addDays(thisFriday, -7);
-  // Saturday 2 weeks ago = day AFTER the Friday 2 weeks ago (Sat-Fri window per Jeremy)
-  const twoFridaysAgo = addDays(thisFriday, -14);
-  const satAfterTwoFriAgo = addDays(twoFridaysAgo, 1); // Saturday start
-
   return {
     thisFriday,
     nextFriday: addDays(thisFriday, 7),
-    // Window for "This Friday" funding: Saturday 2wks ago through last Friday (Sat-Fri)
-    thisWindow: { start: satAfterTwoFriAgo, end: lastFriday },
-    // Window for "Next Friday" funding: Saturday after last Friday through today (partial)
-    // Full window is Sat-Fri but we can only see through today
-    nextWindow: { start: addDays(lastFriday, 1), end: asOfDate },
+    thisWindow: { start: addDays(thisFriday, -13), end: addDays(thisFriday, -7) },
+    nextWindow: { start: addDays(thisFriday, -6), end: asOfDate },
   };
+}
+
+// ── Policy-key normalization (verbatim from Apps Script line 504) ──
+// Strip commas; if numeric-looking, trunc to int; upper; strip non-alphanumeric;
+// if all digits, strip leading zeros. Applied to BOTH sides of the deal↔payment join.
+// Installed once per cold start via CREATE OR REPLACE.
+let _normalizeFnInstalled = false;
+async function ensureNormalizeFn() {
+  if (_normalizeFnInstalled) return;
+  await query(`
+    CREATE OR REPLACE FUNCTION normalize_policy_key(v TEXT)
+    RETURNS TEXT AS $$
+    DECLARE
+      s TEXT;
+    BEGIN
+      IF v IS NULL THEN RETURN ''; END IF;
+      s := TRIM(v);
+      IF s = '' THEN RETURN ''; END IF;
+      -- strip commas for numeric detection
+      s := REPLACE(s, ',', '');
+      -- if purely numeric (optional sign, optional decimal, optional exponent), truncate to int
+      IF s ~ '^[+-]?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$' THEN
+        s := SPLIT_PART(s, '.', 1);
+        s := REPLACE(s, '+', '');
+      END IF;
+      -- uppercase + strip non-alphanumeric
+      s := REGEXP_REPLACE(UPPER(s), '[^A-Z0-9]', '', 'g');
+      -- if all digits, strip leading zeros (preserving a single 0 if only zeros)
+      IF s ~ '^[0-9]+$' THEN
+        s := REGEXP_REPLACE(s, '^0+', '');
+        IF s = '' THEN s := '0'; END IF;
+      END IF;
+      RETURN s;
+    END;
+    $$ LANGUAGE plpgsql IMMUTABLE;
+  `);
+  _normalizeFnInstalled = true;
 }
 
 // ── Build funding aggregates from deal rows ──
@@ -117,57 +127,75 @@ function aggregateDeals(rows: DealRow[]) {
     deals: count,
     funding: Math.round(totalFunding * 100) / 100,
     avgFunding: count > 0 ? Math.round(totalFunding / count) : 0,
-    admin: Math.round(totalFunding * 100) / 100, // keep for backward compat
+    admin: Math.round(totalFunding * 100) / 100,
   };
 }
 
-// ── Query deals with payment-date windowing + 1st monthly payment filter ──
-// A deal only counts if its FIRST-EVER positive payment in walco_payments
-// falls within the window. This is the "pymts-made" eligibility rule from
-// the workbook — it drops ~30% of deals (repeat payments).
-// Uses DISTINCT ON contract_no to avoid double-counting deals with multiple payments.
+// ── Workbook eligibility (all 5 rules from Apps Script, verbatim) ──
+// For every WALCO payment in [windowStart, windowEnd]:
+//   (1) Bucket check — payment_date ∈ window ✓
+//   (2) Skip negative payments
+//   (3) Deal must match on normalized policy key (the JOIN)
+//   (4) STRICT STATUS: LOWER(deal_status) LIKE '%sold%'
+//       Cancelled / Back Out / VOID / Cancel POA / etc. all drop.
+//   (5) PYMTS-MADE RULE:
+//         eligible IFF (payIsAsOf && pymtsMade=0) OR (payIsBeforeAsOf && pymtsMade=1)
+//       where pymtsMade = count of positive payments strictly before asOfDate.
+//   (6) NEGATIVE-PAYMENT-LATER SKIP: drop if any negative payment exists on/after payDate.
+//   DISTINCT ON contract_no prevents double-counting when 2 payments both qualify.
 async function getWindowDeals(
   table: "moxy_deals" | "moxy_home_deals",
   windowStart: string,
-  windowEnd: string
+  windowEnd: string,
+  asOfDate: string
 ): Promise<{ rows: DealRow[]; totalCount: number }> {
-  // CTE: compute each policy's first-ever positive payment date
-  const firstPaymentCTE = `
-    WITH first_payments AS (
-      SELECT policy_number, MIN(payment_date) as first_date
+  const eligibilityCTE = `
+    WITH pm AS (
+      SELECT policy_number, COUNT(*)::int AS pymts_made
       FROM walco_payments
-      WHERE payment_amount > 0
+      WHERE payment_amount > 0 AND payment_date < $3
       GROUP BY policy_number
+    ),
+    eligible_payments AS (
+      SELECT wp.policy_number, wp.payment_date
+      FROM walco_payments wp
+      LEFT JOIN pm ON pm.policy_number = wp.policy_number
+      WHERE wp.payment_amount > 0
+        AND wp.payment_date BETWEEN $1 AND $2
+        AND (
+          (wp.payment_date = $3::date AND COALESCE(pm.pymts_made, 0) = 0)
+          OR
+          (wp.payment_date < $3::date AND COALESCE(pm.pymts_made, 0) = 1)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM walco_payments nwp
+          WHERE nwp.policy_number = wp.policy_number
+            AND nwp.payment_amount < 0
+            AND nwp.payment_date >= wp.payment_date
+        )
     )`;
 
-  // Get deal financial data for funding calculation (DISTINCT by contract_no)
-  // Only include deals whose first payment is within this window
   const financialRows = await query(
-    `${firstPaymentCTE}
+    `${eligibilityCTE}
      SELECT DISTINCT ON (md.contract_no)
        md.cust_cost, md.dealer_cost, md.down_payment, md.finance_term
-     FROM walco_payments wp
-     JOIN ${table} md ON md.contract_no = wp.policy_number
-     JOIN first_payments fp ON fp.policy_number = wp.policy_number
-     WHERE wp.payment_date BETWEEN $1 AND $2
-       AND fp.first_date BETWEEN $1 AND $2
-       AND md.deal_status NOT IN ('Back Out', 'VOID', '')
+     FROM eligible_payments ep
+     JOIN ${table} md
+       ON normalize_policy_key(md.contract_no) = normalize_policy_key(ep.policy_number)
+     WHERE LOWER(md.deal_status) LIKE '%sold%'
        AND md.cust_cost > 0`,
-    [windowStart, windowEnd]
+    [windowStart, windowEnd, asOfDate]
   );
 
-  // Get total unique deal count (same 1st-payment filter)
   const countRes = await query(
-    `${firstPaymentCTE}
-     SELECT COUNT(DISTINCT wp.policy_number) as count
-     FROM walco_payments wp
-     JOIN ${table} md ON md.contract_no = wp.policy_number
-     JOIN first_payments fp ON fp.policy_number = wp.policy_number
-     WHERE wp.payment_date BETWEEN $1 AND $2
-       AND fp.first_date BETWEEN $1 AND $2
-       AND md.deal_status NOT IN ('Back Out', 'VOID', '')
+    `${eligibilityCTE}
+     SELECT COUNT(DISTINCT md.contract_no)::int AS count
+     FROM eligible_payments ep
+     JOIN ${table} md
+       ON normalize_policy_key(md.contract_no) = normalize_policy_key(ep.policy_number)
+     WHERE LOWER(md.deal_status) LIKE '%sold%'
        AND md.cust_cost > 0`,
-    [windowStart, windowEnd]
+    [windowStart, windowEnd, asOfDate]
   );
 
   return {
@@ -181,30 +209,30 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const today = todayLocal();
 
-    // ── Payment-date windows (from workbook qControls) ──
+    await ensureNormalizeFn();
+
     const windows = getPaymentWindows(today);
 
-    // ── 1. This Friday deals (payment window: 2 Fridays ago → last Friday) ──
+    // ── This Friday (payments Sat 2wks ago → prior Fri) ──
     const [thisAutoData, thisHomeData] = await Promise.all([
-      getWindowDeals("moxy_deals", windows.thisWindow.start, windows.thisWindow.end),
-      getWindowDeals("moxy_home_deals", windows.thisWindow.start, windows.thisWindow.end),
+      getWindowDeals("moxy_deals", windows.thisWindow.start, windows.thisWindow.end, today),
+      getWindowDeals("moxy_home_deals", windows.thisWindow.start, windows.thisWindow.end, today),
     ]);
 
-    // ── 2. Next Friday deals (payment window: day after last Friday → today) ──
+    // ── Next Friday (payments current Sat → today, partial) ──
     const [nextAutoData, nextHomeData] = await Promise.all([
-      getWindowDeals("moxy_deals", windows.nextWindow.start, windows.nextWindow.end),
-      getWindowDeals("moxy_home_deals", windows.nextWindow.start, windows.nextWindow.end),
+      getWindowDeals("moxy_deals", windows.nextWindow.start, windows.nextWindow.end, today),
+      getWindowDeals("moxy_home_deals", windows.nextWindow.start, windows.nextWindow.end, today),
     ]);
 
-    // ── 3. Pipeline: deals by status (all deals with payments since thisWindow start) ──
-    // Use a subquery to deduplicate deals before aggregating
+    // ── Pipeline (status breakdown of all payments since thisWindow start, no eligibility filter — diagnostic only) ──
     const [pipelineAutoRes, pipelineHomeRes] = await Promise.all([
       query(
         `SELECT deal_status, COUNT(*) as count, COALESCE(SUM(cust_cost), 0) as total_admin
          FROM (
            SELECT DISTINCT ON (md.contract_no) md.deal_status, md.cust_cost
            FROM walco_payments wp
-           JOIN moxy_deals md ON md.contract_no = wp.policy_number
+           JOIN moxy_deals md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
            WHERE wp.payment_date >= $1
          ) deduped
          GROUP BY deal_status
@@ -216,7 +244,7 @@ export async function GET(request: Request) {
          FROM (
            SELECT DISTINCT ON (md.contract_no) md.deal_status, md.cust_cost
            FROM walco_payments wp
-           JOIN moxy_home_deals md ON md.contract_no = wp.policy_number
+           JOIN moxy_home_deals md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
            WHERE wp.payment_date >= $1
          ) deduped
          GROUP BY deal_status
@@ -225,7 +253,7 @@ export async function GET(request: Request) {
       ),
     ]);
 
-    // ── 4. MTD totals (all payments this month, joined to deals) ──
+    // ── MTD totals (Sold-only per workbook) ──
     const monthStart = today.slice(0, 7) + "-01";
     const [mtdAutoRes, mtdHomeRes] = await Promise.all([
       query(
@@ -233,9 +261,9 @@ export async function GET(request: Request) {
          FROM (
            SELECT DISTINCT ON (md.contract_no) md.cust_cost
            FROM walco_payments wp
-           JOIN moxy_deals md ON md.contract_no = wp.policy_number
+           JOIN moxy_deals md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
            WHERE wp.payment_date BETWEEN $1 AND $2
-             AND md.deal_status NOT IN ('Back Out', 'VOID', '')
+             AND LOWER(md.deal_status) LIKE '%sold%'
              AND md.cust_cost > 0
          ) deduped`,
         [monthStart, today]
@@ -245,16 +273,16 @@ export async function GET(request: Request) {
          FROM (
            SELECT DISTINCT ON (md.contract_no) md.cust_cost
            FROM walco_payments wp
-           JOIN moxy_home_deals md ON md.contract_no = wp.policy_number
+           JOIN moxy_home_deals md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
            WHERE wp.payment_date BETWEEN $1 AND $2
-             AND md.deal_status NOT IN ('Back Out', 'VOID', '')
+             AND LOWER(md.deal_status) LIKE '%sold%'
              AND md.cust_cost > 0
          ) deduped`,
         [monthStart, today]
       ),
     ]);
 
-    // ── 5. Weekly history (last 8 weeks) — using payment-date windows ──
+    // ── Weekly history (last 8 weeks) — replay workbook rule with each week's Friday as asOfDate ──
     const historyWeeks: {
       weekStart: string; weekEnd: string;
       autoDeals: number; homeDeals: number;
@@ -263,10 +291,11 @@ export async function GET(request: Request) {
 
     for (let w = 0; w < 8; w++) {
       const wkEnd = addDays(windows.thisWindow.end, -7 * w); // Friday
-      const wkStart = addDays(wkEnd, -6); // Saturday before
+      const wkStart = addDays(wkEnd, -6);                     // Saturday before
+      const wkAsOf = addDays(wkEnd, 1);                       // Saturday after (AsOfDate snapshot for historical reconstruction)
       const [haData, hhData] = await Promise.all([
-        getWindowDeals("moxy_deals", wkStart, wkEnd),
-        getWindowDeals("moxy_home_deals", wkStart, wkEnd),
+        getWindowDeals("moxy_deals", wkStart, wkEnd, wkAsOf),
+        getWindowDeals("moxy_home_deals", wkStart, wkEnd, wkAsOf),
       ]);
       const autoAgg = aggregateDeals(haData.rows);
       const homeAgg = aggregateDeals(hhData.rows);
@@ -280,7 +309,7 @@ export async function GET(request: Request) {
       });
     }
 
-    // ── 6. WALCO payment totals for this window ──
+    // ── WALCO raw payment totals for the ThisFri window (diagnostic) ──
     let walcoTotal = 0;
     let walcoCount = 0;
     try {
@@ -293,7 +322,7 @@ export async function GET(request: Request) {
       walcoTotal = Number(walcoRes.rows[0].total);
       walcoCount = Number(walcoRes.rows[0].count);
     } catch {
-      // walco_payments table doesn't exist yet
+      // table doesn't exist yet
     }
 
     // ── Build funding aggregates ──
@@ -302,7 +331,6 @@ export async function GET(request: Request) {
     const nextWeekAutoAgg = aggregateDeals(nextAutoData.rows);
     const nextWeekHomeAgg = aggregateDeals(nextHomeData.rows);
 
-    // Use total count (including deals without financial data) for deal counts
     thisWeekAutoAgg.deals = thisAutoData.totalCount;
     thisWeekHomeAgg.deals = thisHomeData.totalCount;
     nextWeekAutoAgg.deals = nextAutoData.totalCount;
@@ -318,6 +346,8 @@ export async function GET(request: Request) {
         admin: funding,
       };
     }
+
+    void url; // keep for future query params (e.g. ?asof=)
 
     return NextResponse.json({
       ok: true,
