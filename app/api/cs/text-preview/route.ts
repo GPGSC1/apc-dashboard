@@ -14,8 +14,25 @@ import {
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
-    const date = url.searchParams.get("date") || todayLocal();
+    const requestedDate = url.searchParams.get("date") || todayLocal();
     const template = url.searchParams.get("template") || DEFAULT_MESSAGE_TEMPLATE;
+
+    // If the requested date has no assigned-rep rows, fall back to the most
+    // recent scrub_date that does. (Covers the case where today's PBS scrub
+    // hasn't run yet but collections still wants to preview.)
+    let date = requestedDate;
+    const checkRes = await query(
+      `SELECT COUNT(*)::INT AS n FROM cs_past_due_accounts
+       WHERE scrub_date = $1 AND assigned_rep IS NOT NULL AND assigned_rep != ''`,
+      [date]
+    );
+    if (!checkRes.rows[0]?.n) {
+      const fallbackRes = await query(
+        `SELECT MAX(scrub_date)::TEXT AS d FROM cs_past_due_accounts
+         WHERE assigned_rep IS NOT NULL AND assigned_rep != ''`
+      );
+      if (fallbackRes.rows[0]?.d) date = fallbackRes.rows[0].d;
+    }
 
     // Only accounts with assigned_rep (= actually on the past-due list)
     const result = await query(
@@ -37,6 +54,8 @@ export async function GET(request: Request) {
     return NextResponse.json({
       ok: true,
       date,
+      requestedDate,
+      fellBack: date !== requestedDate,
       template,
       totalRows: rows.length,
       recipients: scrub.recipients,

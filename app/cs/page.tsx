@@ -204,6 +204,8 @@ interface ExclusionBreakdownUI {
 interface PreviewData {
   ok: boolean;
   date: string;
+  requestedDate?: string;
+  fellBack?: boolean;
   template: string;
   totalRows: number;
   recipients: TextRecipientUI[];
@@ -442,6 +444,11 @@ function TextCampaignModal({ onClose }: { onClose: () => void }) {
           )}
           {preview && !loading && (
             <>
+              {preview.fellBack && (
+                <div style={{ padding: 10, background: `${C.amber}18`, border: `1px solid ${C.amber}`, borderRadius: 6, color: C.amber, marginBottom: 12, fontSize: 12 }}>
+                  ⚠ Today&apos;s scrub hasn&apos;t run yet — showing most recent available data from {preview.date}.
+                </div>
+              )}
               {/* Summary */}
               <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
                 <div style={{ flex: 1, minWidth: 140, padding: "10px 14px", background: C.card, border: `1px solid ${C.teal}`, borderRadius: 6 }}>
