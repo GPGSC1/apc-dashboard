@@ -177,6 +177,413 @@ function Td({ children, style }: { children: React.ReactNode; style?: React.CSSP
 const TABS = ["Overview", "Performance", "Availability", "Trends", "Text Owners"] as const;
 type TabName = (typeof TABS)[number];
 
+/* ── Text Campaign Modal ────────────────────────────────────────────────────── */
+interface TextRecipientUI {
+  id: number;
+  accountNumber: string;
+  name: string;
+  firstName: string;
+  phone: string;
+  phoneE164: string;
+  amountDue: string;
+  nextDueDate: string;
+  installmentsMade: number;
+  message: string;
+}
+interface ExclusionBreakdownUI {
+  scheduledPDP: number;
+  followUp: number;
+  collected: number;
+  mailedCheck: number;
+  cancelledPolicy: number;
+  csSaveAttempt: number;
+  doNotCall: number;
+  noPhone: number;
+  total: number;
+}
+interface PreviewData {
+  ok: boolean;
+  date: string;
+  template: string;
+  totalRows: number;
+  recipients: TextRecipientUI[];
+  exclusions: ExclusionBreakdownUI;
+  scrubbedRows: Array<{ accountNumber: string; name: string; reason: string }>;
+}
+
+const DEFAULT_SMS_TEMPLATE =
+  "From Guardian Protection Group, {FirstName} according to our records, your payment for {AmountDue} is past due as of {MissedPaymentDate} for your coverage. Please call 844-770-8448 to make arrangements to avoid cancellation. Reply STOP to unsubscribe.";
+
+function TextCampaignModal({ onClose }: { onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PreviewData | null>(null);
+  const [template, setTemplate] = useState(DEFAULT_SMS_TEMPLATE);
+  const [filter, setFilter] = useState("");
+  const [stage, setStage] = useState<"preview" | "confirm" | "sending" | "done">("preview");
+  const [confirmText, setConfirmText] = useState("");
+  const [sendResult, setSendResult] = useState<{ sent: number; failed: number; campaignId?: number } | null>(null);
+  const [editingTemplate, setEditingTemplate] = useState(false);
+
+  // Fetch preview on open
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    fetch(`/api/cs/text-preview?template=${encodeURIComponent(template)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.ok) setPreview(d);
+        else setError(d.error || "Failed to load preview");
+      })
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [template]);
+
+  const recipients = preview?.recipients || [];
+  const ex = preview?.exclusions;
+
+  const filtered = filter
+    ? recipients.filter(
+        (r) =>
+          r.name.toLowerCase().includes(filter.toLowerCase()) ||
+          r.accountNumber.toLowerCase().includes(filter.toLowerCase()) ||
+          r.phone.includes(filter)
+      )
+    : recipients;
+
+  const sample = recipients[0];
+
+  const handleSend = async () => {
+    if (confirmText.trim().toUpperCase() !== "SEND") return;
+    setStage("sending");
+    try {
+      const res = await fetch("/api/cs/text-send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipients,
+          template,
+          sentBy: "collections",
+        }),
+      });
+      const d = await res.json();
+      if (d.ok) {
+        setSendResult({ sent: d.sent, failed: d.failed, campaignId: d.campaignId });
+        setStage("done");
+      } else {
+        setError(d.error || "Send failed");
+        setStage("preview");
+      }
+    } catch (e) {
+      setError(String(e));
+      setStage("preview");
+    }
+  };
+
+  const overlayStyle: React.CSSProperties = {
+    position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    zIndex: 1000,
+  };
+  const modalStyle: React.CSSProperties = {
+    background: C.bg, border: `1px solid ${C.border}`, borderRadius: 12,
+    width: "95vw", maxWidth: 1100, maxHeight: "92vh",
+    display: "flex", flexDirection: "column", fontFamily: FONT, color: C.text,
+  };
+  const headerStyle: React.CSSProperties = {
+    padding: "14px 20px", borderBottom: `1px solid ${C.border}`,
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+  };
+  const bodyStyle: React.CSSProperties = {
+    padding: 20, overflow: "auto", flex: 1,
+  };
+  const footerStyle: React.CSSProperties = {
+    padding: "14px 20px", borderTop: `1px solid ${C.border}`,
+    display: "flex", gap: 12, alignItems: "center", justifyContent: "flex-end",
+  };
+  const btn = (label: string, onClick: () => void, color: string, disabled?: boolean): React.ReactElement => (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        padding: "8px 18px", borderRadius: 6,
+        border: "none", background: disabled ? C.border : color,
+        color: disabled ? C.muted : "#000",
+        fontWeight: 700, fontSize: 13, cursor: disabled ? "not-allowed" : "pointer",
+        fontFamily: FONT,
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  // ─ Done state ─
+  if (stage === "done" && sendResult) {
+    return (
+      <div style={overlayStyle} onClick={onClose}>
+        <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+          <div style={headerStyle}>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>Campaign Sent</div>
+            <button onClick={onClose} style={{ background: "none", border: "none", color: C.muted, fontSize: 20, cursor: "pointer" }}>✕</button>
+          </div>
+          <div style={bodyStyle}>
+            <div style={{ fontSize: 48, color: C.green, textAlign: "center", marginBottom: 12 }}>✓</div>
+            <div style={{ fontSize: 20, textAlign: "center", marginBottom: 24 }}>
+              Sent {sendResult.sent} text{sendResult.sent !== 1 ? "s" : ""}
+              {sendResult.failed > 0 && <span style={{ color: C.red }}>, {sendResult.failed} failed</span>}
+            </div>
+            {sendResult.campaignId && (
+              <div style={{ textAlign: "center", color: C.muted, fontSize: 12 }}>
+                Campaign ID: {sendResult.campaignId}
+              </div>
+            )}
+          </div>
+          <div style={footerStyle}>{btn("Close", onClose, C.teal)}</div>
+        </div>
+      </div>
+    );
+  }
+
+  // ─ Sending state ─
+  if (stage === "sending") {
+    return (
+      <div style={overlayStyle}>
+        <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+          <div style={headerStyle}>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>Sending…</div>
+          </div>
+          <div style={bodyStyle}>
+            <div style={{ textAlign: "center", padding: 40 }}>
+              <div style={{ fontSize: 16, color: C.teal, marginBottom: 16 }}>
+                Sending {recipients.length} text{recipients.length !== 1 ? "s" : ""} via TextMagic…
+              </div>
+              <div style={{ fontSize: 12, color: C.muted }}>
+                This may take {Math.ceil(recipients.length / 5)} seconds. Do not close this window.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ─ Confirm state ─
+  if (stage === "confirm") {
+    return (
+      <div style={overlayStyle}>
+        <div style={{ ...modalStyle, maxWidth: 540 }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ ...headerStyle, background: `${C.amber}18`, borderBottom: `1px solid ${C.amber}` }}>
+            <div style={{ fontSize: 18, fontWeight: 800, color: C.amber }}>⚠ Confirm Send</div>
+          </div>
+          <div style={bodyStyle}>
+            <div style={{ fontSize: 15, marginBottom: 16, lineHeight: 1.5 }}>
+              You are about to send <strong style={{ color: C.teal }}>{recipients.length}</strong> SMS
+              messages via TextMagic. This action <strong>cannot be undone</strong>.
+            </div>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>
+              Type <strong style={{ color: C.text }}>SEND</strong> to confirm:
+            </div>
+            <input
+              type="text"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              autoFocus
+              style={{
+                width: "100%", padding: "10px 14px", fontSize: 16,
+                background: C.input, color: C.text,
+                border: `1px solid ${confirmText.toUpperCase() === "SEND" ? C.green : C.border}`,
+                borderRadius: 6, fontFamily: FONT, outline: "none",
+              }}
+            />
+          </div>
+          <div style={footerStyle}>
+            <button
+              onClick={() => { setStage("preview"); setConfirmText(""); }}
+              style={{
+                padding: "8px 16px", borderRadius: 6,
+                border: `1px solid ${C.border}`, background: "transparent",
+                color: C.secondary, fontWeight: 600, cursor: "pointer", fontFamily: FONT,
+              }}
+            >
+              Back
+            </button>
+            {btn(
+              `Send ${recipients.length} Texts`,
+              handleSend,
+              C.amber,
+              confirmText.trim().toUpperCase() !== "SEND"
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ─ Preview state (default) ─
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+        <div style={headerStyle}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>Text Campaign Preview</div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+              Scrub date: {preview?.date || "—"} · TextMagic SMS
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: C.muted, fontSize: 20, cursor: "pointer" }}>✕</button>
+        </div>
+        <div style={bodyStyle}>
+          {loading && <div style={{ textAlign: "center", padding: 40, color: C.muted }}>Loading preview…</div>}
+          {error && (
+            <div style={{ padding: 16, background: `${C.red}18`, border: `1px solid ${C.red}`, borderRadius: 6, color: C.red, marginBottom: 16 }}>
+              {error}
+            </div>
+          )}
+          {preview && !loading && (
+            <>
+              {/* Summary */}
+              <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 140, padding: "10px 14px", background: C.card, border: `1px solid ${C.teal}`, borderRadius: 6 }}>
+                  <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", fontWeight: 700 }}>Will Send</div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: C.teal }}>{recipients.length}</div>
+                </div>
+                <div style={{ flex: 1, minWidth: 140, padding: "10px 14px", background: C.card, border: `1px solid ${C.border}`, borderRadius: 6 }}>
+                  <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", fontWeight: 700 }}>Total Rows</div>
+                  <div style={{ fontSize: 26, fontWeight: 800 }}>{preview.totalRows}</div>
+                </div>
+                <div style={{ flex: 1, minWidth: 140, padding: "10px 14px", background: C.card, border: `1px solid ${C.amber}`, borderRadius: 6 }}>
+                  <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", fontWeight: 700 }}>Scrubbed</div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: C.amber }}>{ex?.total || 0}</div>
+                </div>
+              </div>
+
+              {/* Exclusion breakdown */}
+              {ex && ex.total > 0 && (
+                <div style={{ marginBottom: 16, padding: 12, background: C.card, border: `1px solid ${C.border}`, borderRadius: 6 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase", marginBottom: 8 }}>
+                    Exclusions
+                  </div>
+                  <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12 }}>
+                    {ex.scheduledPDP > 0 && <span>Scheduled PDP: <strong>{ex.scheduledPDP}</strong></span>}
+                    {ex.followUp > 0 && <span>Follow Up: <strong>{ex.followUp}</strong></span>}
+                    {ex.collected > 0 && <span>Collected: <strong>{ex.collected}</strong></span>}
+                    {ex.mailedCheck > 0 && <span>Mailed Check: <strong>{ex.mailedCheck}</strong></span>}
+                    {ex.cancelledPolicy > 0 && <span>Cancelled: <strong>{ex.cancelledPolicy}</strong></span>}
+                    {ex.csSaveAttempt > 0 && <span>CS-Save: <strong>{ex.csSaveAttempt}</strong></span>}
+                    {ex.doNotCall > 0 && <span style={{ color: C.red }}>Do Not Call: <strong>{ex.doNotCall}</strong></span>}
+                    {ex.noPhone > 0 && <span style={{ color: C.muted }}>No Phone: <strong>{ex.noPhone}</strong></span>}
+                  </div>
+                </div>
+              )}
+
+              {/* Sample message + template editor */}
+              {sample && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase" }}>
+                      Sample — {sample.name} ({sample.phone})
+                    </div>
+                    <button
+                      onClick={() => setEditingTemplate(!editingTemplate)}
+                      style={{
+                        fontSize: 11, background: "none", border: `1px solid ${C.border}`,
+                        color: C.secondary, padding: "3px 8px", borderRadius: 4, cursor: "pointer", fontFamily: FONT,
+                      }}
+                    >
+                      {editingTemplate ? "Done editing" : "Edit template"}
+                    </button>
+                  </div>
+                  {editingTemplate ? (
+                    <textarea
+                      value={template}
+                      onChange={(e) => setTemplate(e.target.value)}
+                      rows={4}
+                      style={{
+                        width: "100%", padding: 10, fontSize: 12,
+                        background: C.input, color: C.text, border: `1px solid ${C.border}`,
+                        borderRadius: 6, fontFamily: FONT, outline: "none", resize: "vertical",
+                      }}
+                    />
+                  ) : (
+                    <div style={{ padding: 12, background: C.input, border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, lineHeight: 1.5 }}>
+                      {sample.message}
+                    </div>
+                  )}
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>
+                    Placeholders: {"{FirstName}"}, {"{AmountDue}"}, {"{MissedPaymentDate}"}
+                  </div>
+                </div>
+              )}
+
+              {/* Recipient table */}
+              <div style={{ marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase" }}>
+                  Recipients ({filtered.length}{filter && ` of ${recipients.length}`})
+                </div>
+                <input
+                  type="text"
+                  placeholder="Search name, acct, phone…"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  style={{
+                    padding: "4px 10px", fontSize: 12,
+                    background: C.input, color: C.text, border: `1px solid ${C.border}`,
+                    borderRadius: 4, fontFamily: FONT, outline: "none", width: 220,
+                  }}
+                />
+              </div>
+              <div style={{ maxHeight: 300, overflow: "auto", border: `1px solid ${C.border}`, borderRadius: 6 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead style={{ position: "sticky", top: 0, background: C.card, zIndex: 1 }}>
+                    <tr>
+                      <Th style={{ width: 90 }}>Account</Th>
+                      <Th>Name</Th>
+                      <Th style={{ width: 110 }}>Phone</Th>
+                      <Th style={{ width: 80 }}>Amount</Th>
+                      <Th style={{ width: 80 }}>Due Date</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((r) => (
+                      <tr key={r.id}>
+                        <Td style={{ fontFamily: "monospace", fontSize: 11 }}>{r.accountNumber}</Td>
+                        <Td>{r.name}</Td>
+                        <Td style={{ fontFamily: "monospace", fontSize: 11 }}>{r.phone}</Td>
+                        <Td>{r.amountDue}</Td>
+                        <Td style={{ fontSize: 11 }}>{r.nextDueDate}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+        <div style={footerStyle}>
+          <button
+            onClick={onClose}
+            style={{
+              padding: "8px 16px", borderRadius: 6,
+              border: `1px solid ${C.border}`, background: "transparent",
+              color: C.secondary, fontWeight: 600, cursor: "pointer", fontFamily: FONT,
+            }}
+          >
+            Cancel
+          </button>
+          {btn(
+            `Continue → Send ${recipients.length}`,
+            () => setStage("confirm"),
+            C.teal,
+            !preview || recipients.length === 0
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 /* ── Coming Soon placeholder ─────────────────────────────────────────────────── */
 function ComingSoon({ title, desc }: { title: string; desc: string }) {
   return (
@@ -679,6 +1086,7 @@ function WorkListTab({
   const [sortCol, setSortCol] = useState<string>("assigned_rep");
   const [sortAsc, setSortAsc] = useState(true);
   const [showFollowUps, setShowFollowUps] = useState(false);
+  const [showTextModal, setShowTextModal] = useState(false);
 
   const handleSort = (col: string) => {
     if (sortCol === col) {
@@ -882,6 +1290,29 @@ function WorkListTab({
           sub="100% collectible universe"
         />
       </div>
+
+      {/* ═══ CAMPAIGN ACTIONS ═══ */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, padding: "12px 14px", background: C.card, border: `1px solid ${C.border}`, borderRadius: 8 }}>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>Collections SMS Campaign</div>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+            Send TextMagic SMS to all past-due accounts (excludes Scheduled PDP, Follow Up, Collected, Do Not Call, etc.)
+          </div>
+        </div>
+        <button
+          onClick={() => setShowTextModal(true)}
+          style={{
+            padding: "10px 22px", borderRadius: 6,
+            background: `linear-gradient(135deg, ${C.teal}, ${C.tealDark})`,
+            color: "#000", fontWeight: 800, fontSize: 13,
+            border: "none", cursor: "pointer", fontFamily: FONT,
+            letterSpacing: 0.3, boxShadow: `0 0 20px ${C.teal}33`,
+          }}
+        >
+          Send Text Campaign
+        </button>
+      </div>
+      {showTextModal && <TextCampaignModal onClose={() => setShowTextModal(false)} />}
 
       {/* ═══ WORK LIST (always today, unaffected by range) ═══ */}
       <div style={{ fontSize: 11, fontWeight: 700, color: C.secondary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
