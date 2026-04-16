@@ -22,8 +22,39 @@ const C = {
   tableBorder: "#1E2A42",
 };
 
-const TABS = ["Projections", "Pipeline", "History"] as const;
+const TABS = ["Projections", "Pipeline", "History", "Per-Rep"] as const;
 type TabName = (typeof TABS)[number];
+
+// ── Per-Rep types ──
+interface RepStats {
+  owner: string;
+  autoDeals: number;
+  homeDeals: number;
+  totalDeals: number;
+  autoFunded: number;
+  homeFunded: number;
+  totalFunded: number;
+  potentialFunding: number;
+  actualFunding: number;
+  fundingPct: number;
+}
+interface PerRepData {
+  ok: boolean;
+  today: string;
+  range: { start: string; end: string };
+  reps: RepStats[];
+  totals: {
+    autoDeals: number;
+    homeDeals: number;
+    totalDeals: number;
+    autoFunded: number;
+    homeFunded: number;
+    totalFunded: number;
+    potentialFunding: number;
+    actualFunding: number;
+    fundingPct: number;
+  };
+}
 
 // ── Types ──
 interface WeekData {
@@ -568,6 +599,205 @@ function HistoryTab({ data }: { data: ProjectionData }) {
   );
 }
 
+// ── Per-Rep Tab ──
+type SortKey = "owner" | "totalDeals" | "totalFunded" | "potentialFunding" | "actualFunding" | "fundingPct";
+
+function PerRepTab() {
+  const today = new Date().toISOString().slice(0, 10);
+  const monthStart = today.slice(0, 7) + "-01";
+  const [start, setStart] = useState(monthStart);
+  const [end, setEnd] = useState(today);
+  const [data, setData] = useState<PerRepData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("actualFunding");
+  const [sortDesc, setSortDesc] = useState(true);
+
+  const fetchData = useCallback(async () => {
+    try {
+      setLoading(true);
+      const res = await fetch(`/api/owner/per-rep?start=${start}&end=${end}`);
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || "API error");
+      setData(json);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [start, end]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  function handleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDesc(!sortDesc);
+    } else {
+      setSortKey(key);
+      setSortDesc(key !== "owner"); // strings asc, numbers desc by default
+    }
+  }
+
+  const sortedReps = data
+    ? [...data.reps].sort((a, b) => {
+        const av = a[sortKey];
+        const bv = b[sortKey];
+        const cmp = typeof av === "string" && typeof bv === "string" ? av.localeCompare(bv) : (Number(av) - Number(bv));
+        return sortDesc ? -cmp : cmp;
+      })
+    : [];
+
+  function SortHeader({ k, children, align }: { k: SortKey; children: React.ReactNode; align?: string }) {
+    const active = sortKey === k;
+    return (
+      <th
+        onClick={() => handleSort(k)}
+        style={{
+          textAlign: (align as "left" | "right" | "center") || "left",
+          padding: "10px 14px",
+          fontSize: 11,
+          fontWeight: 700,
+          color: active ? C.gold : C.goldDim,
+          textTransform: "uppercase",
+          letterSpacing: "0.5px",
+          borderBottom: `2px solid ${C.goldDim}44`,
+          whiteSpace: "nowrap",
+          cursor: "pointer",
+          userSelect: "none",
+        }}
+      >
+        {children}
+        {active ? (sortDesc ? " ▼" : " ▲") : ""}
+      </th>
+    );
+  }
+
+  function pctColor(pct: number): string {
+    if (pct >= 85) return C.green;
+    if (pct >= 70) return C.teal;
+    if (pct >= 50) return C.amber;
+    return C.red;
+  }
+
+  return (
+    <div>
+      <SectionHeader>Per-Rep Funding Performance</SectionHeader>
+
+      {/* Date range filter */}
+      <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 24, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ color: C.mutedLight, fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>From</span>
+          <input
+            type="date"
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+            style={{ background: C.cardAlt, border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 10px", color: C.text, fontSize: 13, fontFamily: "inherit" }}
+          />
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ color: C.mutedLight, fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>To</span>
+          <input
+            type="date"
+            value={end}
+            onChange={(e) => setEnd(e.target.value)}
+            style={{ background: C.cardAlt, border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 10px", color: C.text, fontSize: 13, fontFamily: "inherit" }}
+          />
+        </div>
+        <button
+          onClick={() => { setStart(monthStart); setEnd(today); }}
+          style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.cardAlt, color: C.muted, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+        >MTD</button>
+        <button
+          onClick={() => {
+            const d = new Date(today + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() - 30);
+            setStart(d.toISOString().slice(0, 10)); setEnd(today);
+          }}
+          style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.cardAlt, color: C.muted, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+        >Last 30 days</button>
+        <button
+          onClick={() => { setStart("2026-01-01"); setEnd(today); }}
+          style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.cardAlt, color: C.muted, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+        >YTD</button>
+        {loading && <span style={{ color: C.muted, fontSize: 12 }}>Loading...</span>}
+      </div>
+
+      {error && (
+        <div style={{ background: C.red + "22", border: `1px solid ${C.red}44`, borderRadius: 8, padding: "12px 16px", color: C.red, fontSize: 13, marginBottom: 20 }}>{error}</div>
+      )}
+
+      {data && (
+        <>
+          {/* Summary cards */}
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 24 }}>
+            <SummaryCard label="Reps" value={String(data.reps.length)} color={C.gold} />
+            <SummaryCard label="Total Deals Sold" value={String(data.totals.totalDeals)} color={C.text} />
+            <SummaryCard label="Funded Deals" value={String(data.totals.totalFunded)} color={C.green} />
+            <SummaryCard label="Potential Funding" value={fmt$(data.totals.potentialFunding)} color={C.goldLight} />
+            <SummaryCard label="Actual Funding" value={fmt$(data.totals.actualFunding)} color={C.green} />
+            <SummaryCard label="Funding %" value={data.totals.fundingPct.toFixed(1) + "%"} color={pctColor(data.totals.fundingPct)} />
+          </div>
+
+          {/* Per-rep table */}
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <SortHeader k="owner">Sales Rep (Owner)</SortHeader>
+                  <Th align="right">Auto</Th>
+                  <Th align="right">Home</Th>
+                  <SortHeader k="totalDeals" align="right">Total Deals</SortHeader>
+                  <SortHeader k="totalFunded" align="right">Funded Deals</SortHeader>
+                  <SortHeader k="potentialFunding" align="right">Potential $</SortHeader>
+                  <SortHeader k="actualFunding" align="right">Actual $</SortHeader>
+                  <SortHeader k="fundingPct" align="right">Funding %</SortHeader>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedReps.map((r) => (
+                  <tr key={r.owner}>
+                    <Td bold>{r.owner}</Td>
+                    <Td align="right">{r.autoDeals}</Td>
+                    <Td align="right">{r.homeDeals}</Td>
+                    <Td align="right" bold>{r.totalDeals}</Td>
+                    <Td align="right" color={C.green}>{r.totalFunded}</Td>
+                    <Td align="right" color={C.goldLight}>{fmt$(r.potentialFunding)}</Td>
+                    <Td align="right" color={C.green} bold>{fmt$(r.actualFunding)}</Td>
+                    <Td align="right" bold color={pctColor(r.fundingPct)}>{r.fundingPct.toFixed(1)}%</Td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ borderTop: `2px solid ${C.goldDim}44` }}>
+                  <Td bold color={C.gold}>TOTAL</Td>
+                  <Td align="right" bold>{data.totals.autoDeals}</Td>
+                  <Td align="right" bold>{data.totals.homeDeals}</Td>
+                  <Td align="right" bold color={C.gold}>{data.totals.totalDeals}</Td>
+                  <Td align="right" bold color={C.green}>{data.totals.totalFunded}</Td>
+                  <Td align="right" bold color={C.goldLight}>{fmt$(data.totals.potentialFunding)}</Td>
+                  <Td align="right" bold color={C.green}>{fmt$(data.totals.actualFunding)}</Td>
+                  <Td align="right" bold color={pctColor(data.totals.fundingPct)}>{data.totals.fundingPct.toFixed(1)}%</Td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          {/* Footnote */}
+          <div style={{ marginTop: 16, padding: 12, background: C.cardAlt, border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 11, color: C.mutedLight, lineHeight: 1.5 }}>
+            <strong style={{ color: C.gold }}>Methodology:</strong> Filter by <code>sold_date</code>. Attribution by <code>owner</code> (Sales Rep — primary rep assigned to the deal, not the takeover closer).
+            <strong style={{ color: C.text }}> Potential</strong> = sum of WALCO funding for every Sold deal in range using the standard fee/reserve formula.
+            <strong style={{ color: C.text }}> Actual</strong> = same formula, restricted to deals that have triggered WALCO funding (have at least one positive payment with no later reversal — equivalent to passing the workbook's pymts-made + neg-skip rules at any point in time).
+            <strong style={{ color: C.text }}> Funding %</strong> = Actual / Potential.
+            Recently-sold deals will show low funding % until their first payment lands (typically 30 days post-sale).
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Main Page ──
 export default function OwnerDashboard() {
   const [tab, setTab] = useState<TabName>("Projections");
@@ -709,6 +939,7 @@ export default function OwnerDashboard() {
             {tab === "Projections" && <ProjectionsTab data={data} />}
             {tab === "Pipeline" && <PipelineTab data={data} />}
             {tab === "History" && <HistoryTab data={data} />}
+            {tab === "Per-Rep" && <PerRepTab />}
           </>
         ) : null}
       </div>
