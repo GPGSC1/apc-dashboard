@@ -175,6 +175,11 @@ async function getWindowDeals(
         )
     )`;
 
+  // NOTE: workbook does NOT filter on CustomerPay > 0. Deals with missing
+  // financial fields still count toward DealCount (they contribute $0 funding
+  // via Math.max(0, ...) in calcFunding). Backfill of missing cust_cost /
+  // down_payment / dealer_cost / finance_term in moxy_deals is a Lenovo task
+  // — the count is correct here regardless.
   const financialRows = await query(
     `${eligibilityCTE}
      SELECT DISTINCT ON (md.contract_no)
@@ -182,8 +187,7 @@ async function getWindowDeals(
      FROM eligible_payments ep
      JOIN ${table} md
        ON normalize_policy_key(md.contract_no) = normalize_policy_key(ep.policy_number)
-     WHERE LOWER(md.deal_status) LIKE '%sold%'
-       AND md.cust_cost > 0`,
+     WHERE LOWER(md.deal_status) LIKE '%sold%'`,
     [windowStart, windowEnd, asOfDate]
   );
 
@@ -193,8 +197,7 @@ async function getWindowDeals(
      FROM eligible_payments ep
      JOIN ${table} md
        ON normalize_policy_key(md.contract_no) = normalize_policy_key(ep.policy_number)
-     WHERE LOWER(md.deal_status) LIKE '%sold%'
-       AND md.cust_cost > 0`,
+     WHERE LOWER(md.deal_status) LIKE '%sold%'`,
     [windowStart, windowEnd, asOfDate]
   );
 
@@ -264,7 +267,6 @@ export async function GET(request: Request) {
            JOIN moxy_deals md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
            WHERE wp.payment_date BETWEEN $1 AND $2
              AND LOWER(md.deal_status) LIKE '%sold%'
-             AND md.cust_cost > 0
          ) deduped`,
         [monthStart, today]
       ),
@@ -276,7 +278,6 @@ export async function GET(request: Request) {
            JOIN moxy_home_deals md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
            WHERE wp.payment_date BETWEEN $1 AND $2
              AND LOWER(md.deal_status) LIKE '%sold%'
-             AND md.cust_cost > 0
          ) deduped`,
         [monthStart, today]
       ),
