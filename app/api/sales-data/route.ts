@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { query } from "../../../lib/db/connection";
+import { ensureSalesViews } from "../../../lib/db/ensure-sales-views";
 import { todayLocal } from "../../../lib/date-utils";
 import { mapQueue, mapAnyQueue, isAutoQueue, isHomeQueue, ALL_QUEUES } from "../../../lib/queue-map";
 import { isExcludedSalesperson } from "../../../lib/teams";
@@ -93,27 +94,18 @@ export async function GET(req: Request) {
     : "AND deal_status != ''";
 
   try {
-    // ── 0. BUILD SALES AGENT SET ────────────────────────────────────
-    // Excluded teams: T.O., Spanish, Customer Service, Unassigned
-    // Everything else = sales team whose calls count
-    const EXCLUDED_PATTERNS = ['t.o.', 'to.', 'spanish', 'customer service', 'unassigned'];
-    function isExcludedTeam(teamName: string): boolean {
-      const lower = teamName.toLowerCase().trim();
-      return EXCLUDED_PATTERNS.some(p => lower === p || lower.includes(p));
-    }
+    // Install sales-dash views (idempotent, runs once per cold start).
+    // See lib/db/ensure-sales-views.ts for the DDL — view definitions
+    // encapsulate per-row normalization & dedup logic that previously lived inline.
+    await ensureSalesViews();
 
-    const allTeamMembersResult = await query(
-      `SELECT t.name as team_name, tm.agent_name
-       FROM teams t
-       JOIN team_members tm ON tm.team_id = t.id
-       WHERE tm.agent_name IS NOT NULL AND tm.agent_name != ''`
+    // ── 0. BUILD SALES AGENT SET ────────────────────────────────────
+    // Excluded teams (T.O., Spanish, Customer Service, Unassigned) filtered
+    // in v_sales_agent_names — see lib/db/ensure-sales-views.ts.
+    const salesAgentResult = await query(`SELECT agent_name FROM v_sales_agent_names`);
+    const salesAgentNames = new Set<string>(
+      salesAgentResult.rows.map((r: { agent_name: string }) => r.agent_name)
     );
-    const salesAgentNames = new Set<string>();
-    for (const row of allTeamMembersResult.rows) {
-      if (!isExcludedTeam(row.team_name)) {
-        salesAgentNames.add(row.agent_name.trim().toLowerCase());
-      }
-    }
 
     // ── 1. DEALS from Moxy Auto + Moxy Home ─────────────────────────
     // Auto deals: exclude rows with empty contract_no when the same customer_id
@@ -178,12 +170,17 @@ export async function GET(req: Request) {
       if (mp.length === 10) dealPhones.add(mp);
     }
 
-    // Load queue history for deal phones (all dates, sorted desc)
+    // Load queue history for deal phones (all dates, sorted desc).
+    // INTENTIONALLY uses raw queue_calls (not v_phone_queue_history) AND
+    // chunked IN clauses to preserve byte-identical row ordering with the
+    // pre-refactor route. Switching to ANY($1::text[]) changes the query
+    // plan and tie-breaks differently on (phone, call_date) duplicates —
+    // shifting deals between queues without changing total counts.
+    // Verification confirmed this is the only safe path for math fidelity.
     const phoneArray = Array.from(dealPhones);
     let phoneQueueHistory: Map<string, { queue: string; date: string }[]> = new Map();
 
     if (phoneArray.length > 0) {
-      // Batch query in chunks to avoid param limits
       const chunkSize = 500;
       for (let i = 0; i < phoneArray.length; i += chunkSize) {
         const chunk = phoneArray.slice(i, i + chunkSize);
@@ -220,46 +217,14 @@ export async function GET(req: Request) {
     }
 
     // ── 3. CALLS: month-to-date first-chronological dedup ────────────
-    // SQL CASE for normalizing queue names (reused across all call queries)
-    // Spanish checked BEFORE T.O. to avoid "Spanish - Auto" matching "to" substring
-    const NORM_QUEUE_SQL = `CASE
-           WHEN LOWER(queue) LIKE '%spanish%' THEN 'spanish'
-           WHEN LOWER(queue) LIKE '%mail 1%' THEN 'mail 1'
-           WHEN LOWER(queue) LIKE '%mail 2%' THEN 'mail 2'
-           WHEN LOWER(queue) LIKE '%mail 3%' THEN 'mail 3'
-           WHEN LOWER(queue) LIKE '%mail 4%' THEN 'mail 4'
-           WHEN LOWER(queue) LIKE '%mail 5%' THEN 'mail 5'
-           WHEN LOWER(queue) LIKE '%mail 6%' THEN 'mail 6'
-           WHEN LOWER(queue) LIKE '%home 1%' THEN 'home 1'
-           WHEN LOWER(queue) LIKE '%home 2%' THEN 'home 2'
-           WHEN LOWER(queue) LIKE '%home 3%' THEN 'home 3'
-           WHEN LOWER(queue) LIKE '%home 4%' THEN 'home 4'
-           WHEN LOWER(queue) LIKE '%home 5%' THEN 'home 5'
-           WHEN TRIM(LOWER(queue)) = 'to' OR LOWER(queue) LIKE '% to' OR LOWER(queue) LIKE 'to %' THEN 'to'
-           ELSE LOWER(TRIM(queue))
-         END`;
-
-    // Relaxed filter: only require answered status. The old first_ext conditions
-    // (non-empty, ≤4 digits, not 99xx) were too restrictive — calls can have a
-    // dest_name (routed to a human) even when first_ext is blank or AI (99xx).
-    // Agent attribution uses dest_name anyway, so first_ext doesn't matter.
-    const HUMAN_FILTER = `LOWER(status) = 'answered'`;
-
-    // Call CTE: All answered calls in sales queues, attributed by dest_name.
+    // Per-row attribution + queue normalization moved to v_queue_calls_attributed
+    // (lib/db/ensure-sales-views.ts). The view filters: status='answered',
+    // queue ∈ sales (mail 1-6, home 1-5), and exposes attr_agent + norm_queue.
+    // Spanish checked BEFORE T.O. inside normalize_queue() — see SQL function.
+    //
     // No cross-date dedup — the DB unique constraint (phone, queue, call_date)
     // already ensures one row per phone per queue per day. Same phone calling
     // the same queue on different days counts for each day (matches user's COUNTIFS).
-    const DEDUP_CTE = `
-      WITH deduped AS (
-        SELECT phone, call_date,
-          COALESCE(NULLIF(TRIM(dest_name), ''), agent_name) as attr_agent,
-          ${NORM_QUEUE_SQL} as norm_queue
-        FROM queue_calls
-        WHERE call_date BETWEEN $1 AND $2
-          AND ${HUMAN_FILTER}
-          AND ${NORM_QUEUE_SQL} IN ('mail 1','mail 2','mail 3','mail 4','mail 5','mail 6',
-                             'home 1','home 2','home 3','home 4','home 5')
-      )`;
 
     // queueCalls and totalCalls are computed AFTER agentQueueCalls is built,
     // filtered to sales agents only (bottom-up counting)
@@ -277,32 +242,27 @@ export async function GET(req: Request) {
     // make it into queue_calls. They're captured separately in to_transfers during
     // seed-refresh (every row from a Spanish or T.O. queue with a dest_name).
     // No status filter, no scrubbing — every transfer row counts.
+    // Source view: v_to_transfers_attributed (filters dest_name IS NOT NULL/!=‘’).
     const transferCountResult = await query(
       `SELECT dest_name, queue, COUNT(*) as cnt
-       FROM to_transfers
+       FROM v_to_transfers_attributed
        WHERE call_date BETWEEN $1 AND $2
-         AND dest_name IS NOT NULL AND dest_name != ''
        GROUP BY dest_name, queue`,
       [fromDate, toDate]
     );
 
-    // Load Spanish team members
-    const spanishTeamResult = await query(
-      `SELECT tm.agent_name FROM team_members tm
-       JOIN teams t ON t.id = tm.team_id
-       WHERE LOWER(t.name) = 'spanish'`,
-      []
+    // Load Spanish + T.O. team rosters in one round-trip via v_team_members_by_role.
+    // (Used here for transfer bucketing + later in deal attribution.)
+    const teamRolesResult = await query(
+      `SELECT team_role, agent_name_lower FROM v_team_members_by_role
+       WHERE team_role IN ('spanish', 'to')`
     );
-    const spanishNames = new Set(spanishTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.trim().toLowerCase()));
-
-    // Load T.O. team members
-    const toTeamResult = await query(
-      `SELECT tm.agent_name FROM team_members tm
-       JOIN teams t ON t.id = tm.team_id
-       WHERE LOWER(t.name) IN ('to.', 't.o.')`,
-      []
-    );
-    const toNames = new Set(toTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.trim().toLowerCase()));
+    const spanishNames = new Set<string>();
+    const toNames = new Set<string>();
+    for (const row of teamRolesResult.rows) {
+      if (row.team_role === 'spanish') spanishNames.add(row.agent_name_lower);
+      else if (row.team_role === 'to') toNames.add(row.agent_name_lower);
+    }
 
     // Bucket transfer rows by team. Use both the queue tag AND the team membership
     // so a Spanish rep showing up in the T.O. queue still counts as Spanish, etc.
@@ -323,16 +283,12 @@ export async function GET(req: Request) {
       }
     }
 
-    // AI-forwarded calls: either ext starts with 99, OR blank ext with 11-digit destination (forwarded to AI)
+    // AI-forwarded calls: source view v_queue_ai_fwd pre-classifies the
+    // (ext starts with 99) OR (blank ext + 11-digit dest starting with '1') predicate.
     const aiFwdResult = await query(
-      `SELECT ${NORM_QUEUE_SQL} as norm_queue, COUNT(DISTINCT phone) as cnt
-       FROM queue_calls
+      `SELECT norm_queue, COUNT(DISTINCT phone) as cnt
+       FROM v_queue_ai_fwd
        WHERE call_date BETWEEN $1 AND $2
-         AND (
-           (first_ext IS NOT NULL AND first_ext != '' AND TRIM(first_ext) LIKE '99%')
-           OR
-           ((first_ext IS NULL OR first_ext = '') AND destination IS NOT NULL AND LENGTH(TRIM(destination)) = 11 AND TRIM(destination) LIKE '1%')
-         )
        GROUP BY norm_queue`,
       [fromDate, toDate]
     );
@@ -344,15 +300,16 @@ export async function GET(req: Request) {
       }
     }
 
-    // Dropped calls: blank ext, NOT forwarded to AI (no 11-digit destination),
-    // and phone was NEVER answered in that queue during the entire date range.
-    // Use normalized queue for grouping to avoid double-counting
+    // Dropped calls: source view v_queue_dropped_candidates pre-filters for
+    // (blank ext) AND (NOT forwarded to 11-digit AI destination).
+    // The date-scoped NOT EXISTS subquery STAYS in the route — it depends on
+    // the date range to determine "phone never answered in that queue during
+    // the range" (moving it to the view would make it all-time-scoped, which
+    // changes semantics).
     const droppedResult = await query(
-      `SELECT ${NORM_QUEUE_SQL} as norm_queue, COUNT(DISTINCT phone) as cnt
-       FROM queue_calls d
+      `SELECT d.norm_queue, COUNT(DISTINCT d.phone) as cnt
+       FROM v_queue_dropped_candidates d
        WHERE d.call_date BETWEEN $1 AND $2
-         AND (d.first_ext = '' OR d.first_ext IS NULL)
-         AND (d.destination IS NULL OR LENGTH(TRIM(d.destination)) != 11 OR TRIM(d.destination) NOT LIKE '1%')
          AND NOT EXISTS (
            SELECT 1 FROM queue_calls a
            WHERE a.phone = d.phone
@@ -362,7 +319,7 @@ export async function GET(req: Request) {
                OR (a.destination IS NOT NULL AND LENGTH(TRIM(a.destination)) = 11 AND TRIM(a.destination) LIKE '1%')
              )
          )
-       GROUP BY norm_queue`,
+       GROUP BY d.norm_queue`,
       [fromDate, toDate]
     );
     const queueDropped: Record<string, number> = {};
@@ -374,12 +331,12 @@ export async function GET(req: Request) {
     }
 
     // ── 3b. CALLS per agent per queue (deduped) ─────────────────────
-    // Uses attr_agent (dest_name with agent_name fallback) to match user's
-    // COUNTIFS on Destination Name column
+    // Source view: v_queue_calls_attributed (status='answered' + sales queues only,
+    // exposes attr_agent = dest_name with agent_name fallback).
     const agentCallsResult = await query(
-      `${DEDUP_CTE}
-       SELECT attr_agent, norm_queue, COUNT(*) as cnt
-       FROM deduped
+      `SELECT attr_agent, norm_queue, COUNT(*) as cnt
+       FROM v_queue_calls_attributed
+       WHERE call_date BETWEEN $1 AND $2
        GROUP BY attr_agent, norm_queue`,
       [fromDate, toDate]
     );
@@ -460,25 +417,16 @@ export async function GET(req: Request) {
     // T.O. team members already loaded above (toNames set) — reuse for deal attribution
     function isTO(name: string) { return toNames.has(name.toLowerCase()); }
 
-    // Load Spanish team members for Spanish deal identification
-    const spTeamResult = await query(
-      `SELECT tm.agent_name FROM team_members tm JOIN teams t ON t.id = tm.team_id WHERE LOWER(t.name) = 'spanish'`
-    );
-    const spNames = new Set(spTeamResult.rows.map((r: { agent_name: string }) => r.agent_name.toLowerCase()));
-    function isSpanishRep(name: string) { return spNames.has(name.toLowerCase()); }
+    // Spanish-rep check: reuse spanishNames Set already loaded via v_team_members_by_role above.
+    function isSpanishRep(name: string) { return spanishNames.has(name.toLowerCase()); }
 
-    // Build phone → agent lookup from queue_calls (most recent human-answered call per phone)
-    // Only needed if there are T.O.s
+    // Build phone → agent lookup via v_phone_to_agent_latest view
+    // (most recent human-answered call per phone; DISTINCT ON applied in view).
+    // Only needed if there are T.O.s.
     const phoneToAgent = new Map<string, string>();
     if (toNames.size > 0) {
       const phoneAgentResult = await query(
-        `SELECT DISTINCT ON (phone) phone, agent_name, call_date
-         FROM queue_calls
-         WHERE first_ext IS NOT NULL AND first_ext != ''
-           AND LENGTH(TRIM(first_ext)) <= 4
-           AND TRIM(first_ext) NOT LIKE '99%'
-           AND agent_name IS NOT NULL AND agent_name != ''
-         ORDER BY phone, call_date DESC`
+        `SELECT phone, agent_name FROM v_phone_to_agent_latest`
       );
       for (const row of phoneAgentResult.rows) {
         const p = (row.phone ?? "").trim();
@@ -754,13 +702,11 @@ export async function GET(req: Request) {
     }
 
     // ── 5. DAILY TRENDS ─────────────────────────────────────────────
+    // Source view v_daily_trends pre-computes per-day distinct contract counts
+    // across both moxy_deals and moxy_home_deals with the standard non-VOID filter.
     const trendsResult = await query(
-      `SELECT sold_date, COUNT(DISTINCT contract_no) as cnt FROM (
-         SELECT sold_date, contract_no FROM moxy_deals WHERE sold_date BETWEEN $1 AND $2 AND deal_status NOT IN ('Back Out', 'VOID', '')
-         UNION ALL
-         SELECT sold_date, contract_no FROM moxy_home_deals WHERE sold_date BETWEEN $1 AND $2 AND deal_status NOT IN ('Back Out', 'VOID', '')
-       ) combined
-       GROUP BY sold_date
+      `SELECT sold_date, cnt FROM v_daily_trends
+       WHERE sold_date BETWEEN $1 AND $2
        ORDER BY sold_date`,
       [fromDate, toDate]
     );
