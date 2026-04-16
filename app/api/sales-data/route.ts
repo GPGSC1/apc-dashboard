@@ -171,27 +171,35 @@ export async function GET(req: Request) {
     }
 
     // Load queue history for deal phones (all dates, sorted desc).
-    // Single query via ANY($1::text[]) instead of chunked IN clauses.
-    // ORDER BY MUST be specified at query time — view definitions don't
-    // preserve ORDER BY, and findQueueBeforeDate() depends on desc order.
+    // INTENTIONALLY uses raw queue_calls (not v_phone_queue_history) AND
+    // chunked IN clauses to preserve byte-identical row ordering with the
+    // pre-refactor route. Switching to ANY($1::text[]) changes the query
+    // plan and tie-breaks differently on (phone, call_date) duplicates —
+    // shifting deals between queues without changing total counts.
+    // Verification confirmed this is the only safe path for math fidelity.
     const phoneArray = Array.from(dealPhones);
     let phoneQueueHistory: Map<string, { queue: string; date: string }[]> = new Map();
 
     if (phoneArray.length > 0) {
-      const result = await query(
-        `SELECT phone, queue, call_date FROM v_phone_queue_history
-         WHERE phone = ANY($1::text[])
-         ORDER BY phone, call_date DESC`,
-        [phoneArray]
-      );
-      for (const row of result.rows) {
-        const p = row.phone.trim();
-        if (!phoneQueueHistory.has(p)) phoneQueueHistory.set(p, []);
-        const cd = row.call_date instanceof Date ? row.call_date.toISOString().slice(0, 10) : String(row.call_date).slice(0, 10);
-        phoneQueueHistory.get(p)!.push({
-          queue: row.queue,
-          date: cd,
-        });
+      const chunkSize = 500;
+      for (let i = 0; i < phoneArray.length; i += chunkSize) {
+        const chunk = phoneArray.slice(i, i + chunkSize);
+        const placeholders = chunk.map((_, idx) => `$${idx + 1}`).join(",");
+        const result = await query(
+          `SELECT phone, queue, call_date FROM queue_calls
+           WHERE phone IN (${placeholders})
+           ORDER BY call_date DESC`,
+          chunk
+        );
+        for (const row of result.rows) {
+          const p = row.phone.trim();
+          if (!phoneQueueHistory.has(p)) phoneQueueHistory.set(p, []);
+          const cd = row.call_date instanceof Date ? row.call_date.toISOString().slice(0, 10) : String(row.call_date).slice(0, 10);
+          phoneQueueHistory.get(p)!.push({
+            queue: row.queue,
+            date: cd,
+          });
+        }
       }
     }
 

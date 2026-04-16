@@ -98,15 +98,11 @@ export async function ensureSalesViews(): Promise<void> {
         )
     `);
 
-    // ── 5. v_phone_queue_history ──
-    // Used for phone-based queue attribution (most recent ≤ sold_date).
-    // Route reads with: WHERE phone = ANY($1::text[]) ORDER BY phone, call_date DESC.
-    // (View definitions don't preserve ORDER BY — route MUST add it explicitly.)
-    await query(`
-      CREATE OR REPLACE VIEW v_phone_queue_history AS
-      SELECT phone, queue, call_date
-      FROM queue_calls
-    `);
+    // ── 5. (intentionally not a view) phone queue history ──
+    // The route still reads phone history via raw `queue_calls` with chunked
+    // IN clauses — switching to ANY($1::text[]) on a view changed the query
+    // plan and tie-broke (phone, call_date) duplicates differently, shifting
+    // deals between queues. Math fidelity > query elegance. See parity script.
 
     // ── 6. v_to_transfers_attributed — T.O./Spanish source ──
     // Route adds: WHERE call_date BETWEEN $1 AND $2; GROUP BY dest_name, queue.
