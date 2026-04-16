@@ -1127,17 +1127,35 @@ export async function GET(req: Request) {
 
     console.log(`[seed-refresh] Fetching: ${datesToFetch.join(", ")}`);
 
-    // Run source refreshes (all four, or filtered to one)
+    // Run source refreshes (all four, or filtered to one).
+    //
+    // PHASE 2b CUTOVER FLAG: when LENOVO_OWNS_MOXY=true is set in env,
+    // the dashboard skips its own refreshMoxy / refreshMoxyHome (Lenovo's
+    // pipeline is the sole writer). Default = false = dashboard keeps writing
+    // (current behavior, safe for rollback). Flip the env var in Vercel
+    // production AFTER Lenovo confirms 15-30 min Moxy refresh frequency is
+    // stable for 24-48h. Function definitions (refreshMoxy, refreshMoxyHome)
+    // remain in this file as a rollback path; can be deleted in a follow-up
+    // PR once the cutover is permanent.
     const runAim = !sourceFilter || sourceFilter === "aim";
     const runTcx = !sourceFilter || sourceFilter === "tcx";
     const runMoxy = !sourceFilter || sourceFilter === "moxy";
     const runMoxyHome = !sourceFilter || sourceFilter === "moxy_home";
+    const lenovoOwnsMoxy = process.env.LENOVO_OWNS_MOXY === "true";
 
     const results = await Promise.allSettled([
       runAim ? refreshAim(datesToFetch) : Promise.resolve({ skipped: true }),
       runTcx ? refresh3cx(datesToFetch, tcxClean) : Promise.resolve({ skipped: true }),
-      runMoxy ? refreshMoxy(datesToFetch) : Promise.resolve({ skipped: true }),
-      runMoxyHome ? refreshMoxyHome(datesToFetch) : Promise.resolve({ skipped: true }),
+      runMoxy
+        ? (lenovoOwnsMoxy
+            ? Promise.resolve({ skipped: true, owner: "lenovo" })
+            : refreshMoxy(datesToFetch))
+        : Promise.resolve({ skipped: true }),
+      runMoxyHome
+        ? (lenovoOwnsMoxy
+            ? Promise.resolve({ skipped: true, owner: "lenovo" })
+            : refreshMoxyHome(datesToFetch))
+        : Promise.resolve({ skipped: true }),
     ]);
 
     const aimResult = results[0].status === "fulfilled" ? results[0].value : { error: String((results[0] as PromiseRejectedResult).reason) };
