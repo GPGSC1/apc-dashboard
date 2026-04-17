@@ -66,6 +66,13 @@ interface DealRow {
   norm_key: string;
 }
 
+interface DealRowExtended extends DealRow {
+  salesperson: string | null;
+  promo_code: string | null;
+  home_phone: string | null;
+  mobile_phone: string | null;
+}
+
 interface RepStats {
   owner: string;
   autoDeals: number;
@@ -111,31 +118,83 @@ export async function GET(request: Request) {
     `);
     const fundedKeys = new Set<string>(fundedRes.rows.map((r: { k: string }) => r.k));
 
-    // ── Step 2: pull all Sold deals in date range with normalized key ──
+    // ── Step 2a: phone → 3CX agent map (FALLBACK 5 in attribution chain) ──
+    // Used to attribute blank-owner deals where the customer's phone shows
+    // up in queue_calls history. v_phone_to_agent_latest is a deduped view
+    // (DISTINCT ON phone, ORDER BY call_date DESC) installed in Phase 1.
+    const phoneAgentRes = await query(
+      `SELECT phone, agent_name FROM v_phone_to_agent_latest`
+    );
+    const phoneToAgent = new Map<string, string>();
+    for (const r of phoneAgentRes.rows) {
+      const p = String(r.phone || "").trim();
+      const a = String(r.agent_name || "").trim();
+      if (p && a) phoneToAgent.set(p, a);
+    }
+
+    // ── Step 2b: pull all Sold deals in date range with attribution context ──
+    // Includes salesperson + promo_code + phones so the fallback chain can
+    // attribute blank-owner deals correctly (mirrors sales-data route logic).
     const dealsRes = await query(`
       SELECT
-        TRIM(md.owner) AS owner, md.contract_no, 'auto'::text AS line,
+        TRIM(md.owner) AS owner,
+        TRIM(md.salesperson) AS salesperson,
+        UPPER(TRIM(COALESCE(md.promo_code, ''))) AS promo_code,
+        md.home_phone, md.mobile_phone,
+        md.contract_no, 'auto'::text AS line,
         md.cust_cost, md.down_payment, md.dealer_cost, md.finance_term,
         normalize_policy_key(md.contract_no) AS norm_key
       FROM v_moxy_deals_deduped md
       WHERE LOWER(md.deal_status) LIKE '%sold%'
         AND md.sold_date BETWEEN $1 AND $2
-        AND COALESCE(TRIM(md.owner), '') != ''
       UNION ALL
       SELECT
-        TRIM(md.owner), md.contract_no, 'home'::text,
+        TRIM(md.owner),
+        TRIM(md.salesperson),
+        UPPER(TRIM(COALESCE(md.promo_code, ''))),
+        md.home_phone, md.mobile_phone,
+        md.contract_no, 'home'::text,
         md.cust_cost, md.down_payment, md.dealer_cost, md.finance_term,
         normalize_policy_key(md.contract_no)
       FROM v_moxy_home_deals_deduped md
       WHERE LOWER(md.deal_status) LIKE '%sold%'
         AND md.sold_date BETWEEN $1 AND $2
-        AND COALESCE(TRIM(md.owner), '') != ''
     `, [start, end]);
 
-    // ── Step 3: aggregate by owner ──
+    // ── Step 3: aggregate by attributed rep (with fallback chain) ──
+    // Attribution chain (mirrors sales-data route, lines 559-617):
+    //   1. owner field           (PRIMARY)
+    //   2. salesperson           (FALLBACK 1 — when owner is blank)
+    //   3. promo_code='API'      → "Jeremy Fishbein" (AI bucket)
+    //   4. promo_code='CS'       → "Farrah Zenk" (CS bucket per CLAUDE.md)
+    //   5. promo_code='SP'       → "Spanish (unassigned)" pseudo-rep
+    //   6. phone → v_phone_to_agent_latest (3CX inbound history)
+    //   7. fall through to "Unassigned" (skipped here; surfaces via discovery
+    //      pass in sales-data route's bySalesperson mechanism)
+    function attributeDeal(d: DealRowExtended): string {
+      const owner = (d.owner || "").trim();
+      if (owner) return owner;
+      const sp = (d.salesperson || "").trim();
+      if (sp) return sp;
+      const pc = (d.promo_code || "").trim().toUpperCase();
+      if (pc === "API") return "Jeremy Fishbein";
+      if (pc === "CS") return "Farrah Zenk";
+      if (pc === "SP") return "Spanish (unassigned)";
+      // Phone-based fallback
+      const phones = [d.home_phone, d.mobile_phone]
+        .map(p => String(p || "").replace(/\D/g, "").slice(-10))
+        .filter(p => p.length === 10);
+      for (const p of phones) {
+        const agent = phoneToAgent.get(p);
+        if (agent) return agent;
+      }
+      return ""; // Unassigned
+    }
+
     const repMap = new Map<string, RepStats>();
-    for (const r of dealsRes.rows as DealRow[]) {
-      const key = r.owner;
+    for (const r of dealsRes.rows as DealRowExtended[]) {
+      const key = attributeDeal(r);
+      if (!key) continue; // Unassigned — Owner Dash per-rep doesn't surface these (sales-dash discovery pass does)
       const stats = repMap.get(key) || {
         owner: key,
         autoDeals: 0, homeDeals: 0, totalDeals: 0,
