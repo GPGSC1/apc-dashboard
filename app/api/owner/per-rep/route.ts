@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { query } from "../../../../lib/db/connection";
+import { ensureSalesViews } from "../../../../lib/db/ensure-sales-views";
 import { todayLocal } from "../../../../lib/date-utils";
 
 // ── Fee & Reserve Schedule (mirrors projections route) ──
@@ -87,6 +88,7 @@ export async function GET(request: Request) {
     const end = url.searchParams.get("end") || today;
 
     await ensureNormalizeFn();
+    await ensureSalesViews(); // installs v_moxy_deals_deduped + v_moxy_home_deals_deduped
 
     // ── Step 1: pre-aggregate the set of "funded" normalized policy keys ──
     // A policy is "funded" if it has at least one positive payment that doesn't
@@ -115,7 +117,7 @@ export async function GET(request: Request) {
         TRIM(md.owner) AS owner, md.contract_no, 'auto'::text AS line,
         md.cust_cost, md.down_payment, md.dealer_cost, md.finance_term,
         normalize_policy_key(md.contract_no) AS norm_key
-      FROM moxy_deals md
+      FROM v_moxy_deals_deduped md
       WHERE LOWER(md.deal_status) LIKE '%sold%'
         AND md.sold_date BETWEEN $1 AND $2
         AND COALESCE(TRIM(md.owner), '') != ''
@@ -124,7 +126,7 @@ export async function GET(request: Request) {
         TRIM(md.owner), md.contract_no, 'home'::text,
         md.cust_cost, md.down_payment, md.dealer_cost, md.finance_term,
         normalize_policy_key(md.contract_no)
-      FROM moxy_home_deals md
+      FROM v_moxy_home_deals_deduped md
       WHERE LOWER(md.deal_status) LIKE '%sold%'
         AND md.sold_date BETWEEN $1 AND $2
         AND COALESCE(TRIM(md.owner), '') != ''
