@@ -701,6 +701,42 @@ export async function GET(req: Request) {
       qs.closeRate = qs.calls > 0 ? qs.deals / qs.calls : 0;
     }
 
+    // ── 4b. UNASSIGNED-REP DISCOVERY ─────────────────────────────────
+    // An unassigned rep has no team → their calls don't pass salesAgentNames
+    // filter → they have no agentPrimaryQueue → their deals fail every queue
+    // attribution path and get dropped (line ~579 `if (!dealQueue) continue`)
+    // → they never enter bySalesperson → invisible to the Performance tab's
+    // Unassigned section. Catch-22.
+    //
+    // Surface them by scanning Moxy owners + queue_calls answering agents in
+    // the date range and adding stub entries. The UI sorts assigned reps into
+    // their team and the rest into Unassigned, giving the user a way to put
+    // them on a team. Once on a team, the next refresh populates real counts.
+    const discoveryRes = await query(
+      `SELECT DISTINCT name FROM (
+         SELECT TRIM(owner) AS name FROM moxy_deals
+           WHERE sold_date BETWEEN $1 AND $2 AND deal_status != ''
+             AND owner IS NOT NULL AND TRIM(owner) != ''
+         UNION
+         SELECT TRIM(owner) FROM moxy_home_deals
+           WHERE sold_date BETWEEN $1 AND $2 AND deal_status != ''
+             AND owner IS NOT NULL AND TRIM(owner) != ''
+         UNION
+         SELECT TRIM(COALESCE(NULLIF(TRIM(dest_name), ''), agent_name)) FROM queue_calls
+           WHERE call_date BETWEEN $1 AND $2 AND LOWER(status) = 'answered'
+             AND COALESCE(NULLIF(TRIM(dest_name), ''), agent_name) IS NOT NULL
+             AND TRIM(COALESCE(NULLIF(TRIM(dest_name), ''), agent_name)) != ''
+       ) all_names`,
+      [fromDate, toDate]
+    );
+    for (const row of discoveryRes.rows) {
+      const name = (row.name || "").trim();
+      if (!name) continue;
+      if (bySalesperson[name]) continue;
+      if (isExcludedSalesperson(name)) continue;
+      bySalesperson[name] = { totalDeals: 0, totalCalls: 0, closeRate: 0, queues: {} };
+    }
+
     // ── 5. DAILY TRENDS ─────────────────────────────────────────────
     // Source view v_daily_trends pre-computes per-day distinct contract counts
     // across both moxy_deals and moxy_home_deals with the standard non-VOID filter.

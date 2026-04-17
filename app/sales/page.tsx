@@ -1159,7 +1159,7 @@ export default function SalesDashboard() {
     };
 
     // Order: preferred order first, then any other teams
-    const teamOrder = ["The Money Team", "Nothin But a G Thang", "Members Only", "T.O."];
+    const teamOrder = ["The Money Team", "Nothin But a G Thang", "Members Only", "TM101", "T.O."];
     const allTeamNames = Object.keys(data.teams);
     const orderedTeams = [
       ...teamOrder.filter(t => data.teams[t]),
@@ -2411,7 +2411,7 @@ export default function SalesDashboard() {
 
                   // Team grouping — dynamic, exclude Spanish/CS/Unassigned
                   const availExclude = ["spanish", "cs", "unassigned"];
-                  const availTeamOrder = ["The Money Team", "Nothin But a G Thang", "Members Only", "T.O."];
+                  const availTeamOrder = ["The Money Team", "Nothin But a G Thang", "Members Only", "TM101", "T.O."];
                   const allAvailTeams = data ? Object.keys(data.teams).filter(t => !availExclude.includes(t.toLowerCase())) : [];
                   const orderedTeams = [
                     ...availTeamOrder.filter(t => allAvailTeams.includes(t)),
