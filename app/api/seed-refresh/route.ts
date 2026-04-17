@@ -1141,7 +1141,10 @@ export async function GET(req: Request) {
     const runTcx = !sourceFilter || sourceFilter === "tcx";
     const runMoxy = !sourceFilter || sourceFilter === "moxy";
     const runMoxyHome = !sourceFilter || sourceFilter === "moxy_home";
-    const lenovoOwnsMoxy = process.env.LENOVO_OWNS_MOXY === "true";
+    // Trim+lowercase the env value — earlier we shipped `LENOVO_OWNS_MOXY="true\n"`
+    // (echo added a trailing newline) and the strict `=== "true"` check failed
+    // silently, leaving dashboard's refreshMoxy still firing alongside Lenovo's.
+    const lenovoOwnsMoxy = (process.env.LENOVO_OWNS_MOXY || "").trim().toLowerCase() === "true";
 
     const results = await Promise.allSettled([
       runAim ? refreshAim(datesToFetch) : Promise.resolve({ skipped: true }),
