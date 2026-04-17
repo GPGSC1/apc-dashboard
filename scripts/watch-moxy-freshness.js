@@ -76,23 +76,32 @@ function fmtDur(ms) {
     console.log();
   }
 
-  // Walco freshness as a positive control (Lenovo has hourly already)
-  console.log("=== walco_payments (Lenovo control — should be GREEN) ===");
+  // Walco freshness via seed_metadata.updated_at (per Lenovo: imported_at on the
+  // walco_payments table only advances when PBS returns NEW rows; afternoons with
+  // no late payments leave imported_at "stale" for hours even though the hourly
+  // cron is healthy. seed_metadata.updated_at advances on every successful fire
+  // regardless of whether new rows landed — that's the right freshness signal).
+  console.log("=== walco_payments (Lenovo, seed_metadata-based) ===");
   try {
+    const wcMeta = await pool.query(
+      `SELECT max_date, updated_at FROM seed_metadata WHERE source = 'walco_payments'`
+    );
+    if (wcMeta.rows.length > 0) {
+      const m = wcMeta.rows[0];
+      const ageMs = Date.now() - new Date(m.updated_at).getTime();
+      // Walco runs hourly during business hours, so 90-min threshold for green.
+      const status = ageMs < 90 * 60_000 ? "\x1b[32mGREEN\x1b[0m" : ageMs < 4 * 3600_000 ? "\x1b[33mYELLOW\x1b[0m" : "\x1b[31mRED\x1b[0m";
+      console.log(`  seed_metadata:    max_date=${m.max_date}  updated=${m.updated_at}  (${fmtDur(ageMs)} ago)  ${status}`);
+    } else {
+      console.log(`  seed_metadata:    \x1b[31mNO ENTRY\x1b[0m (Lenovo's pbs-payments.js fix not yet deployed?)`);
+    }
+    // Also report row totals for sanity
     const wcRecent = await pool.query(
-      `SELECT MAX(payment_date) AS max_date, COUNT(*) AS n,
-              MAX(imported_at) AS max_import
+      `SELECT MAX(payment_date) AS max_pay, COUNT(*) AS n, MAX(imported_at) AS max_import
        FROM walco_payments WHERE payment_amount > 0`
     );
     const r = wcRecent.rows[0];
-    console.log(`  max(payment_date):  ${r.max_date}`);
-    console.log(`  max(imported_at):   ${r.max_import}`);
-    console.log(`  total positive:     ${Number(r.n).toLocaleString()} rows`);
-    if (r.max_import) {
-      const ageMs = Date.now() - new Date(r.max_import).getTime();
-      const status = ageMs < 90 * 60_000 ? "\x1b[32mGREEN\x1b[0m" : ageMs < 4 * 3600_000 ? "\x1b[33mYELLOW\x1b[0m" : "\x1b[31mRED\x1b[0m";
-      console.log(`  age:                ${fmtDur(ageMs)} ${status}`);
-    }
+    console.log(`  rows:             max_pay=${r.max_pay}  total positive=${Number(r.n).toLocaleString()}  last_insert=${r.max_import}`);
   } catch (e) {
     console.log(`  ERROR: ${e.message}`);
   }
