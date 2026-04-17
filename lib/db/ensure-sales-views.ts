@@ -187,6 +187,60 @@ export async function ensureSalesViews(): Promise<void> {
       GROUP BY sold_date
     `);
 
+    // ── 11. v_moxy_deals_deduped — auto deal dedup ──
+    // Per Matt: "all dedupe and filter logic should be in Neon tables."
+    // Dedups by (customer_id, deal_status, sold_date) — ONE row per customer
+    // per status per day. Handles the "Moxy reassigned the contract_no"
+    // pattern (4 known cases: Kia Johnson, David Fire, Hernan Silva,
+    // Barbara Robbin where pre-Phase-2b refreshMoxy wrote multiple CN rows
+    // for the same deal). Also drops the 41 ghost empty-CN rows by
+    // preferring non-empty CN within the partition.
+    //
+    // Tiebreaker order within (cid, status, sold_date) bucket:
+    //   1. Non-empty contract_no preferred over empty
+    //   2. Higher contract_no DESC (matches Moxy's UI display for 3 of 4
+    //      known multi-CN cases — David Fire is the one outlier where
+    //      MAS3161115346 is alphabetically higher than the canonical
+    //      GPG515890; cosmetic only, count is correct)
+    //
+    // Route reads: SELECT ... FROM v_moxy_deals_deduped WHERE sold_date
+    // BETWEEN $1 AND $2 AND <status filter>. The date filter on top of the
+    // view-level dedup is safe because the dedup partition includes
+    // sold_date (a customer with deals on different days = different rows
+    // kept; only same-day-multiple-CN collapses).
+    await query(`
+      CREATE OR REPLACE VIEW v_moxy_deals_deduped AS
+      SELECT DISTINCT ON (customer_id, deal_status, sold_date)
+        customer_id, contract_no, salesperson, owner,
+        home_phone, mobile_phone, sold_date, deal_status,
+        make, model, campaign, promo_code, first_name, last_name,
+        cust_cost, dealer_cost, down_payment, finance_term, finance_company,
+        admin, source, cancel_reason, state
+      FROM moxy_deals
+      WHERE deal_status != ''
+      ORDER BY customer_id, deal_status, sold_date,
+               (CASE WHEN contract_no IS NOT NULL AND contract_no != '' THEN 0 ELSE 1 END),
+               contract_no DESC NULLS LAST
+    `);
+
+    // ── 12. v_moxy_home_deals_deduped — home deal dedup ──
+    // Same shape and dedup rules as v_moxy_deals_deduped.
+    // Note: home table has no make/model columns, plus has division column.
+    await query(`
+      CREATE OR REPLACE VIEW v_moxy_home_deals_deduped AS
+      SELECT DISTINCT ON (customer_id, deal_status, sold_date)
+        customer_id, contract_no, salesperson, owner,
+        home_phone, mobile_phone, sold_date, deal_status,
+        campaign, promo_code, first_name, last_name,
+        cust_cost, dealer_cost, down_payment, finance_term, finance_company,
+        admin, source, cancel_reason, state, division
+      FROM moxy_home_deals
+      WHERE deal_status != ''
+      ORDER BY customer_id, deal_status, sold_date,
+               (CASE WHEN contract_no IS NOT NULL AND contract_no != '' THEN 0 ELSE 1 END),
+               contract_no DESC NULLS LAST
+    `);
+
     _installed = true;
   } catch (e) {
     // Likely cause: concurrent write transaction holding ACCESS EXCLUSIVE

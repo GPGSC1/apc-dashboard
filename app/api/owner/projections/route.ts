@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { query } from "../../../../lib/db/connection";
+import { ensureSalesViews } from "../../../../lib/db/ensure-sales-views";
 import { todayLocal } from "../../../../lib/date-utils";
 
 // ── Fee & Reserve Schedule (from Inspiron's measurement map — qKeyUnified) ──
@@ -144,7 +145,7 @@ function aggregateDeals(rows: DealRow[]) {
 //   (6) NEGATIVE-PAYMENT-LATER SKIP: drop if any negative payment exists on/after payDate.
 //   DISTINCT ON contract_no prevents double-counting when 2 payments both qualify.
 async function getWindowDeals(
-  table: "moxy_deals" | "moxy_home_deals",
+  table: "v_moxy_deals_deduped" | "v_moxy_home_deals_deduped",
   windowStart: string,
   windowEnd: string,
   asOfDate: string
@@ -213,19 +214,20 @@ export async function GET(request: Request) {
     const today = todayLocal();
 
     await ensureNormalizeFn();
+    await ensureSalesViews(); // installs v_moxy_deals_deduped + v_moxy_home_deals_deduped
 
     const windows = getPaymentWindows(today);
 
     // ── This Friday (payments Sat 2wks ago → prior Fri) ──
     const [thisAutoData, thisHomeData] = await Promise.all([
-      getWindowDeals("moxy_deals", windows.thisWindow.start, windows.thisWindow.end, today),
-      getWindowDeals("moxy_home_deals", windows.thisWindow.start, windows.thisWindow.end, today),
+      getWindowDeals("v_moxy_deals_deduped", windows.thisWindow.start, windows.thisWindow.end, today),
+      getWindowDeals("v_moxy_home_deals_deduped", windows.thisWindow.start, windows.thisWindow.end, today),
     ]);
 
     // ── Next Friday (payments current Sat → today, partial) ──
     const [nextAutoData, nextHomeData] = await Promise.all([
-      getWindowDeals("moxy_deals", windows.nextWindow.start, windows.nextWindow.end, today),
-      getWindowDeals("moxy_home_deals", windows.nextWindow.start, windows.nextWindow.end, today),
+      getWindowDeals("v_moxy_deals_deduped", windows.nextWindow.start, windows.nextWindow.end, today),
+      getWindowDeals("v_moxy_home_deals_deduped", windows.nextWindow.start, windows.nextWindow.end, today),
     ]);
 
     // ── Pipeline (status breakdown of all payments since thisWindow start, no eligibility filter — diagnostic only) ──
@@ -235,7 +237,7 @@ export async function GET(request: Request) {
          FROM (
            SELECT DISTINCT ON (md.contract_no) md.deal_status, md.cust_cost
            FROM walco_payments wp
-           JOIN moxy_deals md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
+           JOIN v_moxy_deals_deduped md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
            WHERE wp.payment_date >= $1
          ) deduped
          GROUP BY deal_status
@@ -247,7 +249,7 @@ export async function GET(request: Request) {
          FROM (
            SELECT DISTINCT ON (md.contract_no) md.deal_status, md.cust_cost
            FROM walco_payments wp
-           JOIN moxy_home_deals md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
+           JOIN v_moxy_home_deals_deduped md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
            WHERE wp.payment_date >= $1
          ) deduped
          GROUP BY deal_status
@@ -264,7 +266,7 @@ export async function GET(request: Request) {
          FROM (
            SELECT DISTINCT ON (md.contract_no) md.cust_cost
            FROM walco_payments wp
-           JOIN moxy_deals md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
+           JOIN v_moxy_deals_deduped md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
            WHERE wp.payment_date BETWEEN $1 AND $2
              AND LOWER(md.deal_status) LIKE '%sold%'
          ) deduped`,
@@ -275,7 +277,7 @@ export async function GET(request: Request) {
          FROM (
            SELECT DISTINCT ON (md.contract_no) md.cust_cost
            FROM walco_payments wp
-           JOIN moxy_home_deals md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
+           JOIN v_moxy_home_deals_deduped md ON normalize_policy_key(md.contract_no) = normalize_policy_key(wp.policy_number)
            WHERE wp.payment_date BETWEEN $1 AND $2
              AND LOWER(md.deal_status) LIKE '%sold%'
          ) deduped`,
@@ -295,8 +297,8 @@ export async function GET(request: Request) {
       const wkStart = addDays(wkEnd, -6);                     // Saturday before
       const wkAsOf = addDays(wkEnd, 1);                       // Saturday after (AsOfDate snapshot for historical reconstruction)
       const [haData, hhData] = await Promise.all([
-        getWindowDeals("moxy_deals", wkStart, wkEnd, wkAsOf),
-        getWindowDeals("moxy_home_deals", wkStart, wkEnd, wkAsOf),
+        getWindowDeals("v_moxy_deals_deduped", wkStart, wkEnd, wkAsOf),
+        getWindowDeals("v_moxy_home_deals_deduped", wkStart, wkEnd, wkAsOf),
       ]);
       const autoAgg = aggregateDeals(haData.rows);
       const homeAgg = aggregateDeals(hhData.rows);

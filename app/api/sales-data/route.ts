@@ -112,43 +112,27 @@ export async function GET(req: Request) {
     // already has a row with a real contract_no AND same deal_status.
     // Must match status so a "Back Out" with empty contract isn't dropped just
     // because a "Sold" row exists with a real contract (different events).
+    // Deal queries now read from v_moxy_deals_deduped + v_moxy_home_deals_deduped
+    // (lib/db/ensure-sales-views.ts). The views collapse multi-CN-per-customer
+    // duplicates by (customer_id, deal_status, sold_date) and prefer non-empty
+    // contract_no — handles the 4 known multi-CN dupe customers (Kia Johnson,
+    // David Fire, Hernan Silva, Barbara Robbin) and the 89 ghost empty-CN rows
+    // left over from pre-Phase-2b refreshMoxy writes.
+    //
+    // Per Matt's directive: "all dedupe and filter logic should be in the
+    // Neon tables." The route now does pure date+status filtering on top.
     const autoDealsResult = await query(
-      `SELECT DISTINCT ON (customer_id || '|' || contract_no)
-         customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, make, model, campaign, promo_code, first_name, last_name
-       FROM moxy_deals d
+      `SELECT customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, make, model, campaign, promo_code, first_name, last_name
+       FROM v_moxy_deals_deduped
        WHERE sold_date BETWEEN $1 AND $2
-         ${statusFilter}
-         AND NOT (
-           (contract_no IS NULL OR contract_no = '')
-           AND EXISTS (
-             SELECT 1 FROM moxy_deals d2
-             WHERE d2.customer_id = d.customer_id
-               AND d2.deal_status = d.deal_status
-               AND d2.contract_no IS NOT NULL AND d2.contract_no != ''
-               AND d2.sold_date BETWEEN $1 AND $2
-           )
-         )
-       ORDER BY customer_id || '|' || contract_no, sold_date DESC`,
+         ${statusFilter}`,
       [fromDate, toDate]
     );
-    // Home deals: same empty-contract dedup as auto, with deal_status match
     const homeDealsResult = await query(
-      `SELECT DISTINCT ON (customer_id || '|' || contract_no)
-         customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, campaign, promo_code, first_name, last_name
-       FROM moxy_home_deals h
+      `SELECT customer_id, contract_no, salesperson, owner, home_phone, mobile_phone, sold_date, deal_status, campaign, promo_code, first_name, last_name
+       FROM v_moxy_home_deals_deduped
        WHERE sold_date BETWEEN $1 AND $2
-         ${statusFilter}
-         AND NOT (
-           (contract_no IS NULL OR contract_no = '')
-           AND EXISTS (
-             SELECT 1 FROM moxy_home_deals h2
-             WHERE h2.customer_id = h.customer_id
-               AND h2.deal_status = h.deal_status
-               AND h2.contract_no IS NOT NULL AND h2.contract_no != ''
-               AND h2.sold_date BETWEEN $1 AND $2
-           )
-         )
-       ORDER BY customer_id || '|' || contract_no, sold_date DESC`,
+         ${statusFilter}`,
       [fromDate, toDate]
     );
 
